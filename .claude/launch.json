@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "six-legs-deep",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tools/serve.mjs"],
+      "port": 8080
+    }
+  ]
+}

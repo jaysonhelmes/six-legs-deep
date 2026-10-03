@@ -1,0 +1,2394 @@
+// Underground nest rules: derive (geometry caches gated on rev, frost exposure, chamber eff, every d.nest.agg field),
+// the dig queue and dig tick (caches, hints, water, activation, shafts/entrances), placement validation with ghost
+// tints / modifiers / auto-route, level-ups with growth direction, relocate, demolish, tunnels, backfill, Help Dig,
+// blueprints, and the cross-calls queueShaft / applyBlueprint / autoLevelStep / moleTunnel. Owner: WP3.
+// Contract: ARCHITECTURE §8.2 (nest.js), §4 (s.run.nest, era.blueprints), §5 (d.nest), §9, §10; DESIGN §7, §17.3.
+
+import { GRID, CELL, CLAMP_MAX } from '../data/balance.js';
+import { MICRO, DIG, GEOM, ADVISOR } from '../data/strata.js';
+import { CHAMBERS, CHAMBER_RULES } from '../data/chambers.js';
+import { CACHES, MOLE } from '../data/soilFeatures.js';
+import { FROST } from '../data/seasons.js';
+import { MOUND } from '../data/surface.js';
+import { CAPS } from '../data/economy.js';
+import { FLIGHT } from '../data/prestige.js';
+import { canAfford, spend, refund, grant, incomeSeconds } from '../core/wallet.js';
+import { effectMult } from '../core/effects.js';
+import { costOrNull } from '../core/math.js';
+import { clickAvailable, consumeClick } from '../core/state.js';
+import { randInt } from '../core/rng.js';
+import * as G from './nestgeom.js';
+import { addEntrance, nuptialHex } from './surface.js';
+import { spawnBeetle } from './golden.js';
+
+const COLS = GRID.cols;
+const ROWS = GRID.rows;
+const N = COLS * ROWS;
+const DUG_KINDS = new Set(['chamber', 'grow', 'relocate']);
+const DIRS = new Set(['left', 'right', 'up', 'down']);
+const NAME_MAX = 40;
+
+// ------------------------------------------------------------------------------------------------------------------
+// Small helpers
+// ------------------------------------------------------------------------------------------------------------------
+
+function emit(env, type, payload) {
+  if (env && typeof env.emit === 'function') env.emit(type, payload);
+}
+
+function isInt(v) {
+  return Number.isInteger(v);
+}
+
+function isCell(v) {
+  return Number.isInteger(v) && v >= 0 && v < N;
+}
+
+function num(v) {
+  return Number.isFinite(v) ? v : 0;
+}
+
+function adj4(a, b) {
+  const d = Math.abs(a - b);
+  if (d === COLS) return true;
+  return d === 1 && Math.floor(a / COLS) === Math.floor(b / COLS);
+}
+
+function fail(P, reason) {
+  P.reason = reason;
+  return P;
+}
+
+/** Chamber is contributing: 'active' or 'growing' (at its current level). */
+function contributes(ch) {
+  return ch.status === 'active' || ch.status === 'growing';
+}
+
+function findChamber(s, uid) {
+  const chs = s.run.nest.chambers;
+  for (let j = 0; j < chs.length; j++) if (chs[j].uid === uid) return { ch: chs[j], j };
+  return null;
+}
+
+function findJob(s, uid) {
+  const q = s.run.nest.queue;
+  for (let j = 0; j < q.length; j++) if (q[j].uid === uid) return { job: q[j], j };
+  return null;
+}
+
+function countType(s, type) {
+  let n = 0;
+  for (const ch of s.run.nest.chambers) if (ch.type === type) n++;
+  return n;
+}
+
+function bonusOwned(s, b) {
+  if (!b) return false;
+  if (b.research) return G.hasResearch(s, b.research);
+  if (b.trait) return G.traitLevel(s, b.trait) > 0;
+  if (b.federation) return G.fedLevel(s, b.federation) > 0;
+  return false;
+}
+
+/** Blueprints are available with ancestral_blueprint or blueprint_memory. */
+function blueprintsAllowed(s) {
+  return G.traitLevel(s, 'ancestral_blueprint') > 0 || G.fedLevel(s, 'blueprint_memory') > 0;
+}
+
+function blueprintSlots(s) {
+  return G.fedLevel(s, 'blueprint_memory') > 0 ? Math.max(1, G.fxNum('federation', 'blueprint_memory', 'slots')) : 1;
+}
+
+/** Dig queue limit: 5 + 2·[load_chains] + 2·[automaton_instincts] (DESIGN §7.2). */
+function queueLimit(s) {
+  let n = DIG.queueBase;
+  if (G.hasResearch(s, 'load_chains')) n += G.fxNum('research', 'load_chains', 'queue');
+  if (G.traitLevel(s, 'automaton_instincts') > 0) n += G.fxNum('trait', 'automaton_instincts', 'queue');
+  return n;
+}
+
+/**
+ * Row minimum with the leafcutter Fungus Garden override (species mods.gardenRowMin) and the Shallow Soil Nuptial
+ * Chamber override (C67): in a shallow_soil run nothing is dug below row 23, so the Nuptial Chamber (row ≥ 24, a
+ * Flight requirement) may instead sit high enough that its largest footprint (its max level) still ends on row 23;
+ * without this the Flight, the only way out of that Hardship run, could never be taken.
+ */
+function effRowMin(s, d, type) {
+  const def = CHAMBERS[type];
+  if (type === 'fungus_garden') {
+    const sp = d && d.meta && d.meta.sp;
+    if (sp && Number.isFinite(sp.gardenRowMin)) return sp.gardenRowMin;
+  }
+  if (type === 'nuptial_chamber' && s.run.hardship === 'shallow_soil') {
+    const maxL = effMaxL(s, def);
+    const top = G.footprint(type, maxL > 0 ? Math.min(maxL, GEOM.footprintMaxL) : GEOM.footprintMaxL);
+    return Math.max(1, Math.min(def.rowMin, DIG.shallowSoilRow - top.h + 1));
+  }
+  return def.rowMin;
+}
+
+/** Effective max level (maxLBonus, e.g. royal_court → Nuptial Chamber L9); 0 = uncapped. */
+function effMaxL(s, def) {
+  if (def.maxLBonus && bonusOwned(s, def.maxLBonus)) return def.maxLBonus.maxL;
+  return def.maxL;
+}
+
+/** Instance limit (DESIGN §7.6): maxInst + owned bonuses; water wells: one per revealed pocket. */
+function instLimit(s, d, type) {
+  const def = CHAMBERS[type];
+  if (def.maxInst === 'perPocket') {
+    let n = 0;
+    for (const w of s.run.nest.features.water || []) if (w.revealed) n++;
+    return n;
+  }
+  let n = def.maxInst;
+  for (const b of def.instBonus || []) if (bonusOwned(s, b)) n += b.add;
+  if (type === 'royal_chamber') {
+    // ARCH-R: species royalStart (fire ants start with 2) raises the Royal Chamber limit so the pre-dug extra queen
+    // does not consume the polygyny / queens_council bonus.
+    const sp = d && d.meta && d.meta.sp;
+    const start = sp && Number.isFinite(sp.royalStart) ? sp.royalStart : 1;
+    n += Math.max(0, start - 1);
+  }
+  return n;
+}
+
+function edictCostMult(s) {
+  return s.cycle.edict === 'edict_of_depth' ? (G.fxNum('edict', 'edict_of_depth', 'chamberCost') || 1) : 1;
+}
+
+/** Hard-winter frost row for placement previews: max(4, 18 − 5·[thermoregulation] − min(6, floor(mound / 3))). */
+function hardFrostRow(s, d) {
+  const thermo = G.hasResearch(s, 'thermoregulation') ? G.fxNum('research', 'thermoregulation', 'frost') : 0;
+  const mound = num(s.run.surface && s.run.surface.mound);
+  const fromMound = Math.min(num(MOUND.frostMax), Math.floor(mound / (MOUND.frostPerLevels || 1)));
+  const v = Math.max(num(FROST.minRow), num(FROST.maxRow) - thermo - fromMound);
+  if (Number.isFinite(v) && v > 0) return v;
+  return num(d && d.season && d.season.frostMax);
+}
+
+/** Additive nursery microclimate term for a layer in the current season (DESIGN §17.2). */
+function nurseryMicro(s, layer, sid) {
+  const m = MICRO[layer] && MICRO[layer].nursery;
+  if (!m) return 0;
+  let v = num(m[sid]);
+  if (layer === 'topsoil') {
+    const sunny = G.hasTag(s, 'site_sunny_slope');
+    if (v < 0 && (sunny || G.hasResearch(s, 'thermoregulation') || G.hasResearch(s, 'thermal_brood_shuttling'))) v = 0;
+    if (sid === 'autumn' && sunny) v = num(m.spring);
+  }
+  return v;
+}
+
+/** Gallery housing at level L: +10 per level; each level above 30 adds 10 + (L − 30) instead (DESIGN §7.6). */
+function galleryHousing(fx, L) {
+  const over = Math.max(0, L - fx.highL);
+  return fx.housing * L + (over * (over + 1)) / 2;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Geometry maintenance (d.nest)
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Chamber indices whose footprint is touched by, or joined through ≤ maxGap tunnel cells to, the source cells.
+ * @returns {number[]} ascending chamber indices (never `self`)
+ */
+function nearChambers(geo, src, maxGap, self) {
+  const field = G.gapField(geo, src, maxGap);
+  const found = new Set();
+  const stack = [];
+  for (const c of src) stack.push(c);
+  const seen = new Uint8Array(N);
+  for (const c of src) seen[c] = 1;
+  while (stack.length) {
+    const c = stack.pop();
+    for (const n of G.neighbors4(c)) {
+      const m = geo.chamberAt[n];
+      if (m >= 0 && m !== self) found.add(m);
+      if (!seen[n] && field[n] > 0) { seen[n] = 1; stack.push(n); }
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/** Rebuild the rev-gated geometry and the static per-chamber entries, keeping dynamic fields by uid. */
+function rebuild(s, d) {
+  const dn = d.nest;
+  const old = new Map();
+  for (const c of dn.chambers || []) if (c && c.uid !== undefined) old.set(c.uid, c);
+  G.buildGeom(s, dn);
+  const chs = s.run.nest.chambers;
+  const cells = s.run.nest.cells;
+  const out = new Array(chs.length);
+  const cellLists = new Array(chs.length);
+  for (let j = 0; j < chs.length; j++) {
+    const ch = chs[j];
+    const rc = G.rectCells(ch.x, ch.y, ch.w, ch.h);
+    cellLists[j] = rc;
+    let minDist = -1;
+    let minEnt = -1;
+    let dug = 0;
+    for (const c of rc) {
+      if (!G.isOpenCode(cells[c])) continue;
+      dug++;
+      const dd = dn.dist[c];
+      const de = dn.entDist[c];
+      if (dd >= 0 && (minDist < 0 || dd < minDist)) minDist = dd;
+      if (de >= 0 && (minEnt < 0 || de < minEnt)) minEnt = de;
+    }
+    const adj = nearChambers(dn, rc, GEOM.adjPathMax, j).map((m) => chs[m].uid);
+    const prev = old.get(ch.uid);
+    out[j] = {
+      uid: ch.uid,
+      layer: G.rectLayer(ch),
+      exposed: prev ? !!prev.exposed : false,
+      snap: prev ? !!prev.snap : false,
+      eff: prev && Number.isFinite(prev.eff) ? prev.eff : 1,
+      minEntPath: minEnt,
+      inReach: minEnt >= 0 && minEnt <= GEOM.raidReach,
+      adj,
+      hygiene: false,
+      cellsDug: dug,
+      cellsTotal: ch.w * ch.h,
+      minDist,
+    };
+  }
+  // Hygiene: a Nursery or Fungus Garden within 6 path cells of a contributing Midden (DESIGN §7.7 hyg_midden).
+  for (let j = 0; j < chs.length; j++) {
+    if (chs[j].type !== 'midden' || !contributes(chs[j])) continue;
+    for (const m of nearChambers(dn, cellLists[j], GEOM.hygienePath, j)) {
+      const t = chs[m].type;
+      if (t === 'nursery' || t === 'fungus_garden') out[m].hygiene = true;
+    }
+  }
+  dn.chambers = out;
+}
+
+/** Rebuild d.nest geometry if it does not match s.run.nest. */
+function ensureGeom(s, d) {
+  if (!G.geomFresh(s, d) || !Array.isArray(d.nest.chambers) || d.nest.chambers.length !== s.run.nest.chambers.length) {
+    rebuild(s, d);
+  }
+  return d.nest;
+}
+
+/** Unfound caches that are hinted or within the hint radius (Chebyshev) of any open cell (DESIGN §7.9). */
+function computeHints(s, geo) {
+  const r = GEOM.hintRadius + (G.hasAch(s, 'ach_treasure_hunter') ? GEOM.hintRadiusAch : 0);
+  const out = [];
+  for (const c of s.run.nest.features.caches || []) {
+    if (!c || c.found) continue;
+    if (c.hinted || openWithin(geo.open, c.i % COLS, Math.floor(c.i / COLS), 1, 1, r)) out.push(c.i);
+  }
+  return out;
+}
+
+/** True if any open cell lies within Chebyshev distance r of the rectangle (x, y, w, h). */
+function openWithin(open, x, y, w, h, r) {
+  const x0 = Math.max(0, x - r);
+  const x1 = Math.min(COLS - 1, x + w - 1 + r);
+  const y0 = Math.max(0, y - r);
+  const y1 = Math.min(ROWS - 1, y + h - 1 + r);
+  for (let yy = y0; yy <= y1; yy++) {
+    const row = yy * COLS;
+    for (let xx = x0; xx <= x1; xx++) if (open[row + xx]) return true;
+  }
+  return false;
+}
+
+/** Reveal water pockets within the hint radius of any open cell (state; called from tick). */
+function revealWater(s, geo) {
+  const r = GEOM.hintRadius + (G.hasAch(s, 'ach_treasure_hunter') ? GEOM.hintRadiusAch : 0);
+  for (const w of s.run.nest.features.water || []) {
+    if (!w || w.revealed) continue;
+    if (openWithin(geo.open, w.x, w.y, w.w, w.h, r)) w.revealed = true;
+  }
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Job work
+// ------------------------------------------------------------------------------------------------------------------
+
+function jobChamber(s, job) {
+  if (!job.chamber) return null;
+  const f = findChamber(s, job.chamber);
+  return f ? f.ch : null;
+}
+
+/** Work of cell c inside a job (route cells are tunnels; relocation cells × 0.5 × architect). */
+function jobCellWork(s, ctx, job, ch, c) {
+  const inFoot = !!ch && DUG_KINDS.has(job.kind) && G.inRect(ch, c);
+  const kind = job.kind === 'shaft' ? 'shaft' : inFoot ? job.kind : 'tunnel';
+  let w = G.workAt(ctx, c, kind, job.blueprint);
+  if (inFoot && job.kind === 'relocate') {
+    w *= DIG.relocateWorkFrac * (G.hasAch(s, 'ach_architect') ? DIG.architectMult : 1);
+  }
+  return w;
+}
+
+/** Remaining work of a job (undug cells from cur, minus progress on the current cell). */
+function remainingWork(s, ctx, job) {
+  const ch = jobChamber(s, job);
+  const cells = s.run.nest.cells;
+  let w = 0;
+  let first = true;
+  for (let k = job.cur; k < job.cells.length; k++) {
+    const c = job.cells[k];
+    if (!isCell(c) || G.isOpenCode(cells[c])) continue;
+    let cw = jobCellWork(s, ctx, job, ch, c);
+    if (first && k === job.cur) cw = Math.max(0, cw - num(job.prog));
+    first = false;
+    w += cw;
+  }
+  return w;
+}
+
+function totalQueueWork(s) {
+  const ctx = G.workCtx(s);
+  let w = 0;
+  for (const job of s.run.nest.queue) w += remainingWork(s, ctx, job);
+  return w;
+}
+
+/** d.nest.queueInfo ([{ uid, work, eta }]) and d.nest.digFace. */
+function fillQueueInfo(s, d) {
+  const nest = s.run.nest;
+  const ctx = G.workCtx(s);
+  const W = Math.max(0, num(d.stats && d.stats.digW));
+  let cum = 0;
+  const info = [];
+  for (const job of nest.queue) {
+    const work = remainingWork(s, ctx, job);
+    cum += work;
+    info.push({ uid: job.uid, work, eta: W > 0 ? cum / W : -1 });
+  }
+  d.nest.queueInfo = info;
+  let face = -1;
+  if (nest.queue.length) {
+    const job = nest.queue[0];
+    for (let k = job.cur; k < job.cells.length; k++) {
+      const c = job.cells[k];
+      if (isCell(c) && !G.isOpenCode(nest.cells[c])) { face = c; break; }
+    }
+  }
+  d.nest.digFace = face;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Digging
+// ------------------------------------------------------------------------------------------------------------------
+
+/** Collect the cache on cell c, if any (DESIGN §7.9). */
+function collectCache(s, d, c, env) {
+  for (const cache of s.run.nest.features.caches || []) {
+    if (!cache || cache.i !== c || cache.found) continue;
+    cache.found = true;
+    s.meta.counters.caches++;
+    if (cache.kind === 'amber_bead') {
+      s.meta.counters.amber++;
+      // ARCH-R: Golden Beetles are frozen offline (DESIGN §21.4), so an amber bead dug offline spawns no beetle.
+      if (!(env && env.offline)) spawnBeetle(s, d);
+      emit(env, 'cacheFound', { i: c, kind: cache.kind, res: null, amount: 0 });
+    } else {
+      const spec = CACHES.kinds[cache.kind];
+      if (!spec) continue;
+      const amt = incomeSeconds(d, spec.res, spec.sec, spec.min);
+      // F3: a seed cache is a one-shot food reward, so it may overflow to FOOD_OVERFLOW × cap (DESIGN §3).
+      const added = grant(s, d, spec.res, amt, { overflow: spec.res === 'food' });
+      emit(env, 'cacheFound', { i: c, kind: cache.kind, res: spec.res, amount: added });
+    }
+  }
+}
+
+/** A queued cell is finished: set its code, bump rev, counters, cache, events / offline log. */
+function completeCell(s, d, job, ch, c, env) {
+  const nest = s.run.nest;
+  const inFoot = !!ch && DUG_KINDS.has(job.kind) && G.inRect(ch, c);
+  nest.cells[c] = inFoot ? CELL.CHAMBER : CELL.TUNNEL;
+  nest.rev++;
+  const y = Math.floor(c / COLS);
+  if (y > nest.deepestRow) nest.deepestRow = y;
+  if (nest.deepestRow > s.meta.stats.deepestRow) s.meta.stats.deepestRow = nest.deepestRow;
+  s.meta.counters.cellsDug++;
+  s.run.stats.cellsDug++;
+  if (env && env.offline) {
+    if (d.offlineLog && Array.isArray(d.offlineLog.cells)) d.offlineLog.cells.push(c);
+  } else {
+    emit(env, 'cellDug', { i: c });
+  }
+  collectCache(s, d, c, env);
+}
+
+/** Remove a finished job from the queue and apply its completion (activation, level, shaft opening). */
+function finishJob(s, d, job, env) {
+  const nest = s.run.nest;
+  const k = nest.queue.indexOf(job);
+  if (k >= 0) nest.queue.splice(k, 1);
+  nest.rev++;
+  const ch = jobChamber(s, job);
+  if (job.kind === 'chamber' && ch) {
+    ch.status = 'active';
+    ch.level = Math.max(1, ch.target);
+    ch.target = ch.level;
+    s.run.stats.chambersDone++;
+    emit(env, 'chamberActivated', { uid: ch.uid, chamberType: ch.type, level: ch.level });
+    if (env && env.offline && d.offlineLog && Array.isArray(d.offlineLog.chambers)) d.offlineLog.chambers.push(ch.uid);
+  } else if (job.kind === 'grow' && ch) {
+    ch.status = 'active';
+    ch.level = Math.max(ch.level, ch.target);
+    ch.target = ch.level;
+    emit(env, 'chamberLeveled', { uid: ch.uid, level: ch.level });
+  } else if (job.kind === 'relocate' && ch) {
+    ch.status = 'active';
+    emit(env, 'chamberActivated', { uid: ch.uid, chamberType: ch.type, level: ch.level });
+    if (env && env.offline && d.offlineLog && Array.isArray(d.offlineLog.chambers)) d.offlineLog.chambers.push(ch.uid);
+  } else if (job.kind === 'shaft') {
+    let col = -1;
+    for (const c of job.cells) if (isCell(c) && c < COLS) { col = c; break; }
+    const sh = nest.shafts.find((x) => x && !x.open && x.col === col);
+    if (sh) {
+      sh.open = true;
+      if (sh.kind === 'nuptial') addEntrance(s, d, 'nuptial', nuptialHex(s, d, col), col, -1);
+      emit(env, 'entranceOpened', { kind: sh.kind, col });
+    }
+  }
+}
+
+/** Skip cells of the first job that are already open or no longer diggable. */
+function skipDone(s, job) {
+  const cells = s.run.nest.cells;
+  while (job.cur < job.cells.length) {
+    const c = job.cells[job.cur];
+    if (isCell(c) && !G.isOpenCode(cells[c]) && G.isDiggable(s, c)) break;
+    job.cur++;
+    job.prog = 0;
+  }
+}
+
+/**
+ * Spend `work` on the queue (all work goes to the first job, DESIGN §7.2). firstOnly stops after the first job.
+ * @returns {number} leftover work
+ */
+function digWork(s, d, work, env, firstOnly = false) {
+  const nest = s.run.nest;
+  let ctx = null;
+  let w = work > 0 ? work : 0;
+  const firstUid = nest.queue.length ? nest.queue[0].uid : 0;
+  while (nest.queue.length) {
+    const job = nest.queue[0];
+    if (firstOnly && job.uid !== firstUid) break;
+    skipDone(s, job);
+    if (job.cur >= job.cells.length) {
+      finishJob(s, d, job, env);
+      ctx = null;
+      if (firstOnly) break;
+      continue;
+    }
+    if (!(w > 0)) break;
+    if (!ctx) ctx = G.workCtx(s);
+    const c = job.cells[job.cur];
+    const ch = jobChamber(s, job);
+    const need = Math.max(0, jobCellWork(s, ctx, job, ch, c) - num(job.prog));
+    if (w >= need) {
+      w -= need;
+      job.cur++;
+      job.prog = 0;
+      completeCell(s, d, job, ch, c, env);
+    } else {
+      job.prog = num(job.prog) + w;
+      w = 0;
+    }
+  }
+  return w;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// derive / tick
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Nest derive (ARCHITECTURE §8.2): rebuild geometry caches when s.run.nest.rev changed; every tick recompute frost
+ * exposure, frost-snap exposure, chamber eff and every d.nest.agg field, plus hints, queueInfo and digFace.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {void}
+ */
+export function derive(s, d) {
+  const dn = ensureGeom(s, d);
+  const chs = s.run.nest.chambers;
+  const season = d.season || {};
+  const frostRow = num(season.frostRow);
+  const snapRow = num(season.snapRow);
+  const sid = season.id || 'spring';
+  const vent = G.hasResearch(s, 'ventilation_shafts') ? (G.fxNum('research', 'ventilation_shafts', 'chamber') || 1) : 1;
+  const byUid = new Map();
+  for (let j = 0; j < chs.length; j++) byUid.set(chs[j].uid, j);
+
+  for (let j = 0; j < chs.length; j++) {
+    const ch = chs[j];
+    const info = dn.chambers[j];
+    const def = CHAMBERS[ch.type];
+    info.exposed = !!def && !def.frostImmune && G.exposedTo(ch, frostRow);
+    info.snap = G.exposedTo(ch, snapRow);
+    let eff = vent;
+    if (info.exposed) eff *= CHAMBER_RULES.frostMult;
+    if (info.layer === 'aquifer') eff *= CHAMBER_RULES.aquiferMult;
+    eff *= effectMult(s, 'chamber', ch.uid) * effectMult(s, 'chamber_layer', info.layer);
+    if (info.hygiene) eff *= CHAMBERS.midden.fx.hygiene;
+    info.eff = Number.isFinite(eff) && eff > 0 ? eff : 0;
+  }
+
+  const partner = (j, type) => {
+    for (const u of dn.chambers[j].adj) {
+      const m = byUid.get(u);
+      if (m !== undefined && chs[m].type === type && contributes(chs[m])) return true;
+    }
+    return false;
+  };
+
+  const royalFx = CHAMBERS.royal_chamber.fx;
+  const agg = {
+    housingBase: royalFx.housing,
+    broodGroups: [],
+    berthsBase: 0, repleteBerthsBase: 0,
+    alateCells: 0,
+    granaryCap: 0,
+    clayFoodShare: 0,
+    reachStorageShare: 0,
+    nearestGranaryUid: 0,
+    haulH: 0,
+    libraryInsight: 0,
+    middenL: 0,
+    barracksL: 0, barracksNear: false,
+    rootPenL: 0, rootPenCount: 0,
+    gardenL: 0, gardenerSlots: 0, leafCap: 0, fungusCap: 0, fungusMod: 1,
+    hibCap: 0, hibL: 0,
+    chimneyL: 0, gateL: 0, deepVaultL: 0,
+    royal: [],
+    royalL: 0,
+    nuptial: { active: false, level: 0, shaftOpen: false },
+    wells: 0, chambersActive: 0,
+    adjGranaryRepletion: false, adjNurseryRoyal: false,
+  };
+
+  // Original Royal Chamber (uid 1; first Royal Chamber as a fallback): base housing / storage / slots, haul node.
+  let royalJ = byUid.has(1) && chs[byUid.get(1)].type === 'royal_chamber' ? byUid.get(1) : -1;
+  if (royalJ < 0) royalJ = chs.findIndex((c) => c.type === 'royal_chamber');
+  if (royalJ >= 0) {
+    agg.royalL = chs[royalJ].level;
+    agg.broodGroups.push({ kind: 'royal', uid: chs[royalJ].uid, cap: royalFx.slots, factor: 1, exposed: false, snap: false,
+      inReach: !!dn.chambers[royalJ].inReach });
+  } else {
+    agg.broodGroups.push({ kind: 'royal', uid: 1, cap: royalFx.slots, factor: 1, exposed: false, snap: false, inReach: false });
+  }
+  const storage = royalFx.storage;
+  let haulNum = 0;
+  let haulDen = 0;
+  if (royalJ >= 0 && dn.chambers[royalJ].minDist >= 0) {
+    haulNum += storage * dn.chambers[royalJ].minDist;
+    haulDen += storage;
+  }
+
+  const seedBank = G.hasAch(s, 'ach_seed_bank') ? CHAMBER_RULES.seedBankMult : 1;
+  const ventOwned = G.hasResearch(s, 'ventilation_shafts');
+  const nuptialShaftOpen = s.run.nest.shafts.some((x) => x && x.kind === 'nuptial' && x.open);
+  agg.nuptial.shaftOpen = nuptialShaftOpen;
+  let clayCap = 0;
+  let reachCap = 0;
+  let nearestEnt = -1;
+  let fungusW = 0;
+  let fungusSlots = 0;
+  const hibGroups = [];
+
+  for (let j = 0; j < chs.length; j++) {
+    const ch = chs[j];
+    const def = CHAMBERS[ch.type];
+    if (!def || !contributes(ch)) continue;
+    const info = dn.chambers[j];
+    const L = ch.level;
+    const eff = info.eff;
+    const fx = def.fx;
+    agg.chambersActive++;
+    switch (ch.type) {
+      case 'royal_chamber':
+        agg.royal.push(L);
+        break;
+      case 'gallery':
+        agg.housingBase += galleryHousing(fx, L) * (info.layer === 'loam' ? fx.loam : 1) * eff;
+        break;
+      case 'nursery': {
+        const adjB = partner(j, 'royal_chamber') ? fx.royalAdj : 0;
+        if (adjB > 0) agg.adjNurseryRoyal = true;
+        const factor = (1 + adjB + nurseryMicro(s, info.layer, sid)) * eff;
+        agg.broodGroups.push({ kind: 'nursery', uid: ch.uid, cap: fx.slots * L, factor, exposed: info.exposed, snap: info.snap,
+          inReach: info.inReach });
+        break;
+      }
+      case 'granary': {
+        const cap = fx.cap * fx.capGrowth ** (L - 1) * (fx.layer[info.layer] || 1) * eff * seedBank;
+        agg.granaryCap += cap;
+        if (info.layer === 'clay' && !ventOwned) clayCap += cap;
+        if (info.inReach) reachCap += cap;
+        if (info.minEntPath >= 0 && (nearestEnt < 0 || info.minEntPath < nearestEnt)) {
+          nearestEnt = info.minEntPath;
+          agg.nearestGranaryUid = ch.uid;
+        }
+        if (info.minDist >= 0) { haulNum += cap * info.minDist; haulDen += cap; }
+        if (partner(j, 'repletion_hall')) agg.adjGranaryRepletion = true;
+        break;
+      }
+      case 'scent_library': {
+        const deep = G.layerIndex(info.layer) >= G.layerIndex(def.deepFrom) ? fx.deep : 1;
+        const adjM = partner(j, 'royal_chamber') ? fx.royalAdj : 1;
+        agg.libraryInsight += fx.insight * L * deep * adjM * eff;
+        break;
+      }
+      case 'midden':
+        agg.middenL += L * eff;
+        break;
+      case 'barracks':
+        agg.barracksL += L * eff;
+        agg.berthsBase += fx.berths * L * eff;
+        if (info.minEntPath >= 0 && info.minEntPath <= GEOM.barracksPath) agg.barracksNear = true;
+        break;
+      case 'root_aphid_pen':
+        agg.rootPenL += L * eff;
+        agg.rootPenCount++;
+        break;
+      case 'fungus_garden': {
+        agg.gardenL += L;
+        const slots = fx.gardeners * L;
+        const mod = (info.layer === 'clay' ? fx.clay : 1) * (partner(j, 'water_well') ? fx.wellAdj : 1) * eff;
+        fungusW += slots * mod;
+        fungusSlots += slots;
+        break;
+      }
+      case 'repletion_hall':
+        agg.repleteBerthsBase += fx.berths * L * eff;
+        break;
+      case 'hibernaculum': {
+        const cap = fx.shelter * L * eff;
+        agg.hibCap += cap;
+        agg.hibL += L;
+        hibGroups.push({ kind: 'hib', uid: ch.uid, cap, factor: 1, exposed: false, snap: false, inReach: info.inReach });
+        break;
+      }
+      case 'thermal_chimney':
+        agg.chimneyL += L * eff;
+        break;
+      case 'gate':
+        agg.gateL += L * eff;
+        break;
+      case 'water_well':
+        agg.wells += info.layer === 'aquifer' ? def.aquiferCount : 1;
+        break;
+      case 'nuptial_chamber': {
+        agg.nuptial.level = L;
+        if (nuptialShaftOpen) {
+          agg.nuptial.active = true;
+          const max = G.traitLevel(s, 'royal_court') > 0 ? fx.cellsMaxCourt : fx.cellsMax;
+          agg.alateCells = Math.min(max, fx.cellsBase + fx.cellsPer * (L - 1));
+        }
+        break;
+      }
+      case 'deep_vault':
+        agg.deepVaultL += L * eff;
+        break;
+      default:
+        break;
+    }
+  }
+  for (const g of hibGroups) agg.broodGroups.push(g);
+  const totalStore = storage + agg.granaryCap;
+  agg.clayFoodShare = totalStore > 0 ? clayCap / totalStore : 0;
+  agg.reachStorageShare = totalStore > 0 ? reachCap / totalStore : 0;
+  agg.haulH = haulDen > 0 ? haulNum / haulDen / GEOM.haulDiv : 0;
+  const gfx = CHAMBERS.fungus_garden.fx;
+  agg.gardenerSlots = gfx.gardeners * agg.gardenL;
+  agg.leafCap = gfx.leafCap * agg.gardenL;
+  agg.fungusCap = gfx.fungusCap * agg.gardenL;
+  agg.fungusMod = fungusSlots > 0 ? fungusW / fungusSlots : 1;
+
+  dn.agg = agg;
+  dn.hints = computeHints(s, dn);
+  fillQueueInfo(s, d);
+}
+
+/**
+ * Nest tick (ARCHITECTURE §8.2): backfill timers, dig work = d.stats.digW × env.eff × env.econDt spent on the queue
+ * (leftover → maint), water-pocket reveal, geometry refresh, queueInfo and digFace. O(cells dug) per call.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} dt
+ * @param {import('../core/types.js').Env} env
+ * @returns {void}
+ */
+export function tick(s, d, dt, env) {
+  const nest = s.run.nest;
+  const geo = ensureGeom(s, d);
+  const step = dt > 0 && Number.isFinite(dt) ? dt : 0;
+  if (nest.backfill.length && step > 0) {
+    const keep = [];
+    for (const b of nest.backfill) {
+      if (!b || !isCell(b.i)) continue;
+      b.t = num(b.t) - step;
+      if (b.t > 0) { keep.push(b); continue; }
+      if (nest.cells[b.i] === CELL.TUNNEL && geo.chamberAt[b.i] < 0) nest.cells[b.i] = CELL.SOIL;
+      nest.rev++;
+    }
+    nest.backfill = keep;
+  }
+  const econDt = env && Number.isFinite(env.econDt) ? env.econDt : step;
+  const eff = env && Number.isFinite(env.eff) ? env.eff : 1;
+  const W = Math.max(0, num(d.stats && d.stats.digW)) * Math.max(0, eff) * Math.max(0, econDt);
+  const left = digWork(s, d, W, env, false);
+  if (left > 0) nest.maint = Math.min(CLAMP_MAX, num(nest.maint) + left);
+  const g2 = ensureGeom(s, d);
+  revealWater(s, g2);
+  fillQueueInfo(s, d);
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Placement planning
+// ------------------------------------------------------------------------------------------------------------------
+
+/** Reason a footprint cell is unusable, or null (relIdx = index of the chamber being relocated / grown). */
+function cellBlock(s, geo, c, relIdx) {
+  const cells = s.run.nest.cells;
+  if (relIdx >= 0 && geo.chamberAt[c] === relIdx) return null;
+  const code = cells[c];
+  if (code === CELL.WATER) return 'blocked:water';
+  if (geo.chamberAt[c] >= 0) return 'blocked:chamber';
+  if (geo._shaft[c]) return 'blocked:shaft';
+  if (geo._backfill[c]) return 'blocked:backfill';
+  if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return 'blocked:stone';
+  if (geo._queued[c]) return 'blocked:queued';
+  if (code === CELL.SOIL || code === CELL.STONE) {
+    if (s.run.hardship === 'shallow_soil' && Math.floor(c / COLS) > DIG.shallowSoilRow) return 'hardship';
+    if (!G.isDiggable(s, c)) return 'blocked:layer';
+  }
+  return null;
+}
+
+/** Water pocket indices touched (4-adjacent) by a rectangle; only revealed pockets. */
+function pocketsTouched(s, geo, rect) {
+  const out = new Set();
+  const water = s.run.nest.features.water || [];
+  for (const p of G.perimeter(rect)) {
+    const k = geo._pocket[p];
+    if (k >= 0 && water[k] && water[k].revealed && s.run.nest.cells[p] === CELL.WATER) out.add(k);
+  }
+  return out;
+}
+
+/** Special placement rule of a chamber type (DESIGN §7.6); nuptialShaft is planned separately. */
+function ruleCheck(s, geo, def, rect, relUid) {
+  switch (def.rule) {
+    case 'touchRoot': {
+      for (const c of G.rectCells(rect.x, rect.y, rect.w, rect.h)) if (geo._root[c]) return null;
+      for (const p of G.perimeter(rect)) if (geo._root[p]) return null;
+      return 'invalid:root';
+    }
+    case 'touchRow0':
+      return rect.y === 0 ? null : 'invalid:row0';
+    case 'shaftTop': {
+      for (const p of G.perimeter(rect)) if (geo._shaft[p]) return null;
+      return 'invalid:shaft';
+    }
+    case 'touchWater': {
+      const mine = pocketsTouched(s, geo, rect);
+      if (!mine.size) return 'invalid:water';
+      for (const ch of s.run.nest.chambers) {
+        if (ch.type !== 'water_well' || ch.uid === relUid) continue;
+        for (const k of pocketsTouched(s, geo, ch)) mine.delete(k);
+      }
+      return mine.size ? null : 'invalid:water';
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * BFS order for the undug cells of a footprint / growth area: seeded from cells next to an open cell or a cell of
+ * `extraOpen` (route cells), expanding inside the list (ARCHITECTURE §8.2: cells queued in BFS order).
+ */
+function orderCells(geo, list, extraOpen) {
+  if (!list.length) return [];
+  const inList = new Uint8Array(N);
+  for (const c of list) inList[c] = 1;
+  const extra = new Uint8Array(N);
+  for (const c of extraOpen || []) if (isCell(c)) extra[c] = 1;
+  const seen = new Uint8Array(N);
+  const out = [];
+  const q = [];
+  for (const c of list) {
+    for (const n of G.neighbors4(c)) {
+      if ((geo.open[n] && !inList[n]) || extra[n]) { q.push(c); seen[c] = 1; break; }
+    }
+  }
+  if (!q.length) { q.push(list[0]); seen[list[0]] = 1; }
+  let head = 0;
+  while (head < q.length) {
+    const c = q[head++];
+    out.push(c);
+    for (const n of G.neighbors4(c)) {
+      if (inList[n] && !seen[n]) { seen[n] = 1; q.push(n); }
+    }
+  }
+  for (const c of list) if (!seen[c]) out.push(c);
+  return out;
+}
+
+/** Validate a player-drawn route (contiguous, starts next to a reachable open cell, ends next to the footprint). */
+function checkRoute(s, geo, route, rect) {
+  if (!Array.isArray(route) || route.length === 0 || route.length > N) return 'invalid:route';
+  const cells = s.run.nest.cells;
+  for (let k = 0; k < route.length; k++) {
+    const c = route[k];
+    if (!isCell(c) || G.inRect(rect, c)) return 'invalid:route';
+    if (k > 0 && !adj4(route[k - 1], c)) return 'invalid:route';
+    if (geo.open[c]) continue;
+    if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || geo._backfill[c] || !G.isDiggable(s, c)) return 'blocked:route';
+  }
+  const first = route[0];
+  const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
+  if (!reach(first) && !G.neighbors4(first).some(reach)) return 'invalid:route';
+  const last = route[route.length - 1];
+  if (!G.neighbors4(last).some((n) => G.inRect(rect, n))) return 'invalid:route';
+  return null;
+}
+
+/** Exit-shaft path of a Nuptial Chamber at column col (connector along the row above the chamber, then up). */
+function shaftPath(s, geo, rect, col) {
+  const r = rect.y - 1;
+  if (r < 0) return null;
+  const cells = s.run.nest.cells;
+  const start = Math.max(rect.x, Math.min(rect.x + rect.w - 1, col));
+  const path = [];
+  const stepX = col > start ? 1 : col < start ? -1 : 0;
+  for (let x = start; ; x += stepX) {
+    path.push(G.idx(x, r));
+    if (x === col || stepX === 0) break;
+  }
+  for (let y = r - 1; y >= 0; y--) path.push(G.idx(col, y));
+  const top = G.idx(col, 0);
+  if (cells[top] !== CELL.SOIL) return null;
+  const dig = [];
+  for (const c of path) {
+    if (geo.open[c]) {
+      if (geo._shaft[c] === 1) return null; // never through the main shaft
+      continue;
+    }
+    if (geo.chamberAt[c] >= 0 || geo._backfill[c] || geo._queued[c]) return null;
+    if (!G.isDiggable(s, c)) return null;
+    dig.push(c);
+  }
+  return dig;
+}
+
+/**
+ * Plan a Nuptial Chamber's exit shaft (default column: nearest to the chamber at distance ≥ 3 from every shaft; C66:
+ * the nearest one whose shaft, with the chamber, leaves the Royal Chamber room to reach the Flight level, when any
+ * does). `guard` = royalGuard (or null).
+ */
+function planNuptialShaft(s, geo, rect, shaftCol, guard = null) {
+  const cols = s.run.nest.shafts.map((x) => x.col);
+  const okCol = (c) => isInt(c) && c >= 0 && c < COLS && cols.every((e) => Math.abs(e - c) >= GEOM.shaftGap);
+  let cands;
+  if (shaftCol !== null && shaftCol !== undefined) {
+    if (!okCol(shaftCol)) return { reason: 'invalid:shaftCol' };
+    cands = [shaftCol];
+  } else {
+    const center = rect.x + (rect.w - 1) / 2;
+    const span = (c) => (c < rect.x ? rect.x - c : c > rect.x + rect.w - 1 ? c - (rect.x + rect.w - 1) : 0);
+    cands = [];
+    for (let c = 0; c < COLS; c++) if (okCol(c)) cands.push(c);
+    cands.sort((a, b) => span(a) - span(b) || Math.abs(a - center) - Math.abs(b - center) || a - b);
+  }
+  let first = null;
+  for (const c of cands) {
+    const cells = shaftPath(s, geo, rect, c);
+    if (!cells) continue;
+    if (!guard || cands.length === 1 || !guard.blocks(rect, shaftCells(rect, c))) return { col: c, cells };
+    if (!first) first = { col: c, cells };
+  }
+  return first || { reason: 'blocked:shaft' };
+}
+
+/**
+ * The cells of a Nuptial exit shaft at column col that become shaft cells once it opens (the column from row 0 down to
+ * the connector row; the connector's other cells stay plain tunnel), for the Royal guard.
+ */
+function shaftCells(rect, col) {
+  const out = [];
+  for (let y = rect.y - 1; y >= 0; y--) out.push(G.idx(col, y));
+  return out;
+}
+
+/**
+ * Full placement plan used by validatePlacement, the handlers, blueprints and the advisor.
+ * @returns {Object} { reason, rect, layer, direct, routeCells, footSoil, footOpen, shaft, cost, work, rel }
+ */
+function planPlacement(s, d, type, x, y, opts = {}) {
+  const { route = null, relocateUid = 0, shaftCol = null, blueprint = false, ignoreQueue = false, ignoreCost = false,
+    assumeConnected = false, seedCells = null } = opts;
+  const P = { reason: null, rect: null, layer: null, direct: false, routeCells: null, footSoil: [], footOpen: [], shaft: null,
+    cost: null, work: 0, rel: null };
+  const def = CHAMBERS[type];
+  if (!def) return fail(P, 'invalid');
+  const geo = G.getGeom(s, d);
+  let rel = null;
+  if (relocateUid) {
+    rel = findChamber(s, relocateUid);
+    if (!rel) return fail(P, 'notFound');
+    if (rel.ch.type !== type) return fail(P, 'invalid');
+    P.rel = rel;
+  }
+  const dims = rel ? { w: rel.ch.w, h: rel.ch.h } : G.footprint(type, 1);
+  const rect = { x, y, w: dims.w, h: dims.h };
+  P.rect = rect;
+  if (!isInt(x) || !isInt(y)) return fail(P, 'invalid');
+  if (rel) {
+    if (rel.ch.status !== 'active') return fail(P, 'busy');
+    if (rel.ch.x === x && rel.ch.y === y) return fail(P, 'invalid');
+  } else {
+    if (def.unlock && !s.run.unlocked[def.unlock]) return fail(P, 'locked');
+    if (countType(s, type) >= instLimit(s, d, type)) return fail(P, 'max');
+  }
+  if (x < 0 || y < 0 || x + rect.w > COLS || y + rect.h > ROWS) return fail(P, 'invalid:bounds');
+  P.layer = G.rectLayer(rect);
+  if (y < effRowMin(s, d, type) || y + rect.h - 1 > def.rowMax) return fail(P, 'invalid:row');
+  if (s.run.hardship === 'shallow_soil' && y + rect.h - 1 > DIG.shallowSoilRow) return fail(P, 'hardship');
+  const relIdx = rel ? rel.j : -1;
+  const rc = G.rectCells(x, y, rect.w, rect.h);
+  for (const c of rc) {
+    const r = cellBlock(s, geo, c, relIdx);
+    if (r) return fail(P, r);
+  }
+  const rr = ruleCheck(s, geo, def, rect, rel ? rel.ch.uid : 0);
+  if (rr) return fail(P, rr);
+  const cells = s.run.nest.cells;
+  const soil = [];
+  for (const c of rc) {
+    if (G.isOpenCode(cells[c])) P.footOpen.push(c);
+    else soil.push(c);
+  }
+  // Connectivity: an open reachable cell inside or 4-adjacent to the footprint, else a route.
+  const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
+  let connected = !!assumeConnected;
+  if (!connected) for (const c of rc) if (reach(c)) { connected = true; break; }
+  if (!connected) for (const p of G.perimeter(rect)) if (reach(p)) { connected = true; break; }
+  P.direct = connected;
+  if (!connected) {
+    if (route !== null && route !== undefined) {
+      const why = checkRoute(s, geo, route, rect);
+      if (why) return fail(P, why);
+      P.routeCells = route.filter((c) => !geo.open[c]);
+    } else {
+      const r = G.routeTo(s, d, rc);
+      if (!r) return fail(P, 'blocked:route');
+      P.routeCells = r.cells;
+    }
+  }
+  if (def.rule === 'nuptialShaft' && !rel && !s.run.nest.shafts.some((x2) => x2 && x2.kind === 'nuptial')) {
+    const sh = planNuptialShaft(s, geo, rect, shaftCol, royalGuard(s, d, 0));
+    if (sh.reason) return fail(P, sh.reason);
+    P.shaft = sh;
+  }
+  P.footSoil = orderCells(geo, soil, P.routeCells || seedCells);
+  // Work of the job(s).
+  const ctx = G.workCtx(s);
+  let work = 0;
+  for (const c of P.routeCells || []) work += G.workAt(ctx, c, 'tunnel', blueprint);
+  const relMult = rel ? DIG.relocateWorkFrac * (G.hasAch(s, 'ach_architect') ? DIG.architectMult : 1) : 1;
+  for (const c of P.footSoil) work += G.workAt(ctx, c, rel ? 'relocate' : 'chamber', blueprint) * relMult;
+  if (P.shaft) for (const c of P.shaft.cells) work += G.workAt(ctx, c, 'shaft');
+  P.work = work;
+  if (!ignoreQueue) {
+    const need = 1 + (P.shaft ? 1 : 0);
+    if (s.run.nest.queue.length + need > queueLimit(s)) return fail(P, 'queueFull');
+  }
+  if (rel) {
+    P.cost = {};
+  } else {
+    let cost = placementCost(s, type);
+    if (!cost) return fail(P, 'max');
+    if (blueprint && cost.food !== undefined) cost = { ...cost, food: cost.food * DIG.blueprintPlaceMult };
+    P.cost = cost;
+    if (!ignoreCost && !canAfford(s, cost)) return fail(P, 'cantAfford');
+  }
+  return P;
+}
+
+/** Renumber instance indices k of a type by placement order (uid). */
+function renumberK(s, type) {
+  const list = s.run.nest.chambers.filter((c) => c.type === type).sort((a, b) => a.uid - b.uid);
+  for (let k = 0; k < list.length; k++) list[k].k = k;
+}
+
+/** Execute a successful placement plan: pay, add the chamber and its job(s). Returns the chamber uid. */
+function executePlacement(s, d, type, P, env, blueprint = false) {
+  const nest = s.run.nest;
+  if (P.cost && Object.keys(P.cost).length && !spend(s, P.cost)) return 0;
+  const r = P.rect;
+  const uid = nest.nextUid++;
+  const ch = { uid, type, k: countType(s, type), x: r.x, y: r.y, w: r.w, h: r.h, level: 0, target: 1, status: 'digging',
+    blueprint: !!blueprint, bornAt: s.run.time };
+  nest.chambers.push(ch);
+  for (const c of P.footOpen) nest.cells[c] = CELL.CHAMBER;
+  const job = { uid: nest.nextUid++, kind: 'chamber', chamber: uid, cells: [...(P.routeCells || []), ...P.footSoil], cur: 0, prog: 0,
+    paidFood: P.cost && P.cost.food > 0 ? P.cost.food : 0, blueprint: !!blueprint };
+  nest.queue.push(job);
+  if (P.shaft) {
+    nest.shafts.push({ kind: 'nuptial', col: P.shaft.col, open: false, ref: -1 });
+    nest.queue.push({ uid: nest.nextUid++, kind: 'shaft', chamber: uid, cells: P.shaft.cells.slice(), cur: 0, prog: 0, paidFood: 0,
+      blueprint: false });
+  }
+  nest.rev++;
+  rebuild(s, d);
+  if (!job.cells.length) {
+    finishJob(s, d, job, env);
+    rebuild(s, d);
+  }
+  return uid;
+}
+
+/** Execute a relocation plan (old cells → tunnel, chamber inactive until the new footprint is dug). */
+function executeRelocation(s, d, P, env) {
+  const nest = s.run.nest;
+  const ch = P.rel.ch;
+  const nr = P.rect;
+  for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) {
+    if (!G.inRect(nr, c) && nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
+  }
+  ch.x = nr.x;
+  ch.y = nr.y;
+  ch.status = 'relocating';
+  for (const c of G.rectCells(nr.x, nr.y, nr.w, nr.h)) if (G.isOpenCode(nest.cells[c])) nest.cells[c] = CELL.CHAMBER;
+  const job = { uid: nest.nextUid++, kind: 'relocate', chamber: ch.uid, cells: [...(P.routeCells || []), ...P.footSoil], cur: 0,
+    prog: 0, paidFood: 0, blueprint: false };
+  nest.queue.push(job);
+  s.meta.counters.relocations++;
+  s.run.stats.relocations++;
+  nest.rev++;
+  rebuild(s, d);
+  if (!job.cells.length) {
+    finishJob(s, d, job, env);
+    rebuild(s, d);
+  }
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Level-ups
+// ------------------------------------------------------------------------------------------------------------------
+
+/** Level-up cost (DESIGN §7.5): food f0 × g^L × 2^k, soil s0 × g^L × 2^k, extras × g^L; × chamberCost with edict_of_depth. */
+function levelCost(s, ch) {
+  const def = CHAMBERS[ch.type];
+  if (!def) return null;
+  const maxL = effMaxL(s, def);
+  if (maxL > 0 && ch.level >= maxL) return null;
+  const gL = def.g ** ch.level;
+  const kk = CHAMBER_RULES.instanceLevelGrowth ** ch.k;
+  const cost = {};
+  if (def.f0 > 0) cost.food = def.f0 * gL * kk;
+  if (def.s0 > 0) cost.soil = def.s0 * gL * kk;
+  if (def.levelExtra) for (const r of Object.keys(def.levelExtra)) cost[r] = def.levelExtra[r] * gL;
+  if (!Object.keys(cost).length) return null;
+  const m = edictCostMult(s);
+  if (m !== 1) for (const r of Object.keys(cost)) cost[r] *= m;
+  return costOrNull(cost);
+}
+
+/** Growth rectangle for directions hd ('left'|'right'|null) and vd ('up'|'down'|null); validity and cells. */
+function growthCheck(s, d, geo, ch, j, hd, vd, dw, dh) {
+  const def = CHAMBERS[ch.type];
+  const nr = { x: ch.x - (hd === 'left' ? dw : 0), y: ch.y - (vd === 'up' ? dh : 0), w: ch.w + dw, h: ch.h + dh };
+  if (nr.x < 0 || nr.y < 0 || nr.x + nr.w > COLS || nr.y + nr.h > ROWS) return null;
+  if (nr.y < effRowMin(s, d, ch.type) || nr.y + nr.h - 1 > def.rowMax) return null;
+  if (s.run.hardship === 'shallow_soil' && nr.y + nr.h - 1 > DIG.shallowSoilRow) return null;
+  const soil = [];
+  const open = [];
+  for (const c of G.rectCells(nr.x, nr.y, nr.w, nr.h)) {
+    if (G.inRect(ch, c)) continue;
+    if (cellBlock(s, geo, c, j)) return null;
+    if (G.isOpenCode(s.run.nest.cells[c])) open.push(c);
+    else soil.push(c);
+  }
+  return { rect: nr, soil, open };
+}
+
+/**
+ * Level-up plan (DESIGN §7.4 enlarge with direction).
+ * @returns {Object} { reason, cost, grows, rect, growSoil, growOpen, work, dirs, blocked, max, royalRoom }
+ */
+function planLevel(s, d, ch, dir, { ignoreQueue = false, ignoreCost = false } = {}) {
+  const P = { reason: null, cost: null, grows: false, rect: null, growSoil: [], growOpen: [], work: 0,
+    dirs: { left: false, right: false, up: false, down: false }, blocked: false, max: false, royalRoom: false };
+  const def = CHAMBERS[ch.type];
+  if (!def) return fail(P, 'invalid');
+  const maxL = effMaxL(s, def);
+  P.cost = levelCost(s, ch);
+  P.max = (maxL > 0 && ch.level >= maxL) || !P.cost;
+  P.grows = !!def.grows && ch.level >= 1 && ch.level < GEOM.footprintMaxL && !P.max;
+  let choice = null;
+  let dirReason = null;
+  if (P.grows) {
+    const geo = G.getGeom(s, d);
+    const j = s.run.nest.chambers.indexOf(ch);
+    const fp = G.footprint(ch.type, ch.level + 1);
+    const dw = Math.max(0, fp.w - ch.w);
+    const dh = Math.max(0, fp.h - ch.h);
+    if (dw === 0 && dh === 0) {
+      P.grows = false;
+    } else {
+      const hOpts = dw > 0 ? ['right', 'left'] : [null];
+      const vOpts = dh > 0 ? ['down', 'up'] : [null];
+      const memo = new Map();
+      const combo = (hd, vd) => {
+        const key = hd + '|' + vd;
+        if (!memo.has(key)) memo.set(key, growthCheck(s, d, geo, ch, j, hd, vd, dw, dh));
+        return memo.get(key);
+      };
+      // C66: no growth takes the Royal Chamber's last room to reach the Flight level. Another chamber may not grow
+      // over every free Flight-level Royal footprint; the Royal Chamber itself may only grow inside one it can still
+      // complete. Such directions are withheld (dirs false); asked for explicitly, or when they are the only valid
+      // ones, the level-up is refused with 'blocked:royalRoom'. The guard is relUid 0 here: the growing chamber's
+      // current cells stay an obstacle (its new rectangle contains them), and once the room is gone nothing is refused.
+      const guard = royalGuard(s, d, 0);
+      const safeOf = (c) => !!c && (!guard || (ch.uid === 1 ? guard.keeps(c.rect) : !guard.blocks(c.rect)));
+      if (dw > 0) for (const hd of ['left', 'right']) P.dirs[hd] = vOpts.some((vd) => safeOf(combo(hd, vd)));
+      if (dh > 0) for (const vd of ['up', 'down']) P.dirs[vd] = hOpts.some((hd) => safeOf(combo(hd, vd)));
+      let any = null;
+      let safe = null;
+      for (const hd of hOpts) {
+        for (const vd of vOpts) {
+          const c = combo(hd, vd);
+          if (!c) continue;
+          if (!any) any = c;
+          if (!safe && safeOf(c)) safe = c;
+        }
+      }
+      P.blocked = !safe;
+      P.royalRoom = !!any && !!guard && hOpts.some((hd) => vOpts.some((vd) => combo(hd, vd) && !safeOf(combo(hd, vd))));
+      if (dir === null || dir === undefined) {
+        // Auto direction: the first valid one that leaves the Royal Chamber room to reach the Flight level.
+        choice = safe;
+        if (!choice && any) dirReason = 'blocked:royalRoom';
+      } else if (dir === 'left' || dir === 'right') {
+        if (dw === 0) dirReason = 'invalid:dir';
+        else {
+          for (const vd of vOpts) if (!choice && safeOf(combo(dir, vd))) choice = combo(dir, vd);
+          if (!choice && vOpts.some((vd) => combo(dir, vd))) dirReason = 'blocked:royalRoom';
+        }
+      } else if (dir === 'up' || dir === 'down') {
+        if (dh === 0) dirReason = 'invalid:dir';
+        else {
+          for (const hd of hOpts) if (!choice && safeOf(combo(hd, dir))) choice = combo(hd, dir);
+          if (!choice && hOpts.some((hd) => combo(hd, dir))) dirReason = 'blocked:royalRoom';
+        }
+      } else {
+        dirReason = 'invalid:dir';
+      }
+      if (choice) {
+        P.rect = choice.rect;
+        P.growOpen = choice.open;
+        P.growSoil = orderCells(geo, choice.soil, null);
+        const ctx = G.workCtx(s);
+        for (const c of P.growSoil) P.work += G.workAt(ctx, c, 'grow');
+      }
+    }
+  }
+  if (ch.status !== 'active') return fail(P, 'busy');
+  if (def.levelUnlock && !s.run.unlocked[def.levelUnlock]) return fail(P, 'locked');
+  if (P.max) return fail(P, 'max');
+  if (P.grows) {
+    if (dirReason) return fail(P, dirReason);
+    if (!choice) return fail(P, 'blocked');
+    if (!ignoreQueue && s.run.nest.queue.length + 1 > queueLimit(s)) return fail(P, 'queueFull');
+  }
+  if (!ignoreCost && !canAfford(s, P.cost)) return fail(P, 'cantAfford');
+  return P;
+}
+
+/** Execute a level-up plan: pay; growing types queue a 'grow' job, others level at once. */
+function doLevel(s, d, ch, P, env) {
+  const nest = s.run.nest;
+  if (!spend(s, P.cost)) return false;
+  if (P.grows && P.rect) {
+    ch.x = P.rect.x;
+    ch.y = P.rect.y;
+    ch.w = P.rect.w;
+    ch.h = P.rect.h;
+    for (const c of P.growOpen) nest.cells[c] = CELL.CHAMBER;
+    ch.status = 'growing';
+    ch.target = ch.level + 1;
+    const job = { uid: nest.nextUid++, kind: 'grow', chamber: ch.uid, cells: P.growSoil.slice(), cur: 0, prog: 0,
+      paidFood: P.cost.food > 0 ? P.cost.food : 0, blueprint: false };
+    nest.queue.push(job);
+    nest.rev++;
+    rebuild(s, d);
+    if (!job.cells.length) {
+      finishJob(s, d, job, env);
+      rebuild(s, d);
+    }
+  } else {
+    ch.level += 1;
+    ch.target = ch.level;
+    nest.rev++;
+    rebuild(s, d);
+    emit(env, 'chamberLeveled', { uid: ch.uid, level: ch.level });
+  }
+  return true;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Placement modifiers (ghost tooltip) and queries
+// ------------------------------------------------------------------------------------------------------------------
+
+/** Estimated path cells from the footprint to the nearest seed of a distance array (dist / entDist), −1 unknown. */
+function estPath(geo, distArr, P) {
+  const r = P.rect;
+  let best = -1;
+  const take = (v) => { if (v >= 0 && (best < 0 || v < best)) best = v; };
+  if (P.routeCells && P.routeCells.length) {
+    const first = P.routeCells[0];
+    let d0 = -1;
+    for (const n of G.neighbors4(first)) if (geo.open[n] && distArr[n] >= 0 && (d0 < 0 || distArr[n] < d0)) d0 = distArr[n];
+    if (d0 >= 0) take(d0 + P.routeCells.length + 1);
+  } else {
+    for (const c of G.rectCells(r.x, r.y, r.w, r.h)) if (geo.open[c]) take(distArr[c]);
+    for (const p of G.perimeter(r)) if (geo.open[p] && distArr[p] >= 0) take(distArr[p] + 1);
+  }
+  return best;
+}
+
+/** True when rectangles a and b share a cell. */
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/** True when rectangle `outer` contains rectangle `inner`. */
+function rectContains(outer, inner) {
+  return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
+}
+
+/** Every sum of a subset of `list` (non-negative integers), ascending. */
+function subsetSums(list) {
+  let set = new Set([0]);
+  for (const v of list) {
+    if (!(v > 0)) continue;
+    const next = new Set(set);
+    for (const a of set) next.add(a + v);
+    set = next;
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * Royal Chamber growth room (DESIGN §7.4 and §13.1: Royal L5 is a Flight requirement; ARCHITECTURE §18 C64, C66).
+ * The Flight-level (FLIGHT.royalLevel) footprints the original Royal Chamber (uid 1) can still grow into from `rect`
+ * (default: where it is now): each contains `rect`, is reachable by the remaining growth steps (its left / up offsets
+ * are subset sums of the per-level width / height growth), meets the Royal row rule, the bounds and Shallow Soil, and
+ * holds no permanent obstacle: another chamber (except `relUid`), water, an undiggable cell (stone without
+ * acid_excavation, a locked layer), a shaft cell, or a cell of a queued shaft job. Transient blockers (queued dig cells,
+ * pending backfill) do not count: they clear by themselves.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived|null} d
+ * @param {{ relUid?: number, rect?: Object|null, level?: number }} [opts] rect / level: a hypothetical Royal Chamber
+ *   (its own growth step, or a relocation preview with relUid 1)
+ * @returns {null | { free: Array<{ x: number, y: number, w: number, h: number }> }} null = no guard (no original Royal
+ *   Chamber below the Flight level, or nothing left to grow)
+ */
+function royalRoom(s, d, { relUid = 0, rect = null, level = 0 } = {}) {
+  const chs = s.run.nest.chambers;
+  const royal = chs.find((c) => c && c.uid === 1 && c.type === 'royal_chamber');
+  const target = num(FLIGHT.royalLevel) || 5;
+  if (!royal || num(royal.level) >= target) return null;
+  if (relUid === 1 && !rect) return null;
+  const R0 = rect || royal;
+  // A growing Royal Chamber already has its next footprint: count the steps from that level.
+  const Lc = Math.max(1, Math.floor(level || Math.max(num(royal.level), num(royal.target))));
+  const dws = [];
+  const dhs = [];
+  let W = R0.w;
+  let H = R0.h;
+  for (let L = Lc + 1; L <= target; L++) {
+    const fp = G.footprint('royal_chamber', L);
+    const dw = Math.max(0, fp.w - W);
+    const dh = Math.max(0, fp.h - H);
+    dws.push(dw);
+    dhs.push(dh);
+    W += dw;
+    H += dh;
+  }
+  if (W === R0.w && H === R0.h) return null;
+  const def = CHAMBERS.royal_chamber;
+  const rowMin = effRowMin(s, d, 'royal_chamber');
+  const geo = G.getGeom(s, d);
+  const cells = s.run.nest.cells;
+  // Queued shafts: their column becomes shaft once open (a connector or connecting route stays plain tunnel).
+  const shaftJob = new Uint8Array(N);
+  for (const job of s.run.nest.queue) {
+    if (!job || job.kind !== 'shaft' || !Array.isArray(job.cells)) continue;
+    const top = job.cells.find((c) => isCell(c) && c < COLS);
+    if (top === undefined) continue;
+    for (const c of job.cells) if (isCell(c) && c % COLS === top) shaftJob[c] = 1;
+  }
+  const permanent = (c) => {
+    const j = geo.chamberAt[c];
+    if (j >= 0) {
+      const o = chs[j];
+      if (o && o.uid !== 1 && o.uid !== relUid) return true;
+    }
+    if (geo._shaft[c] || shaftJob[c]) return true;
+    const code = cells[c];
+    if (code === CELL.WATER) return true;
+    return (code === CELL.SOIL || code === CELL.STONE) && !G.isDiggable(s, c);
+  };
+  const free = [];
+  for (const oy of subsetSums(dhs)) {
+    for (const ox of subsetSums(dws)) {
+      const R = { x: R0.x - ox, y: R0.y - oy, w: W, h: H };
+      if (R.x < 0 || R.y < 0 || R.x + W > COLS || R.y + H > ROWS) continue;
+      if (R.y < rowMin || R.y + H - 1 > def.rowMax) continue;
+      if (s.run.hardship === 'shallow_soil' && R.y + H - 1 > DIG.shallowSoilRow) continue;
+      let ok = true;
+      for (const c of G.rectCells(R.x, R.y, W, H)) {
+        if (G.inRect(R0, c)) continue;
+        if (permanent(c)) { ok = false; break; }
+      }
+      if (ok) free.push(R);
+    }
+  }
+  return { free };
+}
+
+/**
+ * Guard built on royalRoom (null when it does not apply or the room is already gone, so a box-in that already
+ * happened never blocks anything else).
+ *   blocks(rect, cells?) — a footprint `rect` (and permanent extra cells such as a new shaft) takes the last room;
+ *   keeps(rect)          — the Royal Chamber's own growth to `rect` still leaves it a way to the Flight level.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived|null} d
+ * @param {number} [relUid=0] chamber being relocated (its current cells are not an obstacle)
+ * @returns {null | { blocks: Function, keeps: Function }}
+ */
+function royalGuard(s, d, relUid = 0) {
+  const room = royalRoom(s, d, { relUid });
+  if (!room || !room.free.length) return null;
+  const free = room.free;
+  const royal = s.run.nest.chambers.find((c) => c && c.uid === 1);
+  const Lc = Math.max(num(royal.level), num(royal.target));
+  return {
+    blocks(rect, cells = null) {
+      return free.every((R) => (!!rect && rectsOverlap(R, rect)) || (!!cells && cells.some((c) => isCell(c) && G.inRect(R, c))));
+    },
+    keeps(rect) {
+      if (!free.some((R) => rectContains(R, rect))) return false;
+      const next = royalRoom(s, d, { rect, level: Lc + 1 });
+      return !next || next.free.length > 0;
+    },
+  };
+}
+
+/**
+ * [q] True when a footprint at `rect` (plus permanent extra `cells`, e.g. a Nuptial exit shaft) would take away the
+ * original Royal Chamber's last room to reach the Flight level (FLIGHT.royalLevel; see royalRoom). Placement and
+ * relocation only warn (ghost modifier royalRoom, DESIGN §7.4); growth and new shafts are refused (C66).
+ * @param {import('../core/types.js').State} s
+ * @param {{ x: number, y: number, w: number, h: number }|null} rect
+ * @param {number} [relUid=0] chamber being relocated (0 = none)
+ * @param {{ d?: Object|null, cells?: number[]|null }} [opts]
+ * @returns {boolean}
+ */
+export function blocksRoyalGrowth(s, rect, relUid = 0, { d = null, cells = null } = {}) {
+  const g = royalGuard(s, d, relUid);
+  return !!g && g.blocks(rect, cells);
+}
+
+/** Ghost modifiers (DESIGN §7.4 tooltip): layer, adjacency, hygiene, frostExposed, floodZone, raidReach, haul, royalRoom. */
+function placementMods(s, d, type, P, relUid) {
+  const mods = [];
+  const def = CHAMBERS[type];
+  const r = P.rect;
+  if (!def || !r || !isInt(r.x) || !isInt(r.y) || r.x < 0 || r.y < 0 || r.x + r.w > COLS || r.y + r.h > ROWS) return mods;
+  const geo = G.getGeom(s, d);
+  const layer = P.layer || G.rectLayer(r);
+  const fx = def.fx;
+  const sid = (d && d.season && d.season.id) || 'spring';
+  let lm = layer === 'aquifer' ? CHAMBER_RULES.aquiferMult : 1;
+  if (type === 'gallery' && layer === 'loam') lm *= fx.loam;
+  else if (type === 'granary') lm *= fx.layer[layer] || 1;
+  else if (type === 'scent_library' && G.layerIndex(layer) >= G.layerIndex(def.deepFrom)) lm *= fx.deep;
+  else if (type === 'fungus_garden' && layer === 'clay') lm *= fx.clay;
+  else if (type === 'nursery') lm *= 1 + nurseryMicro(s, layer, sid);
+  if (Math.abs(lm - 1) > 1e-12) mods.push({ key: 'layer', value: lm });
+
+  const ghost = G.rectCells(r.x, r.y, r.w, r.h);
+  const chs = s.run.nest.chambers;
+  const f4 = G.gapField(geo, ghost, GEOM.adjPathMax);
+  const nearType = (types, field, needActive = true) => chs.some((ch) => ch.uid !== relUid && types.includes(ch.type)
+    && (!needActive || contributes(ch)) && G.rectNear(field, ch));
+  if (type === 'nursery' && nearType(['royal_chamber'], f4)) mods.push({ key: 'adjacency', value: 1 + fx.royalAdj });
+  if (type === 'scent_library' && nearType(['royal_chamber'], f4)) mods.push({ key: 'adjacency', value: fx.royalAdj });
+  if (type === 'granary' && nearType(['repletion_hall'], f4)) mods.push({ key: 'adjacency', value: num(CAPS.repleteAdj) || 1 });
+  if (type === 'repletion_hall' && nearType(['granary'], f4)) mods.push({ key: 'adjacency', value: num(CAPS.repleteAdj) || 1 });
+  if (type === 'fungus_garden' && nearType(['water_well'], f4)) mods.push({ key: 'adjacency', value: fx.wellAdj });
+  if (type === 'water_well' && nearType(['fungus_garden'], f4)) mods.push({ key: 'adjacency', value: fx.gardenAdj });
+  if (type === 'barracks') {
+    const e = estPath(geo, geo.entDist, P);
+    if (e >= 0 && e <= GEOM.barracksPath) mods.push({ key: 'adjacency', value: fx.homeAP });
+  }
+  if (type === 'nursery' || type === 'fungus_garden' || type === 'midden') {
+    const f6 = G.gapField(geo, ghost, GEOM.hygienePath);
+    const hit = type === 'midden' ? nearType(['nursery', 'fungus_garden'], f6, false) : nearType(['midden'], f6);
+    if (hit) mods.push({ key: 'hygiene', value: CHAMBERS.midden.fx.hygiene });
+  }
+  if (relUid === 1) {
+    // Relocating the Royal Chamber itself: warn when the new spot has no way to the Flight level but the old one had.
+    const now = royalRoom(s, d);
+    const there = royalRoom(s, d, { relUid: 1, rect: r });
+    if (now && now.free.length && there && !there.free.length) mods.push({ key: 'royalRoom', value: true });
+  } else if (blocksRoyalGrowth(s, r, relUid, { d, cells: P.shaft ? shaftCells(r, P.shaft.col) : null })) {
+    mods.push({ key: 'royalRoom', value: true });
+  }
+  if (!def.frostImmune && G.exposedTo(r, hardFrostRow(s, d))) mods.push({ key: 'frostExposed', value: CHAMBER_RULES.frostMult });
+  if (r.y <= DIG.floodRows[1] && r.y + r.h - 1 >= DIG.floodRows[0]) mods.push({ key: 'floodZone', value: true });
+  if (type === 'granary' || type === 'nursery') {
+    const e = estPath(geo, geo.entDist, P);
+    if (e >= 0 && e <= GEOM.raidReach) mods.push({ key: 'raidReach', value: e });
+  }
+  if (type === 'granary') {
+    const dist = estPath(geo, geo.dist, P);
+    if (dist >= 0) {
+      const t = haulTerms(s, d, geo);
+      const vent = G.hasResearch(s, 'ventilation_shafts') ? (G.fxNum('research', 'ventilation_shafts', 'chamber') || 1) : 1;
+      const cap = fx.cap * (fx.layer[layer] || 1) * vent * (layer === 'aquifer' ? CHAMBER_RULES.aquiferMult : 1)
+        * (G.hasAch(s, 'ach_seed_bank') ? CHAMBER_RULES.seedBankMult : 1);
+      mods.push({ key: 'haul', value: (t.num + cap * dist) / (t.den + cap) / GEOM.haulDiv });
+    }
+  }
+  return mods;
+}
+
+/** Current haul numerator / denominator (Royal storage + contributing granaries with a known path). */
+function haulTerms(s, d, geo) {
+  const chs = s.run.nest.chambers;
+  const fresh = d && d.nest === geo && Array.isArray(geo.chambers) && geo.chambers.length === chs.length;
+  let n = 0;
+  let den = 0;
+  const royalFx = CHAMBERS.royal_chamber.fx;
+  let royalDone = false;
+  for (let j = 0; j < chs.length; j++) {
+    const ch = chs[j];
+    const minDist = fresh ? geo.chambers[j].minDist : minOver(geo.dist, ch);
+    if (minDist < 0) continue;
+    if (ch.type === 'royal_chamber' && !royalDone && (ch.uid === 1 || !chs.some((c) => c.uid === 1))) {
+      n += royalFx.storage * minDist;
+      den += royalFx.storage;
+      royalDone = true;
+    } else if (ch.type === 'granary' && contributes(ch)) {
+      const fx = CHAMBERS.granary.fx;
+      const layer = fresh ? geo.chambers[j].layer : G.rectLayer(ch);
+      const eff = fresh ? geo.chambers[j].eff : 1;
+      const cap = fx.cap * fx.capGrowth ** (ch.level - 1) * (fx.layer[layer] || 1) * eff
+        * (G.hasAch(s, 'ach_seed_bank') ? CHAMBER_RULES.seedBankMult : 1);
+      n += cap * minDist;
+      den += cap;
+    }
+  }
+  return { num: n, den };
+}
+
+function minOver(arr, r) {
+  let m = -1;
+  for (const c of G.rectCells(r.x, r.y, r.w, r.h)) if (arr[c] >= 0 && (m < 0 || arr[c] < m)) m = arr[c];
+  return m;
+}
+
+/**
+ * [q] Placement check for the Build ghost and the placeChamber / relocateChamber handlers (DESIGN §7.4).
+ * PlacementResult = { ok, tint: 'green'|'amber'|'red', reason, route, work, eta, cost, mods: [{ key, value }] }.
+ * route = the tunnel cells that will be dug to connect the footprint (auto-route or the given route), null if direct.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} type chamber id
+ * @param {number} x footprint left column
+ * @param {number} y footprint top row
+ * @param {{ route?: number[]|null, relocateUid?: number, shaftCol?: number|null }} [opts]
+ * @returns {Object} PlacementResult
+ */
+export function validatePlacement(s, d, type, x, y, { route = null, relocateUid = 0, shaftCol = null } = {}) {
+  const P = planPlacement(s, d, type, x, y, { route, relocateUid, shaftCol });
+  const mods = P.rect ? placementMods(s, d, type, P, relocateUid || 0) : [];
+  const penalty = mods.some((m) => m.key === 'hygiene' || m.key === 'frostExposed' || m.key === 'floodZone' || m.key === 'raidReach'
+    || m.key === 'royalRoom');
+  const W = Math.max(0, num(d && d.stats && d.stats.digW));
+  const ahead = totalQueueWork(s);
+  return {
+    ok: !P.reason,
+    tint: P.reason ? 'red' : penalty ? 'amber' : 'green',
+    reason: P.reason,
+    route: P.routeCells && P.routeCells.length ? P.routeCells.slice() : null,
+    work: P.work,
+    eta: W > 0 ? (ahead + P.work) / W : -1,
+    cost: P.cost,
+    mods,
+  };
+}
+
+/**
+ * [q] Food (+ extras) to place the next instance of a chamber type: place.food × placeGrowth^k (listed extras flat),
+ * × chamberCost with edict_of_depth (DESIGN §7.5). null = MAX (or unknown type).
+ * ARCH-R: DESIGN writes "F_place × 2.5^k (+ listed extras)", read as extras not scaling with k.
+ * @param {import('../core/types.js').State} s
+ * @param {string} type
+ * @returns {import('../core/types.js').Cost|null}
+ */
+export function placementCost(s, type) {
+  const def = CHAMBERS[type];
+  if (!def) return null;
+  const k = countType(s, type);
+  const cost = {};
+  for (const r of Object.keys(def.place)) cost[r] = def.place[r] * (r === 'food' ? def.placeGrowth ** k : 1);
+  const m = edictCostMult(s);
+  if (m !== 1) for (const r of Object.keys(cost)) cost[r] *= m;
+  return costOrNull(cost);
+}
+
+/**
+ * [q] Level-up info for the inspect panel: next-level cost (null = MAX), whether it grows the footprint, valid growth
+ * directions, growth-cell work (auto direction), blocked (grows but every direction blocked), max, and royalRoom
+ * (extra, C66): some otherwise valid direction is withheld because it would take the Royal Chamber's last room to
+ * reach the Flight level (with blocked, that is the only reason left: level the Royal Chamber to L5 first, or relocate).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} uid
+ * @returns {{ cost: Object|null, grows: boolean, dirs: { left: boolean, right: boolean, up: boolean, down: boolean },
+ *   work: number, blocked: boolean, max: boolean, royalRoom: boolean }}
+ */
+export function levelInfo(s, d, uid) {
+  const f = findChamber(s, uid);
+  if (!f) {
+    return { cost: null, grows: false, dirs: { left: false, right: false, up: false, down: false }, work: 0, blocked: true, max: true,
+      royalRoom: false };
+  }
+  const P = planLevel(s, d, f.ch, null, { ignoreQueue: true, ignoreCost: true });
+  return { cost: P.cost, grows: P.grows, dirs: { ...P.dirs }, work: P.work, blocked: P.grows && P.blocked, max: P.max,
+    royalRoom: P.grows && !P.max && P.royalRoom };
+}
+
+/**
+ * [q] Advisor / bot: the best valid spot for a chamber type (adjacency bonuses first; granaries and nurseries deep,
+ * below the hard-winter frost line, from minute 15; shallow granaries before that). Ignores affordability and the
+ * queue limit; null when the type is locked, at its instance limit, or nothing fits.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} type
+ * @returns {{ x: number, y: number } | null}
+ */
+export function findPlacement(s, d, type) {
+  const def = CHAMBERS[type];
+  if (!def) return null;
+  if (def.unlock && !s.run.unlocked[def.unlock]) return null;
+  if (countType(s, type) >= instLimit(s, d, type)) return null;
+  const geo = G.getGeom(s, d);
+  const fp = G.footprint(type, 1);
+  const cells = s.run.nest.cells;
+  const field = G.digField(s, geo).cost;
+  const ctx = G.workCtx(s);
+  const chs = s.run.nest.chambers;
+  const late = s.run.time >= ADVISOR.deepAfterSec;
+  const frostRow = hardFrostRow(s, d);
+  const partnerField = (types, gap, needActive = true) => {
+    const src = [];
+    for (const ch of chs) if (types.includes(ch.type) && (!needActive || contributes(ch))) src.push(...G.rectCells(ch.x, ch.y, ch.w, ch.h));
+    return src.length ? G.gapField(geo, src, gap) : null;
+  };
+  const goodTypes = { nursery: ['royal_chamber'], scent_library: ['royal_chamber'], granary: ['repletion_hall'],
+    repletion_hall: ['granary'], fungus_garden: ['water_well'], water_well: ['fungus_garden'] }[type];
+  const good = goodTypes ? partnerField(goodTypes, GEOM.adjPathMax) : null;
+  const hyg = type === 'nursery' || type === 'fungus_garden' ? partnerField(['midden'], GEOM.hygienePath)
+    : type === 'midden' ? partnerField(['nursery', 'fungus_garden'], GEOM.hygienePath, false) : null;
+  const BIG = 1e7;
+  // Growth room (integration fix; DESIGN §7.4 footprints grow to L8): the advisor keeps one free L8 growth envelope
+  // per existing growing chamber (the Royal Chamber's centred one first: Royal L5 is a Flight requirement) and prefers
+  // spots whose own L8 envelope fits, so following its suggestions never boxes chambers in. Adjacency partners still
+  // win (their bonus is far larger); both are soft penalties used only when an alternative exists.
+  const overlaps = (a, x, y, w, h) => !(x + w - 1 < a.x || x > a.x + a.w - 1 || y + h - 1 < a.y || y > a.y + a.h - 1);
+  const envFree = (x0, y0, w, h, relIdx, t, avoid) => {
+    if (x0 < 0 || y0 < effRowMin(s, d, t) || x0 + w > COLS || y0 + h > ROWS || y0 + h - 1 > CHAMBERS[t].rowMax) return false;
+    if (avoid && avoid.some((r) => overlaps(r, x0, y0, w, h))) return false;
+    for (let yy = y0; yy < y0 + h; yy++) for (let xx = x0; xx < x0 + w; xx++) if (cellBlock(s, geo, yy * COLS + xx, relIdx)) return false;
+    return true;
+  };
+  const envelopes = (t, rx, ry, rw, rh, centred) => {
+    const fm = G.footprint(t, GEOM.footprintMaxL);
+    if (!CHAMBERS[t].grows || (fm.w <= rw && fm.h <= rh)) return null;
+    const W = Math.max(fm.w, rw);
+    const H = Math.max(fm.h, rh);
+    const list = [[rx, ry], [rx + rw - W, ry], [rx, ry + rh - H], [rx + rw - W, ry + rh - H]];
+    if (centred) list.unshift([rx - Math.floor((W - rw) / 2), ry]);
+    return list.map(([x0, y0]) => ({ x: x0, y: y0, w: W, h: H }));
+  };
+  const reserve = [];
+  chs.forEach((ch, j) => {
+    if (!ch || !CHAMBERS[ch.type] || ch.level >= GEOM.footprintMaxL) return;
+    const envs = envelopes(ch.type, ch.x, ch.y, ch.w, ch.h, ch.type === 'royal_chamber');
+    const free = envs && envs.find((e) => envFree(e.x, e.y, e.w, e.h, j, ch.type, reserve));
+    if (free) reserve.push(free);
+  });
+  const inReserve = (x, y, w, h) => reserve.some((r) => overlaps(r, x, y, w, h));
+  // Browser integration: a spot that takes the Royal Chamber's last room to reach the Flight level ranks below every
+  // other spot, adjacency partners included (the ghost warns a player with royalRoom for the same spots).
+  const royalG = royalGuard(s, d, 0);
+  const boxesRoyal = (rect) => !!royalG && royalG.blocks(rect);
+  const selfRoom = (x, y) => {
+    const envs = envelopes(type, x, y, fp.w, fp.h, false);
+    return !envs || envs.some((e) => envFree(e.x, e.y, e.w, e.h, -1, type, reserve));
+  };
+  const cands = [];
+  const rowMin = effRowMin(s, d, type);
+  for (let y = rowMin; y + fp.h - 1 <= def.rowMax && y + fp.h <= ROWS; y++) {
+    if (s.run.hardship === 'shallow_soil' && y + fp.h - 1 > DIG.shallowSoilRow) break;
+    for (let x = 0; x + fp.w <= COLS; x++) {
+      const rect = { x, y, w: fp.w, h: fp.h };
+      const rc = G.rectCells(x, y, fp.w, fp.h);
+      let bad = false;
+      let footWork = 0;
+      let direct = false;
+      for (const c of rc) {
+        if (cellBlock(s, geo, c, -1)) { bad = true; break; }
+        if (G.isOpenCode(cells[c])) { if (geo.entDist[c] >= 0) direct = true; } else footWork += G.workAt(ctx, c, 'chamber');
+      }
+      if (bad || ruleCheck(s, geo, def, rect, 0)) continue;
+      let connect = Infinity;
+      for (const p of G.perimeter(rect)) {
+        if (geo.open[p] && geo.entDist[p] >= 0 && !geo._backfill[p]) { direct = true; break; }
+        if (Number.isFinite(field[p]) && field[p] < connect) connect = field[p];
+      }
+      if (direct) connect = 0;
+      if (!Number.isFinite(connect)) continue;
+      let score = connect + footWork;
+      if (good && G.rectNear(good, rect)) score -= BIG;
+      if (hyg && G.rectNear(hyg, rect)) score += BIG;
+      const exposed = !def.frostImmune && G.exposedTo(rect, frostRow);
+      if (type === 'granary' || type === 'nursery') {
+        if (late) {
+          if (exposed) score += BIG / 2;
+          score -= y * 5;
+        } else if (type === 'granary') {
+          score += y * 50;
+        }
+      } else if (exposed) {
+        score += BIG / 10;
+      }
+      if (y <= DIG.floodRows[1]) score += BIG / 20;
+      if (inReserve(x, y, fp.w, fp.h)) score += BIG / 15;
+      if (boxesRoyal(rect)) score += 3 * BIG;
+      cands.push({ x, y, score });
+    }
+  }
+  // The self-room check is the costly part: run it only on the best-scored candidates.
+  cands.sort((a, b) => a.score - b.score || a.y - b.y || a.x - b.x);
+  for (let k = 0; k < cands.length && k < 400; k++) if (!selfRoom(cands[k].x, cands[k].y)) cands[k].score += BIG / 15;
+  cands.sort((a, b) => a.score - b.score || a.y - b.y || a.x - b.x);
+  for (let k = 0; k < cands.length && k < 40; k++) {
+    const c = cands[k];
+    const P = planPlacement(s, d, type, c.x, c.y, { ignoreQueue: true, ignoreCost: true });
+    if (!P.reason) return { x: c.x, y: c.y };
+  }
+  return null;
+}
+
+/**
+ * [q] Chamber whose footprint covers cell i (including chambers still being dug), or null.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} i
+ * @returns {import('../core/types.js').Chamber|null}
+ */
+export function chamberAtCell(s, d, i) {
+  if (!isCell(i)) return null;
+  const geo = G.getGeom(s, d);
+  const j = geo.chamberAt[i];
+  return j >= 0 ? s.run.nest.chambers[j] || null : null;
+}
+
+/**
+ * [q] Cell tooltip data: layer id, cell code, tunnel work, visible cache-hint kind (null unless shown as a hint),
+ * water (a revealed pocket cell), root (on a root line).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} i
+ * @returns {{ layer: string, code: number, work: number, cache: string|null, water: boolean, root: boolean }}
+ */
+export function cellInfo(s, d, i) {
+  if (!isCell(i)) return { layer: G.layerOf(0), code: CELL.SOIL, work: 0, cache: null, water: false, root: false };
+  const geo = G.getGeom(s, d);
+  const y = Math.floor(i / COLS);
+  const hints = geo === (d && d.nest) && Array.isArray(geo.hints) ? geo.hints : computeHints(s, geo);
+  let cache = null;
+  if (hints.includes(i)) {
+    const c = (s.run.nest.features.caches || []).find((k) => k && k.i === i && !k.found);
+    cache = c ? c.kind : null;
+  }
+  const p = geo._pocket[i];
+  const water = p >= 0 && !!(s.run.nest.features.water[p] && s.run.nest.features.water[p].revealed);
+  return { layer: G.layerOf(y), code: s.run.nest.cells[i], work: G.cellWork(s, i, 'tunnel'), cache, water, root: geo._root[i] === 1 };
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Cross-callable mutators [x]
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * [x] WP7: queue a 'shaft' job from row 0 down column `col` to the first open cell (a tunnel route joins the nest if
+ * the column meets no open cell), and record the shaft ({ kind, col, open: false, ref }; opened when dug). Bypasses
+ * the queue limit. Returns the job uid, or 0 if no shaft can be dug there.
+ * ARCH-R: the shaft record is pushed with open: false when queued (the contract pushes nuptial shafts on completion);
+ * it lets the ≥ 3-column rule and the renderer see pending shafts. entDist only uses open shafts.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} col
+ * @param {string} kind 'satellite' (or 'nuptial')
+ * @param {number} ref satellite index or −1
+ * @returns {number}
+ */
+export function queueShaft(s, d, col, kind, ref) {
+  if (!isInt(col) || col < 0 || col >= COLS) return 0;
+  const nest = s.run.nest;
+  const list = planShaftCells(s, ensureGeom(s, d), col);
+  if (!list) return 0;
+  nest.shafts.push({ kind: typeof kind === 'string' && kind ? kind : 'satellite', col, open: false, ref: isInt(ref) ? ref : -1 });
+  const job = { uid: nest.nextUid++, kind: 'shaft', chamber: 0, cells: list, cur: 0, prog: 0, paidFood: 0, blueprint: false };
+  nest.queue.push(job);
+  nest.rev++;
+  rebuild(s, d);
+  return job.uid;
+}
+
+/**
+ * [q] Extra (C66): true when a satellite shaft at column col (as queueShaft would dig it) would take the original Royal
+ * Chamber's last room to reach the Flight level; placeSatellite refuses such a column with 'blocked:royalRoom'.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} col
+ * @returns {boolean}
+ */
+export function shaftBoxesRoyal(s, d, col) {
+  if (!isInt(col) || col < 0 || col >= COLS) return false;
+  const guard = royalGuard(s, d, 0);
+  if (!guard) return false;
+  const list = planShaftCells(s, G.getGeom(s, d), col);
+  if (!list) return false;
+  // Only the column becomes shaft (the connecting route, if any, stays tunnel).
+  return guard.blocks(null, list.filter((c) => c % COLS === col));
+}
+
+/** Cells of a shaft dug from row 0 at column col down to the open nest (null when it cannot be dug). */
+function planShaftCells(s, geo, col) {
+  const nest = s.run.nest;
+  const cells = nest.cells;
+  const top = G.idx(col, 0);
+  if (cells[top] !== CELL.SOIL || geo.chamberAt[top] >= 0 || geo._backfill[top] || !G.isDiggable(s, top)) return null;
+  const list = [];
+  let connected = false;
+  const reach = (c) => geo.open[c] && geo.entDist[c] >= 0;
+  for (let y = 0; y < ROWS; y++) {
+    const c = G.idx(col, y);
+    if (geo.open[c]) {
+      if (reach(c)) { connected = true; break; }
+      continue;
+    }
+    if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || geo._backfill[c] || !G.isDiggable(s, c)) break;
+    list.push(c);
+    if ((col > 0 && reach(c - 1)) || (col < COLS - 1 && reach(c + 1))) { connected = true; break; }
+    if (y >= nest.deepestRow) break;
+  }
+  if (!list.length) return null;
+  if (!connected) {
+    const bottom = list[list.length - 1];
+    const blocked = new Uint8Array(N);
+    for (const c of list) blocked[c] = 1;
+    const isGoal = (i) => !blocked[i] && G.neighbors4(i).includes(bottom);
+    const { prev, goal } = G.digField(s, geo, { isGoal, blocked });
+    if (goal < 0) return null;
+    const path = G.pathCells(s, prev, goal);
+    for (let k = path.length - 1; k >= 0; k--) list.push(path[k]);
+  }
+  return list;
+}
+
+/**
+ * [x] WP7 at run start: queue the active blueprint (era.blueprints[activeBlueprint]). Tunnels and chambers are queued
+ * in BFS order from the open nest (a chamber's job follows the tunnels that reach it), bypassing the queue limit;
+ * blueprint jobs dig ×3 (×5 with blueprint_memory) and chambers cost 50 % placement food, paid now.
+ * ARCH-R: chambers that are locked, invalid on this run's soil, or unaffordable at queue time are skipped (and the
+ * tunnels behind them stay unreached); chambers are placed at their L1 footprint at the saved top-left corner.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {number} jobs queued
+ */
+export function applyBlueprint(s, d) {
+  const era = s.era;
+  const bi = era.activeBlueprint;
+  if (!isInt(bi) || bi < 0 || !Array.isArray(era.blueprints) || !era.blueprints[bi]) return 0;
+  const bp = era.blueprints[bi];
+  const nest = s.run.nest;
+  let geo = ensureGeom(s, d);
+  const tunnel = new Uint8Array(N);
+  for (const c of Array.isArray(bp.tunnels) ? bp.tunnels : []) {
+    if (isCell(c) && nest.cells[c] === CELL.SOIL && geo.chamberAt[c] < 0 && G.isDiggable(s, c)) tunnel[c] = 1;
+  }
+  const specs = [];
+  const specAt = new Int16Array(N).fill(-1);
+  for (const sp of Array.isArray(bp.chambers) ? bp.chambers : []) {
+    if (!sp || !CHAMBERS[sp.type] || !isInt(sp.x) || !isInt(sp.y)) continue;
+    const fp = G.footprint(sp.type, 1);
+    if (sp.x < 0 || sp.y < 0 || sp.x + fp.w > COLS || sp.y + fp.h > ROWS) continue;
+    const rc = G.rectCells(sp.x, sp.y, fp.w, fp.h);
+    if (rc.some((c) => specAt[c] >= 0)) continue;
+    const k = specs.length;
+    for (const c of rc) { specAt[c] = k; tunnel[c] = 0; }
+    specs.push({ type: sp.type, x: sp.x, y: sp.y, cells: rc, state: 0 });
+  }
+  const visited = new Uint8Array(N);
+  const q = [];
+  for (let i = 0; i < N; i++) if (geo.open[i] && geo.entDist[i] >= 0) { visited[i] = 1; q.push(i); }
+  let group = [];
+  let jobs = 0;
+  const flush = () => {
+    if (!group.length) return;
+    nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: group, cur: 0, prog: 0, paidFood: 0, blueprint: true });
+    nest.rev++;
+    jobs++;
+    group = [];
+    geo = ensureGeom(s, d);
+  };
+  let head = 0;
+  while (head < q.length) {
+    const c = q[head++];
+    for (const n of G.neighbors4(c)) {
+      if (visited[n]) continue;
+      if (tunnel[n]) {
+        visited[n] = 1;
+        group.push(n);
+        q.push(n);
+      } else if (specAt[n] >= 0 && specs[specAt[n]].state === 0) {
+        const sp = specs[specAt[n]];
+        flush();
+        const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, assumeConnected: true, seedCells: [c] });
+        // C66: a blueprint never boxes the queen in (a saved layout may have been boxed in before Royal L5).
+        const boxes = !P.reason && blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null });
+        if (!P.reason && !boxes && executePlacement(s, d, sp.type, P, null, true)) {
+          sp.state = 1;
+          jobs += P.shaft ? 2 : 1;
+          geo = ensureGeom(s, d);
+          for (const k of sp.cells) if (!visited[k]) { visited[k] = 1; q.push(k); }
+        } else {
+          sp.state = 2;
+          for (const k of sp.cells) visited[k] = 1;
+        }
+      } else if (geo.open[n] && !geo._backfill[n]) {
+        visited[n] = 1;
+        q.push(n);
+      }
+    }
+  }
+  flush();
+  if (jobs) rebuild(s, d);
+  return jobs;
+}
+
+/**
+ * [x] WP7 autobuyer: level the cheapest affordable chamber (food, then soil, then uid) in the auto direction.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {import('../core/types.js').Env} env
+ * @returns {boolean} true if a level-up was bought
+ */
+export function autoLevelStep(s, d, env) {
+  ensureGeom(s, d);
+  let best = null;
+  for (const ch of s.run.nest.chambers) {
+    if (ch.status !== 'active') continue;
+    // Perf (F24): an unaffordable level fails planLevel with 'cantAfford' only after its growth geometry; check the cost first.
+    const c0 = levelCost(s, ch);
+    if (!c0 || !canAfford(s, c0)) continue;
+    const P = planLevel(s, d, ch, null);
+    if (P.reason) continue;
+    const f = num(P.cost.food);
+    const so = num(P.cost.soil);
+    if (!best || f < best.f || (f === best.f && (so < best.so || (so === best.so && ch.uid < best.ch.uid)))) best = { ch, P, f, so };
+  }
+  if (!best) return false;
+  return doLevel(s, d, best.ch, best.P, env);
+}
+
+/**
+ * [x] WP6 ev_mole_tunnel: a diagonal (staircase) run of 6–12 SOIL or TUNNEL cells, never chamber, stone, water or
+ * cache cells, rows 1–60, chosen with the main RNG (s as holder); SOIL cells become TUNNEL (free: no work, no soil),
+ * rev++, cellDug per changed cell; the nearest unfound cache not yet visible (else the nearest unfound) gets
+ * hinted = true. Returns { cells, hint } (hint = that cache's cell index or −1).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {import('../core/types.js').Env} env
+ * @returns {{ cells: number[], hint: number }}
+ */
+export function moleTunnel(s, d, env) {
+  const nest = s.run.nest;
+  const geo = ensureGeom(s, d);
+  const cellsArr = nest.cells;
+  const cacheCell = new Uint8Array(N);
+  for (const c of nest.features.caches || []) if (c && !c.found && isCell(c.i)) cacheCell[c.i] = 1;
+  let path = null;
+  for (let t = 0; t < MOLE.attempts && !path; t++) {
+    const len = randInt(s, MOLE.lenMin, MOLE.lenMax);
+    const dx = randInt(s, 0, 1) ? 1 : -1;
+    const dy = randInt(s, 0, 1) ? 1 : -1;
+    let x = randInt(s, 0, COLS - 1);
+    let y = randInt(s, MOLE.rowMin, MOLE.rowMax);
+    const cand = [];
+    let ok = true;
+    for (let k = 0; k < len; k++) {
+      if (x < 0 || x >= COLS || y < MOLE.rowMin || y > MOLE.rowMax) { ok = false; break; }
+      const c = G.idx(x, y);
+      const code = cellsArr[c];
+      if ((code !== CELL.SOIL && code !== CELL.TUNNEL) || geo.chamberAt[c] >= 0 || cacheCell[c] || geo._backfill[c]) { ok = false; break; }
+      cand.push(c);
+      if (k % 2 === 0) x += dx;
+      else y += dy;
+    }
+    if (ok && cand.length === len) path = cand;
+  }
+  const out = path || [];
+  let changed = 0;
+  for (const c of out) {
+    if (cellsArr[c] === CELL.SOIL) {
+      cellsArr[c] = CELL.TUNNEL;
+      changed++;
+      if (!(env && env.offline)) emit(env, 'cellDug', { i: c });
+    }
+  }
+  if (changed) {
+    nest.rev++;
+    rebuild(s, d);
+  }
+  // Hint the nearest unfound cache (Chebyshev distance to the tunnel; to the main shaft top if no tunnel was dug).
+  const ref = out.length ? out : [G.idx(GRID.mainCol, 0)];
+  const visible = new Set(computeHints(s, d.nest));
+  let best = null;
+  for (const pass of [0, 1]) {
+    for (const c of nest.features.caches || []) {
+      if (!c || c.found || !isCell(c.i)) continue;
+      if (pass === 0 && (c.hinted || visible.has(c.i))) continue;
+      const cx = c.i % COLS;
+      const cy = Math.floor(c.i / COLS);
+      let dist = Infinity;
+      for (const r of ref) dist = Math.min(dist, Math.max(Math.abs((r % COLS) - cx), Math.abs(Math.floor(r / COLS) - cy)));
+      if (!best || dist < best.dist || (dist === best.dist && c.i < best.c.i)) best = { c, dist };
+    }
+    if (best) break;
+  }
+  if (best) {
+    best.c.hinted = true;
+    nest.rev++;
+    rebuild(s, d);
+  }
+  return { cells: out.slice(), hint: best ? best.c.i : -1 };
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Command plans shared by validate / apply
+// ------------------------------------------------------------------------------------------------------------------
+
+function planTunnel(s, d, list) {
+  if (!Array.isArray(list) || list.length === 0 || list.length > N) return { reason: 'invalid' };
+  const geo = G.getGeom(s, d);
+  const cells = s.run.nest.cells;
+  const seen = new Set();
+  const soil = [];
+  for (let k = 0; k < list.length; k++) {
+    const c = list[k];
+    if (!isCell(c)) return { reason: 'invalid' };
+    if (seen.has(c)) return { reason: 'invalid:path' };
+    seen.add(c);
+    if (k > 0 && !adj4(list[k - 1], c)) return { reason: 'invalid:path' };
+    if (geo.open[c]) continue;
+    const code = cells[c];
+    if (code === CELL.WATER) return { reason: 'blocked:water' };
+    if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return { reason: 'blocked:stone' };
+    if (geo.chamberAt[c] >= 0) return { reason: 'blocked:chamber' };
+    if (s.run.hardship === 'shallow_soil' && Math.floor(c / COLS) > DIG.shallowSoilRow) return { reason: 'hardship' };
+    if (!G.isDiggable(s, c)) return { reason: 'blocked:layer' };
+    soil.push(c);
+  }
+  const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
+  if (!reach(list[0]) && !G.neighbors4(list[0]).some(reach)) return { reason: 'invalid:start' };
+  if (!soil.length) return { reason: 'invalid:empty' };
+  if (s.run.nest.queue.length + 1 > queueLimit(s)) return { reason: 'queueFull' };
+  return { reason: null, soil };
+}
+
+function planDigTo(s, d, cell) {
+  if (!isCell(cell)) return { reason: 'invalid' };
+  const geo = G.getGeom(s, d);
+  const cells = s.run.nest.cells;
+  if (geo.open[cell]) return { reason: 'invalid' };
+  if (cells[cell] !== CELL.SOIL || geo.chamberAt[cell] >= 0 || geo._backfill[cell]) return { reason: 'blocked' };
+  if (s.run.hardship === 'shallow_soil' && Math.floor(cell / COLS) > DIG.shallowSoilRow) return { reason: 'hardship' };
+  if (!G.isDiggable(s, cell)) return { reason: 'blocked:layer' };
+  const r = G.routeTo(s, d, [cell]);
+  if (!r) return { reason: 'blocked:route' };
+  if (s.run.nest.queue.length + 1 > queueLimit(s)) return { reason: 'queueFull' };
+  return { reason: null, cells: [...r.cells, cell] };
+}
+
+/** Would removing these cells (plus pending backfill) disconnect a chamber or a queued job from every entrance? */
+function disconnects(s, geo, list) {
+  const nest = s.run.nest;
+  const openAfter = Uint8Array.from(geo.open);
+  for (const c of list) openAfter[c] = 0;
+  for (const b of nest.backfill) if (b && isCell(b.i)) openAfter[b.i] = 0;
+  const tops = [];
+  for (const sh of nest.shafts) if (sh && sh.open && sh.col >= 0 && sh.col < COLS && openAfter[G.idx(sh.col, 0)]) tops.push(G.idx(sh.col, 0));
+  const reach = G.bfs(openAfter, tops);
+  for (const ch of nest.chambers) {
+    const rc = G.rectCells(ch.x, ch.y, ch.w, ch.h);
+    if (rc.some((c) => geo.open[c] && geo.entDist[c] >= 0) && !rc.some((c) => reach[c] >= 0)) return true;
+  }
+  for (const job of nest.queue) {
+    let c = -1;
+    for (let k = job.cur; k < job.cells.length; k++) if (isCell(job.cells[k]) && !geo.open[job.cells[k]]) { c = job.cells[k]; break; }
+    if (c < 0) continue;
+    const ns = G.neighbors4(c);
+    const before = ns.some((n) => geo.open[n] && geo.entDist[n] >= 0);
+    const after = ns.some((n) => reach[n] >= 0);
+    if (before && !after) return true;
+  }
+  return false;
+}
+
+function planBackfill(s, d, list) {
+  if (!Array.isArray(list) || list.length === 0 || list.length > N) return 'invalid';
+  const geo = G.getGeom(s, d);
+  const cells = s.run.nest.cells;
+  const seen = new Set();
+  for (const c of list) {
+    if (!isCell(c) || seen.has(c)) return 'invalid';
+    seen.add(c);
+  }
+  for (const c of list) {
+    if (geo.chamberAt[c] >= 0 || cells[c] === CELL.CHAMBER) return 'blocked:chamber';
+    if (cells[c] !== CELL.TUNNEL) return 'invalid:cell';
+    if (geo._shaft[c]) return 'blocked:shaft';
+    if (geo._backfill[c]) return 'invalid:pending';
+  }
+  if (disconnects(s, geo, list)) return 'blocked';
+  return null;
+}
+
+/** Blueprint snapshot of the current layout (chambers except the original Royal Chamber; tunnel cells off-shaft). */
+function snapshotBlueprint(s, d, name) {
+  const geo = ensureGeom(s, d);
+  const nest = s.run.nest;
+  const chambers = nest.chambers.filter((ch) => ch.uid !== 1)
+    .map((ch) => ({ type: ch.type, x: ch.x, y: ch.y, w: ch.w, h: ch.h, level: ch.level }));
+  const tunnels = [];
+  for (let i = 0; i < N; i++) if (nest.cells[i] === CELL.TUNNEL && geo.chamberAt[i] < 0 && geo._shaft[i] !== 1) tunnels.push(i);
+  return { name, chambers, tunnels };
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Command handlers (ARCHITECTURE §9)
+// ------------------------------------------------------------------------------------------------------------------
+
+function validSlot(s, slot) {
+  return isInt(slot) && slot >= 0 && slot < blueprintSlots(s);
+}
+
+/** Nest command handlers (validate is pure; apply mutates). */
+export const handlers = {
+  /** placeChamber { chamber, x, y, route?, shaftCol? } */
+  placeChamber: {
+    validate(s, d, cmd) {
+      if (typeof cmd.chamber !== 'string' || !CHAMBERS[cmd.chamber]) return 'invalid';
+      if (!isInt(cmd.x) || !isInt(cmd.y)) return 'invalid';
+      if (cmd.route !== undefined && cmd.route !== null && !Array.isArray(cmd.route)) return 'invalid:route';
+      if (cmd.shaftCol !== undefined && cmd.shaftCol !== null && !isInt(cmd.shaftCol)) return 'invalid:shaftCol';
+      return planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null }).reason;
+    },
+    apply(s, d, cmd, env) {
+      const P = planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null });
+      if (P.reason) return;
+      executePlacement(s, d, cmd.chamber, P, env, false);
+    },
+  },
+
+  /** levelChamber { uid, dir? } */
+  levelChamber: {
+    validate(s, d, cmd) {
+      if (!isInt(cmd.uid)) return 'invalid';
+      if (cmd.dir !== undefined && cmd.dir !== null && !DIRS.has(cmd.dir)) return 'invalid:dir';
+      const f = findChamber(s, cmd.uid);
+      if (!f) return 'notFound';
+      return planLevel(s, d, f.ch, cmd.dir ?? null).reason;
+    },
+    apply(s, d, cmd, env) {
+      const f = findChamber(s, cmd.uid);
+      if (!f) return;
+      const P = planLevel(s, d, f.ch, cmd.dir ?? null);
+      if (P.reason) return;
+      doLevel(s, d, f.ch, P, env);
+    },
+  },
+
+  /** relocateChamber { uid, x, y, route? } */
+  relocateChamber: {
+    validate(s, d, cmd) {
+      if (!isInt(cmd.uid) || !isInt(cmd.x) || !isInt(cmd.y)) return 'invalid';
+      if (cmd.route !== undefined && cmd.route !== null && !Array.isArray(cmd.route)) return 'invalid:route';
+      const f = findChamber(s, cmd.uid);
+      if (!f) return 'notFound';
+      return planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid }).reason;
+    },
+    apply(s, d, cmd, env) {
+      const f = findChamber(s, cmd.uid);
+      if (!f) return;
+      const P = planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid });
+      if (P.reason) return;
+      executeRelocation(s, d, P, env);
+    },
+  },
+
+  /** demolishChamber { uid }: refund 50 % of that instance's placement food; cells become tunnel. */
+  demolishChamber: {
+    validate(s, d, cmd) {
+      if (!isInt(cmd.uid)) return 'invalid';
+      const f = findChamber(s, cmd.uid);
+      if (!f) return 'notFound';
+      if (f.ch.type === 'royal_chamber' && (f.ch.uid === 1 || countType(s, 'royal_chamber') <= 1)) return 'blocked';
+      if (f.ch.status !== 'active') return 'busy';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const f = findChamber(s, cmd.uid);
+      if (!f) return;
+      const nest = s.run.nest;
+      const ch = f.ch;
+      const def = CHAMBERS[ch.type];
+      if (def && def.place && def.place.food > 0) {
+        const food = def.place.food * def.placeGrowth ** ch.k * edictCostMult(s) * (ch.blueprint ? DIG.blueprintPlaceMult : 1);
+        refund(s, d, { food }, DIG.demolishRefund);
+      }
+      for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) if (nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
+      nest.chambers.splice(f.j, 1);
+      renumberK(s, ch.type);
+      nest.rev++;
+      rebuild(s, d);
+    },
+  },
+
+  /** digTunnel { cells }: a contiguous path starting next to an open cell. */
+  digTunnel: {
+    validate(s, d, cmd) {
+      return planTunnel(s, d, cmd.cells).reason;
+    },
+    apply(s, d, cmd) {
+      const P = planTunnel(s, d, cmd.cells);
+      if (P.reason) return;
+      const nest = s.run.nest;
+      nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: P.soil, cur: 0, prog: 0, paidFood: 0, blueprint: false });
+      nest.rev++;
+      rebuild(s, d);
+    },
+  },
+
+  /** digTo { cell }: auto-routed tunnel to a cell (cache hints), digging the cell itself. */
+  digTo: {
+    validate(s, d, cmd) {
+      return planDigTo(s, d, cmd.cell).reason;
+    },
+    apply(s, d, cmd) {
+      const P = planDigTo(s, d, cmd.cell);
+      if (P.reason) return;
+      const nest = s.run.nest;
+      nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: P.cells, cur: 0, prog: 0, paidFood: 0, blueprint: false });
+      nest.rev++;
+      rebuild(s, d);
+    },
+  },
+
+  /** backfill { cells }: tunnel cells refill (become SOIL) after 10 s; refused if it disconnects anything. */
+  backfill: {
+    validate(s, d, cmd) {
+      return planBackfill(s, d, cmd.cells);
+    },
+    apply(s, d, cmd) {
+      if (planBackfill(s, d, cmd.cells)) return;
+      const nest = s.run.nest;
+      for (const c of cmd.cells) nest.backfill.push({ i: c, t: DIG.backfillSec });
+      nest.rev++;
+      rebuild(s, d);
+    },
+  },
+
+  /** reorderQueue { uid, to } */
+  reorderQueue: {
+    validate(s, d, cmd) {
+      if (!isInt(cmd.uid) || !isInt(cmd.to)) return 'invalid';
+      const f = findJob(s, cmd.uid);
+      if (!f) return 'notFound';
+      if (cmd.to < 0 || cmd.to >= s.run.nest.queue.length) return 'invalid';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const f = findJob(s, cmd.uid);
+      if (!f) return;
+      const q = s.run.nest.queue;
+      q.splice(f.j, 1);
+      q.splice(Math.max(0, Math.min(q.length, cmd.to)), 0, f.job);
+      s.run.nest.rev++;
+      rebuild(s, d);
+    },
+  },
+
+  /**
+   * cancelJob { uid }: refund paidFood 100 %; dug cells stay dug (as tunnel). Cancelling a new chamber removes it;
+   * cancelling a growth reverts the footprint.
+   * ARCH-R: relocation and shaft jobs cannot be cancelled ('blocked'); level-up soil and extras are not refunded
+   * (the DigJob only records paidFood).
+   */
+  cancelJob: {
+    validate(s, d, cmd) {
+      if (!isInt(cmd.uid)) return 'invalid';
+      const f = findJob(s, cmd.uid);
+      if (!f) return 'notFound';
+      if (f.job.kind === 'relocate' || f.job.kind === 'shaft') return 'blocked';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const f = findJob(s, cmd.uid);
+      if (!f) return;
+      const nest = s.run.nest;
+      const job = f.job;
+      nest.queue.splice(f.j, 1);
+      if (job.paidFood > 0) refund(s, d, { food: job.paidFood }, DIG.cancelRefund);
+      const fc = job.chamber ? findChamber(s, job.chamber) : null;
+      if (job.kind === 'chamber' && fc) {
+        const ch = fc.ch;
+        for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) if (nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
+        nest.chambers.splice(fc.j, 1);
+        renumberK(s, ch.type);
+        // A Nuptial Chamber's pending exit shaft goes with it.
+        for (let k = nest.queue.length - 1; k >= 0; k--) {
+          const q = nest.queue[k];
+          if (q.kind !== 'shaft' || q.chamber !== ch.uid) continue;
+          let col = -1;
+          for (const c of q.cells) if (isCell(c) && c < COLS) { col = c; break; }
+          nest.queue.splice(k, 1);
+          const si = nest.shafts.findIndex((x) => x && !x.open && x.col === col);
+          if (si >= 0) nest.shafts.splice(si, 1);
+        }
+      } else if (job.kind === 'grow' && fc) {
+        const ch = fc.ch;
+        const fp = G.footprint(ch.type, ch.level);
+        const dw = ch.w - fp.w;
+        const dh = ch.h - fp.h;
+        const jobSet = new Set(job.cells);
+        let old = null;
+        for (const ox of [ch.x, ch.x + dw]) {
+          for (const oy of [ch.y, ch.y + dh]) {
+            if (old) break;
+            const r = { x: ox, y: oy, w: fp.w, h: fp.h };
+            if (!G.rectCells(r.x, r.y, r.w, r.h).some((c) => jobSet.has(c))) old = r;
+          }
+        }
+        if (!old) old = { x: ch.x, y: ch.y, w: fp.w, h: fp.h };
+        for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) {
+          if (!G.inRect(old, c) && nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
+        }
+        ch.x = old.x;
+        ch.y = old.y;
+        ch.w = old.w;
+        ch.h = old.h;
+        ch.status = 'active';
+        ch.target = ch.level;
+      }
+      nest.rev++;
+      rebuild(s, d);
+    },
+  },
+
+  /** helpDig {}: click; +5 + 3 % of W work to the first job and the same amount of soil (DESIGN §7.2). */
+  helpDig: {
+    validate(s, d, cmd) {
+      if (s.run.hardship === 'claustral_founding') return 'hardship';
+      if (!s.run.nest.queue.length) return 'invalid';
+      if (!clickAvailable(s)) return 'clickCap';
+      return null;
+    },
+    apply(s, d, cmd, env) {
+      if (!consumeClick(s)) return;
+      const amount = DIG.helpFlat + DIG.helpFracW * Math.max(0, num(d.stats && d.stats.digW));
+      ensureGeom(s, d);
+      const left = digWork(s, d, amount, env, true);
+      if (left > 0) s.run.nest.maint = Math.min(CLAMP_MAX, num(s.run.nest.maint) + left);
+      grant(s, d, 'soil', amount);
+      ensureGeom(s, d);
+      fillQueueInfo(s, d);
+    },
+  },
+
+  /**
+   * saveBlueprint { slot, name? }: needs ancestral_blueprint (or blueprint_memory); 1 slot, 5 with blueprint_memory.
+   * ARCH-R: blueprint_memory alone also enables blueprints (it is "Save 5 layouts").
+   */
+  saveBlueprint: {
+    validate(s, d, cmd) {
+      if (!blueprintsAllowed(s)) return 'locked';
+      if (!validSlot(s, cmd.slot)) return 'invalid';
+      if (cmd.name !== undefined && cmd.name !== null && typeof cmd.name !== 'string') return 'invalid';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const name = typeof cmd.name === 'string' && cmd.name.trim() ? cmd.name.trim().slice(0, NAME_MAX) : 'Layout ' + (cmd.slot + 1);
+      const list = s.era.blueprints;
+      while (list.length < cmd.slot) list.push(null);
+      list[cmd.slot] = snapshotBlueprint(s, d, name);
+    },
+  },
+
+  /** loadBlueprint { slot }: make it the active blueprint (queued at the next run start). */
+  loadBlueprint: {
+    validate(s, d, cmd) {
+      if (!blueprintsAllowed(s)) return 'locked';
+      if (!validSlot(s, cmd.slot)) return 'invalid';
+      if (!s.era.blueprints[cmd.slot]) return 'notFound';
+      return null;
+    },
+    apply(s, d, cmd) {
+      s.era.activeBlueprint = cmd.slot;
+    },
+  },
+
+  /** deleteBlueprint { slot } */
+  deleteBlueprint: {
+    validate(s, d, cmd) {
+      if (!blueprintsAllowed(s)) return 'locked';
+      if (!isInt(cmd.slot) || cmd.slot < 0 || cmd.slot >= s.era.blueprints.length) return 'invalid';
+      if (!s.era.blueprints[cmd.slot]) return 'notFound';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const list = s.era.blueprints;
+      list[cmd.slot] = null;
+      while (list.length && !list[list.length - 1]) list.pop();
+      if (s.era.activeBlueprint === cmd.slot) s.era.activeBlueprint = -1;
+    },
+  },
+};

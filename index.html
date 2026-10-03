@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Six Legs Deep: grow an ant colony above and below ground. An incremental browser game.">
+  <meta name="theme-color" content="#1c140d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#efe4cf" media="(prefers-color-scheme: light)">
+  <title>Six Legs Deep</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233a2716'/%3E%3Cg fill='%23f0c66a'%3E%3Cellipse cx='32' cy='17' rx='7' ry='6'/%3E%3Cellipse cx='32' cy='30' rx='6' ry='7'/%3E%3Cellipse cx='32' cy='47' rx='9' ry='11'/%3E%3C/g%3E%3Cg stroke='%23f0c66a' stroke-width='3' stroke-linecap='round' fill='none'%3E%3Cpath d='M26 28 14 22M26 32 12 34M27 36 15 46M38 28l12-6M38 32l14 2M37 36l12 10M29 12l-5-7M35 12l5-7'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles/base.css">
+  <link rel="stylesheet" href="styles/panels.css">
+</head>
+<body>
+  <div id="app" data-layout="wide-tall" data-view="split" data-inset="true">
+    <aside id="rail" aria-label="Resources"></aside>
+    <main id="stage">
+      <header id="hud-top"></header>
+      <section id="view-above" aria-label="Above: the surface"><canvas id="canvas-above"></canvas></section>
+      <div id="flow-strip"><canvas id="canvas-seam" aria-hidden="true"></canvas></div>
+      <section id="view-below" aria-label="Below: the nest"><canvas id="canvas-below"></canvas><canvas id="nest-strip" aria-hidden="true"></canvas></section>
+      <nav id="overlay-bar" aria-label="Overlays"></nav>
+      <nav id="view-tabs" aria-label="View"></nav>
+    </main>
+    <aside id="panels" aria-label="Panels"><nav id="tabs"></nav><div id="panel-body"></div></aside>
+    <div id="event-card"></div><div id="toasts"></div><div id="tooltip"></div><div id="modal-root"></div>
+  </div>
+  <noscript><p class="noscript">Six Legs Deep needs JavaScript to dig its tunnels. Please enable it and reload.</p></noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

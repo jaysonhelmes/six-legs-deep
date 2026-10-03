@@ -1,0 +1,622 @@
+// HUD: resource rail (value, rate, cap bar, "sc" badge, red when negative; only revealed resources), colony scale,
+// prestige currencies, diapause; HUD top (season dial with forecast, bottleneck badge, raid badge, next-unlock
+// ribbon); flow strip text; overlay toggle bar. Owner: WP9. Contract: ARCHITECTURE §14.6, DESIGN §25.2, §2.2, §17.1.
+
+import { h, setText, show, toggleClass, setStyle, setBar, syncList } from './dom.js';
+import { fmt, fmtRate, fmtCount, fmtTime, fmtClock, fmtMult } from './format.js';
+import {
+  RES_NAMES, SEASON_NAMES, BOTTLENECK_NAMES, BOTTLENECK_STATE, OVERLAY_NAMES, OVERLAY_TIPS, OVERLAY_VIEW, nameOf, unlockLabel, unlockHint,
+} from './text.js';
+import { isShown, hasResearch, num, arr, obj } from './reveal.js';
+import { OVERLAY_IDS, setOverlay } from './uistate.js';
+import { broodSummary } from '../systems/population.js';
+import { firstHatchEta, adultsEta } from './intro.js';
+import { UNLOCKS, REVEAL } from '../data/unlocks.js';
+import { GRID } from '../data/balance.js';
+import { frontWindows } from './rules.js';
+
+/** Rail resources in order with their reveal keys (ARCHITECTURE §11; leaves live in the fungus widget only). */
+export const RAIL_RES = Object.freeze([
+  { res: 'food', key: null, cap: 'foodCap' },
+  { res: 'soil', key: 'job_digger', cap: null },
+  { res: 'insight', key: 'panel_research', cap: null },
+  { res: 'pheromone', key: 'res_pheromone', cap: 'pheromoneCap' },
+  { res: 'chitin', key: 'res_chitin', cap: null },
+  { res: 'honeydew', key: 'res_honeydew', cap: 'honeydewCap' },
+  { res: 'fungus', key: 'res_fungus', cap: 'fungusCap' },
+]);
+
+/** Reveal keys of the overlay buttons (ARCH-R: only `climate_overlay` is pinned; the others follow the feature that makes them meaningful). */
+export const OVERLAY_KEYS = Object.freeze({
+  climate: 'climate_overlay', raid_reach: ['raid_warnings', 'chamber_gate'], haul: 'chamber_granary', adjacency: 'chamber_nursery',
+  territory: ['hex_claim', 'panel_rivals'], trail_strength: 'trail_slots', danger: 'raid_warnings', richness: 'trail_slots',
+});
+
+const SEASON_FALLBACK = ['spring', 'summer', 'autumn', 'winter'];
+const LONG_SUMMER = ['spring', 'summer', 'summer', 'autumn'];
+
+/**
+ * Bottleneck badge text (DESIGN §2.2, §5.8, §9.10, §17.3).
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {string} '' when nothing binds
+ */
+export function bottleneckText(s, d) {
+  const bn = obj(s && s.run && s.run.bottleneck);
+  const id = bn.id;
+  if (!id) return '';
+  const secs = Math.max(0, num(s.run.time) - num(bn.since));
+  if (id === 'raid') return 'Raid incoming!';
+  if (id === 'hungry') return 'Hungry: assign more foragers';
+  if (id === 'frost') {
+    let frozen = 0;
+    try { frozen = num(broodSummary(s, d).frozen); } catch { frozen = 0; }
+    return 'Frost: ' + fmtCount(frozen) + ' brood freezing';
+  }
+  const name = BOTTLENECK_NAMES[id] || nameOf('unlock', id);
+  const stateText = BOTTLENECK_STATE[id] || 'binding';
+  return 'Bottleneck: ' + name + ' · ' + stateText + ' ' + fmtTime(secs);
+}
+
+/** UnlockDef by key (for the ribbon's ETA corrections). */
+const UNLOCK_DEFS = new Map(arr(UNLOCKS).filter(Boolean).map((u) => [u.key, u]));
+
+/**
+ * What the next-unlock ribbon shows (DESIGN §23 "always shows the nearest upcoming reveal and its ETA"):
+ * d.progress.nextUnlock, corrected for two readings the systems estimate cannot make:
+ *  - the Colony panel (first hatch) has no measurable rate there, so a later key with an ETA used to win
+ *    ("Diggers ~12s" at 0:00); it is now the first-hatch time from the brood pipeline;
+ *  - `{ adults: n }` keys there use the lay rate alone; brood still needs its development time, so the ETA is the
+ *    hatch schedule of the brood already growing plus new eggs.
+ * The head of the reveal queue is shown unchanged. Pure.
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {{ key: string, label: string, frac: number, eta: number } | null}
+ */
+export function ribbonInfo(s, d) {
+  if (!s || !s.run || !s.meta) return null;
+  const nu = d && d.progress ? d.progress.nextUnlock : null;
+  const queued = arr(s.meta.reveal && s.meta.reveal.queue).length > 0;
+  if (queued) return nu;
+  const pending = (key) => !obj(s.run.unlocked)[key] && !obj(s.meta.seen)[key];
+  const labelOf = (key) => (UNLOCK_DEFS.get(key) || {}).label || unlockLabel(key);
+  if (pending('panel_colony')) {
+    const fh = firstHatchEta(s, d);
+    return { key: 'panel_colony', label: labelOf('panel_colony'), frac: fh.frac, eta: fh.eta };
+  }
+  let best = nu;
+  const def = nu ? UNLOCK_DEFS.get(nu.key) : null;
+  if (def && def.cond && typeof def.cond.adults === 'number') {
+    const est = adultsEta(s, d, def.cond.adults);
+    if (est >= 0) best = { ...nu, eta: Math.max(num(nu.eta, -1), est) };
+  }
+  // Build panel (custom housingFull: minors + brood ≥ housing): each egg laid fills a place at once.
+  if (pending('panel_build')) {
+    const housing = num(d && d.stats && d.stats.housing);
+    let brood = 0;
+    for (const c of arr(s.run.colony && s.run.colony.brood)) brood += num(c && c.n);
+    const used = num(s.run.colony && s.run.colony.adults && s.run.colony.adults.minor) + brood;
+    const lay = num(d && d.stats && d.stats.layRate);
+    if (housing > 0) {
+      const eta = used >= housing ? 0 : lay > 0 ? (housing - used) / lay : -1;
+      best = earlierReveal({ key: 'panel_build', label: labelOf('panel_build'), frac: Math.min(1, used / housing), eta }, best);
+    }
+  }
+  // Early reveals on player-driven conditions have no ETA, so the estimate skips them and the ribbon jumped to a key
+  // many minutes away ("Gate · 15m") while Research was one scout away. Name the pending one with its condition.
+  // Same for adult-count reveals while laying is blocked (housing full): "Scent Library · reach 30 adults".
+  if (!best || num(best.eta, -1) < 0 || num(best.eta) > CUSTOM_AFTER_SEC) {
+    let pick = null;
+    for (const c of CUSTOM_NEXT) {
+      if (!pending(c.key) || (c.after && !obj(s.meta.seen)[c.after])) continue;
+      pick = { key: c.key, label: labelOf(c.key), frac: 0, eta: -1, hint: unlockHint(c.key) };
+      break;
+    }
+    const a = obj(s.run.colony && s.run.colony.adults);
+    const adults = num(a.minor) + num(a.soldier) + num(a.supermajor) + num(a.replete);
+    for (const u of arr(UNLOCKS)) {
+      if (!u || !u.queued || !pending(u.key) || !u.cond || typeof u.cond.adults !== 'number') continue;
+      if (pick && UNLOCK_INDEX.get(pick.key) < UNLOCK_INDEX.get(u.key)) break;
+      pick = { key: u.key, label: labelOf(u.key), frac: Math.min(1, adults / Math.max(1, u.cond.adults)), eta: -1, hint: unlockHint(u.key) };
+      break;
+    }
+    if (pick && (!best || num(best.eta, -1) < 0 || UNLOCK_INDEX.get(pick.key) < (UNLOCK_INDEX.has(best.key) ? UNLOCK_INDEX.get(best.key) : 1e9))) best = pick;
+  }
+  return best;
+}
+
+/** Player-driven early reveals the ribbon names (with their condition) when nothing timed is near. */
+const CUSTOM_NEXT = Object.freeze([
+  { key: 'trail_slots', after: null }, { key: 'panel_research', after: 'job_scout' }, { key: 'panel_map', after: 'trail_slots' },
+]);
+const CUSTOM_AFTER_SEC = 120;
+
+/** Table order of an unlock key (reveals run in this order, REVEAL.gapSec apart). */
+const UNLOCK_INDEX = new Map(arr(UNLOCKS).filter(Boolean).map((u, i) => [u.key, i]));
+
+/**
+ * Which of two candidates reveals first: the sooner one, unless the other comes earlier in the table and is due within
+ * one reveal gap of it (the queue then shows the earlier row first). Unknown ETAs lose to known ones.
+ */
+function earlierReveal(a, b) {
+  if (!b) return a;
+  if (!a) return b;
+  const ea = num(a.eta, -1);
+  const eb = num(b.eta, -1);
+  if (ea < 0 && eb < 0) return num(a.frac) >= num(b.frac) ? a : b;
+  if (ea < 0) return b;
+  if (eb < 0) return a;
+  const gap = num(REVEAL && REVEAL.gapSec, 30);
+  const ia = UNLOCK_INDEX.has(a.key) ? UNLOCK_INDEX.get(a.key) : 1e9;
+  const ib = UNLOCK_INDEX.has(b.key) ? UNLOCK_INDEX.get(b.key) : 1e9;
+  if (ia < ib) return ea <= eb + gap ? a : b;
+  return eb <= ea + gap ? b : a;
+}
+
+/**
+ * Rail brand subtitle: 'Queen <name>', else 'Year Y · run N'. While the landing chooser is open (meta.pending) s.run
+ * is the frozen skeleton (index 0), so the run shown is the one about to start, from meta.counters.runs (F21).
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {string}
+ */
+export function brandSubtitle(s, d) {
+  if (s.meta.settings && s.meta.settings.queenName) return 'Queen ' + s.meta.settings.queenName;
+  const year = 'Year ' + fmtCount(num(d && d.season && d.season.year));
+  if (s.meta.pending) return year + ' · run ' + fmtCount(Math.floor(num(s.meta.counters && s.meta.counters.runs)) + 1) + ' · landing';
+  return year + ' · run ' + fmtCount(num(s.run.index) + 1);
+}
+
+/** Ribbon text for ribbonInfo(). */
+export function ribbonText(nu) {
+  if (!nu) return '';
+  const eta = num(nu.eta, -1);
+  const label = nu.label || unlockLabel(nu.key);
+  if (eta >= 0.5) return 'Next: ' + label + ' · ' + fmtTime(Math.ceil(eta));
+  if (eta >= 0) return 'Next: ' + label + ' · now';
+  if (nu.hint) return 'Next: ' + label + ' · ' + String(nu.hint).replace(/\.$/, '').replace(/^./, (c) => c.toLowerCase());
+  return 'Next: ' + label + ' · ' + Math.floor(num(nu.frac) * 100) + '%';
+}
+
+/**
+ * Negative effects worth a HUD warning chip, by source (ids are prefixes of s.run.effects ids). `where`: how to
+ * locate it ('top' = the topsoil rows of the nest; an object kind = that event object).
+ */
+const EFFECT_THREATS = Object.freeze([
+  { id: 'flood', prefix: 'ev_flood', label: 'Flood', tip: 'Topsoil chambers are underwater. Click the water to bail it out.', where: 'top' },
+  { id: 'rain', prefix: 'ev_rainstorm_keep', label: 'Rain', tip: 'Topsoil chambers work at half strength until it passes.', where: 'top' },
+  { id: 'sealed', prefix: 'ev_rainstorm_seal', label: 'Sealed in', tip: 'Entrances sealed against the rain: no surface work.' },
+  { id: 'drought', prefix: 'ev_drought', label: 'Drought', tip: 'Leaves and flowers yield less until it rains.' },
+  { id: 'phorid', prefix: 'ev_phorid_flies', label: 'Phorid flies', tip: 'Soldiers fight at half strength; bare trails yield less.' },
+  { id: 'cordyceps', prefix: 'ev_ophiocordyceps', label: 'Quarantine', tip: 'Foraging is slower while the sick are isolated.' },
+  { id: 'mites', prefix: 'ev_brood_mites', label: 'Brood mites', tip: 'Brood develops slower. Nurses help.' },
+  { id: 'ladybugs', prefix: 'ev_ladybug_raid', label: 'Ladybugs', tip: 'Aphid yield halved. Click the ladybugs to shoo them.', where: 'ladybug' },
+  { id: 'evacuated', prefix: 'ev_army_evacuate', label: 'Evacuated', tip: 'Army ants are passing: no surface work for now.' },
+  { id: 'parasite', prefix: 'ev_wandering_queen_parasite', label: 'Parasite queen', tip: 'The adopted queen was a parasite: laying slowed.' },
+  { id: 'frostsnap', prefix: 'ev_frost_snap', label: 'Frost snap', tip: 'The frost reaches deeper for a while. Shallow brood freezes.' },
+]);
+/** Event objects that are threats on their own (the player clicks them away or routes around them). */
+const OBJECT_THREATS = Object.freeze({
+  antlion: { label: 'Antlion pit', tip: 'A trail runs past an antlion pit and loses ants. Reroute it.' },
+  lizard: { label: 'Horned lizard', tip: 'A lizard is eating ants on a trail. Reroute or mob it.' },
+  footstep: { label: 'Footstep!', tip: 'A shoe is coming down. Click the shadow to scatter.' },
+  army_column: { label: 'Army ants', tip: 'An army ant column is crossing your land.' },
+});
+
+/** Map cell of a mold spot (its own cell, else the middle of its chamber). */
+function moldCell(s, o) {
+  if (num(o.cell, -1) >= 0) return num(o.cell);
+  const ch = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === (o.data && o.data.chamber));
+  if (!ch) return -1;
+  const cols = num(GRID && GRID.cols, 40);
+  return (num(ch.y) + Math.floor(num(ch.h, 1) / 2)) * cols + num(ch.x) + Math.floor(num(ch.w, 1) / 2);
+}
+
+/**
+ * Active negative effects for the HUD warning chips, most severe first. Pure.
+ * Each: { id, label, tip, t (seconds left, -1 = until cleared), n (count), locate (for bridge.locate) | null }.
+ * locate: { view: 'nest', cell?, row?, chamber? } | { view: 'surface', hex }.
+ * @param {Object} s
+ * @returns {Array<Object>}
+ */
+export function activeThreats(s) {
+  if (!s || !s.run) return [];
+  const out = [];
+  // Argentine Front window (F13): a nest fell; the others must fall before the timer ends or the fallen ones regrow.
+  frontWindows(s).forEach((w, i) => {
+    out.push({ id: i === 0 ? 'front' : 'front:' + w.group, label: 'Front ' + w.fallen + '/' + w.total + ' down',
+      tip: 'Take the other Argentine Front nests before the timer ends, or the fallen ones regrow at full strength.',
+      t: w.remaining, tLabel: 'Fallen nests regrow in ', n: w.total - w.fallen,
+      locate: w.target ? { view: 'surface', hex: num(w.target.hex) } : null });
+  });
+  const objects = arr(s.run.events && s.run.events.objects).filter(Boolean);
+  // Mold: each spot halves its chamber and spreads until scraped (DESIGN §18.2).
+  const molds = objects.filter((o) => o.kind === 'mold');
+  if (molds.length) {
+    const chambers = new Set(molds.map((o) => o.data && o.data.chamber).filter(Boolean));
+    const spots = molds.map((o) => ({ view: 'nest', cell: moldCell(s, o), chamber: num(o.data && o.data.chamber) }))
+      .filter((l) => l.cell >= 0 || l.chamber > 0);
+    out.push({
+      id: 'mold', label: 'Mold ×' + fmtCount(molds.length),
+      tip: fmtCount(chambers.size) + ' chamber' + (chambers.size === 1 ? '' : 's') + ' at half strength. Click each spot to scrape it.',
+      t: -1, n: molds.length, locate: spots[0] || null, spots,
+    });
+  }
+  if (arr(s.run.events && s.run.events.active).some((a) => a && a.id === 'ev_fungal_blight' && a.data && a.data.k === 'blight')) {
+    const g = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.type === 'fungus_garden');
+    out.push({ id: 'blight', label: 'Fungal blight', tip: 'Click the fungus garden quickly to clean the blight.', t: -1, n: 1,
+      locate: g ? { view: 'nest', chamber: g.uid, cell: (num(g.y) + Math.floor(num(g.h, 1) / 2)) * num(GRID && GRID.cols, 40) + num(g.x) } : null });
+  }
+  const effects = arr(s.run.effects).filter((e) => e && typeof e.id === 'string');
+  for (const th of EFFECT_THREATS) {
+    const hits = effects.filter((e) => e.id === th.prefix || e.id.startsWith(th.prefix + '_') || e.id.startsWith(th.prefix + ':'));
+    if (!hits.length) continue;
+    const t = Math.max(...hits.map((e) => num(e.t, -1)));
+    let locate = null;
+    if (th.where === 'top') locate = { view: 'nest', row: 0 };
+    else if (th.where) {
+      const o = objects.find((x) => x.kind === th.where && num(x.hex, -1) >= 0);
+      if (o) locate = { view: 'surface', hex: num(o.hex) };
+    }
+    out.push({ id: th.id, label: th.label, tip: th.tip, t, n: hits.length, locate });
+  }
+  for (const kind of Object.keys(OBJECT_THREATS)) {
+    const list = objects.filter((o) => o.kind === kind);
+    if (!list.length) continue;
+    const o = list[0];
+    const def = OBJECT_THREATS[kind];
+    const spots = list.filter((x) => num(x.hex, -1) >= 0).map((x) => ({ view: 'surface', hex: num(x.hex) }));
+    out.push({ id: kind, label: def.label + (list.length > 1 ? ' ×' + fmtCount(list.length) : ''), tip: def.tip, t: num(o.t, -1), n: list.length,
+      locate: spots[0] || null, spots });
+  }
+  return out;
+}
+
+/** Which threat chip a negative event spawns (for the "Show" button on its toast). */
+export const EVENT_THREAT = Object.freeze({
+  ev_mold_bloom: 'mold', ev_rainstorm: 'rain', ev_ladybug_raid: 'ladybugs', ev_antlion_pit: 'antlion', ev_horned_lizard: 'lizard',
+  ev_footstep: 'footstep', ev_army_ant_column: 'army_column', ev_fungal_blight: 'blight',
+});
+
+/**
+ * Season dial data: current season, seconds to the next, year fraction for the hand, quadrant order.
+ * @param {Object} s
+ * @param {Object} d
+ */
+export function seasonInfo(s, d) {
+  const se = obj(d && d.season);
+  const longSummer = s && s.cycle && s.cycle.edict === 'edict_of_long_summer';
+  const order = longSummer ? LONG_SUMMER : SEASON_FALLBACK;
+  const idx = Math.max(0, Math.min(3, num(se.index)));
+  const len = num(se.len, num(s && s.meta && s.meta.season && s.meta.season.lengthSec, 360)) || 360;
+  const tIn = num(se.tIn);
+  const frac = (idx + Math.max(0, Math.min(1, tIn / len))) / 4;
+  return {
+    id: se.id || 'spring', next: se.forecast && se.forecast.next ? se.forecast.next : order[(idx + 1) % 4],
+    toNext: num(se.toNext, len - tIn), year: num(se.year), mild: !!se.mild, frac, order,
+  };
+}
+
+/**
+ * Create the HUD.
+ * @param {{ rail: HTMLElement, hudTop: HTMLElement, flowStrip: HTMLElement, overlayBar: HTMLElement }} els
+ * @param {{ game: Object, ui: Object, bridge: Object }} ctx
+ */
+export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, bridge }) {
+  // ---------------------------------------------------------------- rail
+  const brand = h('div', { class: 'rail-brand' }, h('span', { class: 'brand-mark', attrs: { 'aria-hidden': 'true' } }),
+    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }), h('span', { class: 'brand-sub' })));
+  const brandName = brand.querySelector('.brand-name');
+  const brandSub = brand.querySelector('.brand-sub');
+  const resList = h('div', { class: 'res-list', role: 'list' });
+  const rows = {};
+  for (const r of RAIL_RES) {
+    const val = h('span', { class: 'res-val' });
+    const rate = h('span', { class: 'res-rate' });
+    const sc = h('span', { class: 'sc-badge', text: 'sc', dataset: { tipKey: 'sc:' + r.res } });
+    const capFill = h('span', { class: 'cap-fill' });
+    const cap = h('span', { class: 'cap-bar' }, capFill);
+    const row = h('div', { class: 'res-row res-' + r.res, role: 'listitem', dataset: { tipKey: 'res:' + r.res, glowKey: 'res:' + r.res } },
+      h('i', { class: 'ico ico-' + r.res, attrs: { 'aria-hidden': 'true' } }), h('span', { class: 'res-name', text: RES_NAMES[r.res] }), val, sc, rate, cap);
+    rows[r.res] = { row, val, rate, sc, cap, capFill, def: r };
+    resList.appendChild(row);
+  }
+  // fungus widget: leaves buffer + nutrition ring
+  const leavesFill = h('span', { class: 'cap-fill' });
+  const leavesVal = h('span', { class: 'res-val' });
+  const ring = h('span', { class: 'nutri-ring', dataset: { tipKey: 'nutrition' } });
+  const ringVal = h('span', { class: 'nutri-val' });
+  ring.appendChild(ringVal);
+  const fungusWidget = h('div', { class: 'fungus-widget', dataset: { tipKey: 'fungusWidget' } },
+    h('div', { class: 'fw-leaves' }, h('i', { class: 'ico ico-leaves', attrs: { 'aria-hidden': 'true' } }), h('span', { class: 'res-name', text: 'Leaves' }), leavesVal,
+      h('span', { class: 'cap-bar' }, leavesFill)),
+    h('div', { class: 'fw-ring' }, ring, h('span', { class: 'res-name', text: 'Nutrition' })));
+  const popRow = h('div', { class: 'res-row res-pop', dataset: { tipKey: 'pop' } }, h('i', { class: 'ico ico-minor', attrs: { 'aria-hidden': 'true' } }),
+    h('span', { class: 'res-name', text: 'Ants' }), h('span', { class: 'res-val' }), h('span', { class: 'res-rate' }));
+  const popVal = popRow.querySelector('.res-val');
+  const popRate = popRow.querySelector('.res-rate');
+  const metaList = h('div', { class: 'res-list res-meta' });
+  const metaRows = {};
+  for (const [k, label] of [['alates', 'Alates'], ['kinship', 'Kinship'], ['genes', 'Genes']]) {
+    const val = h('span', { class: 'res-val' });
+    const row = h('div', { class: 'res-row res-' + k, dataset: { tipKey: 'res:' + k } }, h('i', { class: 'ico ico-' + k, attrs: { 'aria-hidden': 'true' } }),
+      h('span', { class: 'res-name', text: label }), val);
+    metaRows[k] = { row, val };
+    metaList.appendChild(row);
+  }
+  const scaleRow = h('div', { class: 'res-row res-scale', dataset: { tipKey: 'scale' } }, h('span', { class: 'res-name', text: 'Colony Scale' }), h('span', { class: 'res-val' }));
+  const scaleVal = scaleRow.querySelector('.res-val');
+  const diaRow = h('div', { class: 'res-row res-diapause', dataset: { tip: 'Banked offline time: spend it to run the economy faster.' } },
+    h('span', { class: 'res-name', text: 'Diapause' }), h('span', { class: 'res-val' }));
+  const diaVal = diaRow.querySelector('.res-val');
+  const diaBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Spend',
+    on: { click: () => {
+      const on = !(game.s.meta.diapause && game.s.meta.diapause.active);
+      const res = game.actions.do('spendDiapause', { on });
+      if (!res.ok) bridge.reject(res.reason, 0, 0, 'spendDiapause');
+    } } });
+  diaRow.appendChild(diaBtn);
+  if (rail) {
+    rail.append(brand, resList, fungusWidget, h('div', { class: 'rail-sep' }), popRow, metaList, scaleRow, diaRow);
+  }
+
+  // ---------------------------------------------------------------- HUD top
+  const dial = h('div', { class: 'season-dial', dataset: { tipKey: 'season' }, role: 'img' });
+  const dialFace = h('span', { class: 'dial-face' });
+  const dialHand = h('span', { class: 'dial-hand' });
+  dial.append(dialFace, dialHand);
+  const seasonName = h('span', { class: 'season-name' });
+  const seasonNext = h('span', { class: 'season-next' });
+  const forecast = h('span', { class: 'forecast' });
+  const seasonBox = h('div', { class: 'season-box' }, dial, h('span', { class: 'season-text' }, seasonName, seasonNext, forecast));
+  const badge = h('button', { type: 'button', class: 'bn-badge', dataset: { tipKey: 'bottleneck', glowKey: 'badge' },
+    on: { click: () => onBadge() } });
+  const raidBadge = h('button', { type: 'button', class: 'raid-badge', on: { click: () => bridge.openTab('map', 'war') } });
+  // Warning chips for active negative effects (mold, flood, ladybugs…): the bottleneck badge names only the binding
+  // limit, so a chamber halved by mold used to read as "Food cap". Click → bridge.locate (scroll / centre on it).
+  const threatBox = h('div', { class: 'threats', role: 'group', attrs: { 'aria-label': 'Active threats' } });
+  const ribbonFill = h('span', { class: 'ribbon-fill' });
+  const ribbonLabel = h('span', { class: 'ribbon-text' });
+  const ribbon = h('div', { class: 'unlock-ribbon', dataset: { tipKey: 'ribbon' } }, ribbonFill, ribbonLabel);
+  const notices = h('div', { class: 'hud-notices' });
+  const skewNote = h('div', { class: 'hud-notice' }, h('span', { text: 'Your clock went backwards; no offline time was credited.' }),
+    h('button', { type: 'button', class: 'btn btn-icon', text: '×', attrs: { 'aria-label': 'Dismiss' }, on: { click: () => { skewDismissed = true; show(skewNote, false); } } }));
+  notices.appendChild(skewNote);
+  const actions = h('div', { class: 'hud-actions' });
+  if (hudTop) hudTop.append(seasonBox, badge, raidBadge, threatBox, ribbon, notices, actions);
+  let skewDismissed = false;
+
+  // ---------------------------------------------------------------- flow strip
+  const flowText = h('div', { class: 'flow-text', attrs: { 'aria-live': 'off' } });
+  const flowFood = h('span', { class: 'flow-food' });
+  const flowAnts = h('span', { class: 'flow-ants' });
+  const flowWar = h('span', { class: 'flow-war' });
+  flowText.append(flowFood, h('span', { class: 'flow-sep', text: '▸' }), flowAnts, flowWar);
+  if (flowStrip) flowStrip.appendChild(flowText);
+
+  // ---------------------------------------------------------------- overlay bar
+  const ovBtns = {};
+  const ovGroups = { below: h('div', { class: 'ov-group' }, h('span', { class: 'ov-label', text: 'Below' })),
+    above: h('div', { class: 'ov-group' }, h('span', { class: 'ov-label', text: 'Above' })) };
+  for (const id of OVERLAY_IDS) {
+    const b = h('button', { type: 'button', class: 'ov-btn', text: OVERLAY_NAMES[id], dataset: { ov: id, tip: OVERLAY_TIPS[id] }, attrs: { 'aria-pressed': 'false' },
+      on: { click: () => setOverlay(id) } });
+    ovBtns[id] = b;
+    ovGroups[OVERLAY_VIEW[id] || 'above'].appendChild(b);
+  }
+  if (overlayBar) overlayBar.append(ovGroups.below, ovGroups.above);
+
+  function onBadge() {
+    const id = game.s.run.bottleneck && game.s.run.bottleneck.id;
+    if (id === 'raid') bridge.openTab('map', 'war');
+    else if (id === 'bn_housing' || id === 'bn_brood_slots' || id === 'bn_food_cap' || id === 'bn_lay_rate') bridge.openTab('build');
+    else if (id === 'hungry' || id === 'bn_food') bridge.openTab('colony');
+  }
+
+  // ---------------------------------------------------------------- update
+  function updateRail(s, d) {
+    const st = obj(d && d.stats);
+    const rates = obj(d && d.rates);
+    setText(brandName, (s.meta.settings && s.meta.settings.colonyName) || 'Six Legs Deep');
+    setText(brandSub, brandSubtitle(s, d));
+    for (const r of RAIL_RES) {
+      const x = rows[r.res];
+      const vis = isShown(s, r.key);
+      show(x.row, vis);
+      if (!vis) continue;
+      const v = num(s.run.res[r.res]);
+      setText(x.val, fmt(v));
+      const rt = obj(rates[r.res]);
+      const net = num(rt.net);
+      setText(x.rate, fmtRate(net));
+      toggleClass(x.rate, 'neg', net < 0);
+      toggleClass(x.rate, 'zero', net === 0);
+      show(x.sc, !!rt.sc);
+      const capV = r.cap ? num(st[r.cap], 0) : 0;
+      show(x.cap, capV > 0);
+      if (capV > 0) {
+        setBar(x.capFill, v / capV);
+        toggleClass(x.row, 'full', v >= capV * 0.99);
+        toggleClass(x.row, 'over', v > capV * 1.001);
+      }
+      toggleClass(x.row, 'glow', ui.getUI().glow === 'res:' + r.res);
+    }
+    const fw = isShown(s, 'fungus_widget');
+    show(fungusWidget, fw);
+    if (fw) {
+      const lv = num(s.run.res.leaves);
+      const lc = num(st.leafCap);
+      setText(leavesVal, fmt(lv));
+      setBar(leavesFill, lc > 0 ? lv / lc : 0);
+      const phi = Math.max(0, Math.min(1, num(s.run.colony.phi)));
+      setStyle(ring, '--phi', String(Math.round(phi * 100) / 100));
+      setText(ringVal, Math.round(phi * 100) + '%');
+    }
+    const a = obj(s.run.colony.adults);
+    const adults = num(a.minor) + num(a.soldier) + num(a.supermajor) + num(a.replete);
+    let brood = 0;
+    for (const c of arr(s.run.colony.brood)) brood += num(c && c.n);
+    setText(popVal, fmtCount(adults));
+    setText(popRate, brood > 0 ? '+' + fmtCount(brood) + ' brood' : '');
+    const showMeta = (k, vis, v) => { show(metaRows[k].row, vis); if (vis) setText(metaRows[k].val, fmtCount(v)); };
+    showMeta('alates', num(s.meta.counters.flights) > 0 || num(s.cycle.alates) > 0, num(s.cycle.alates));
+    showMeta('kinship', num(s.era.kinshipLife) > 0 || num(s.era.kinship) > 0, num(s.era.kinship));
+    showMeta('genes', num(s.meta.genesLife) > 0 || num(s.meta.genes) > 0, num(s.meta.genes));
+    const scale = num(d && d.meta && d.meta.colonyScale, num(st.colonyScale, 1));
+    show(scaleRow, scale > 1.0001);
+    setText(scaleVal, fmtMult(scale));
+    const dia = obj(s.meta.diapause);
+    const hasDia = num(dia.bank) > 0 && typeof game.actions.spendDiapause === 'function';
+    show(diaRow, hasDia);
+    if (hasDia) {
+      setText(diaVal, fmtTime(num(dia.bank)));
+      setText(diaBtn, dia.active ? 'Pause' : 'Spend');
+      toggleClass(diaRow, 'active', !!dia.active);
+    }
+  }
+
+  function updateTop(s, d) {
+    // season dial
+    const dialOn = isShown(s, 'season_dial');
+    show(seasonBox, dialOn);
+    if (dialOn) {
+      const si = seasonInfo(s, d);
+      setStyle(dialHand, 'transform', 'rotate(' + Math.round(si.frac * 3600) / 10 + 'deg)');
+      setAttrOnce(dialFace, si.order.join('-'));
+      setText(seasonName, (SEASON_NAMES[si.id] || si.id) + (si.id === 'winter' && si.mild ? ' (mild)' : ''));
+      setText(seasonNext, fmtClock(si.toNext) + ' → ' + (SEASON_NAMES[si.next] || si.next));
+      dial.setAttribute('aria-label', (SEASON_NAMES[si.id] || si.id) + ', ' + fmtClock(si.toNext) + ' until ' + (SEASON_NAMES[si.next] || si.next));
+      const fcOn = hasResearch(s, 'seasonal_clock');
+      show(forecast, fcOn);
+      if (fcOn) {
+        const w = d && d.season && d.season.forecast ? d.season.forecast.weather : null;
+        setText(forecast, w ? 'Forecast: ' + nameOf('event', w) + ' soon' : 'Forecast: clear');
+      }
+      for (const k of ['spring', 'summer', 'autumn', 'winter']) toggleClass(seasonBox, 'is-' + k, si.id === k);
+    }
+    // bottleneck badge
+    const bnId = s.run.bottleneck && s.run.bottleneck.id;
+    const urgent = bnId === 'raid' || bnId === 'hungry' || bnId === 'frost';
+    const badgeOn = !!bnId && (isShown(s, 'panel_build') || urgent);
+    show(badge, badgeOn);
+    if (badgeOn) {
+      // narrow: drop the "Bottleneck:" prefix so the badge fits beside the season dial (the tooltip still names it)
+      const bnText = bottleneckText(s, d);
+      setText(badge, ui.getUI().layout === 'narrow' ? bnText.replace(/^Bottleneck: /, '') : bnText);
+      const cls = 'bn-badge bn-' + bnId + (ui.getUI().glow === 'badge' ? ' glow' : '');
+      if (badge.__cls !== cls) { badge.__cls = cls; badge.className = cls; }
+    }
+    // raid badge (any raid in warning)
+    const warn = arr(s.run.war && s.run.war.raids).filter((r) => r && r.phase === 'warning');
+    show(raidBadge, warn.length > 0 && bnId !== 'raid');
+    if (warn.length) setText(raidBadge, '⚠ Raid in ' + fmtTime(Math.min(...warn.map((r) => num(r.warn)))));
+    // warning chips
+    const threats = activeThreats(s);
+    const shown = threats.slice(0, 3);
+    if (threats.length > 3) shown.push({ id: 'more', label: '+' + fmtCount(threats.length - 3), tip: threats.slice(3).map((x) => x.label).join(', '), t: -1, locate: null });
+    syncList(threatBox, shown, (x) => x.id, createThreatChip, updateThreatChip);
+    show(threatBox, shown.length > 0);
+    // next-unlock ribbon
+    const nu = ribbonInfo(s, d);
+    show(ribbon, !!nu);
+    if (nu) {
+      setBar(ribbonFill, num(nu.frac));
+      setText(ribbonLabel, ribbonText(nu));
+    }
+    show(skewNote, !!(s.meta.flags && s.meta.flags.clockSkew) && !skewDismissed);
+  }
+
+  function createThreatChip(x) {
+    const label = h('span', { class: 'threat-label' });
+    const time = h('span', { class: 'threat-time' });
+    const chip = h('button', { type: 'button', class: 'threat-chip', dataset: { threat: x.id } },
+      h('span', { class: 'threat-ico', attrs: { 'aria-hidden': 'true' } }), label, time);
+    let next = 0; // repeated clicks step through the spots (mold in several chambers, two antlion pits…)
+    chip.addEventListener('click', () => {
+      const cur = activeThreats(game.s).find((t) => t.id === chip.dataset.threat);
+      if (!cur || typeof bridge.locate !== 'function') return;
+      const spots = arr(cur.spots).length ? cur.spots : cur.locate ? [cur.locate] : [];
+      if (!spots.length) return;
+      bridge.locate(spots[next % spots.length]);
+      next = (next + 1) % spots.length;
+    });
+    chip.__r = { label, time };
+    return chip;
+  }
+
+  function updateThreatChip(chip, x) {
+    const r = chip.__r;
+    setText(r.label, x.label);
+    setText(r.time, num(x.t, -1) > 0 ? fmtTime(Math.ceil(x.t)) : '');
+    // live tooltip (tooltips.js 'threat:<id>'); the "+N" overflow chip lists the hidden ones as plain text
+    if (x.id === 'more') { if (chip.dataset.tip !== x.tip) chip.dataset.tip = x.tip; } else if (!chip.dataset.tipKey) chip.dataset.tipKey = 'threat:' + x.id;
+    chip.setAttribute('aria-label', x.label + '. ' + x.tip);
+    toggleClass(chip, 'locatable', !!x.locate);
+    toggleClass(chip, 'more', x.id === 'more');
+  }
+
+  function setAttrOnce(el, order) {
+    if (el.__order === order) return;
+    el.__order = order;
+    el.setAttribute('data-order', order);
+  }
+
+  function updateFlow(s, d) {
+    const gross = num(d && d.rates && d.rates.food && d.rates.food.gross);
+    setText(flowFood, '+' + fmtRate(gross).replace('/s', ' food/s'));
+    const j = obj(s.run.colony.jobs);
+    const out = num(j.forager) + num(j.scout) + num(j.herder) + num(j.leafcutter);
+    setText(flowAnts, fmtCount(out) + ' ants out');
+    const raids = arr(s.run.war && s.run.war.raids).filter((r) => r && r.phase !== 'done').length;
+    const parties = arr(s.run.war && s.run.war.parties).length;
+    const battles = arr(s.run.war && s.run.war.battles).length;
+    const parts = [];
+    if (raids) parts.push(fmtCount(raids) + ' raid' + (raids > 1 ? 's' : ''));
+    if (parties) parts.push(fmtCount(parties) + ' campaign' + (parties > 1 ? 's' : ''));
+    if (battles) parts.push(fmtCount(battles) + ' battle' + (battles > 1 ? 's' : ''));
+    setText(flowWar, parts.length ? ' ▸ ' + parts.join(', ') : '');
+    toggleClass(flowWar, 'danger', raids > 0);
+  }
+
+  function updateOverlays(s) {
+    const st = ui.getUI();
+    let any = false;
+    const vis = { below: false, above: false };
+    for (const id of OVERLAY_IDS) {
+      const view = OVERLAY_VIEW[id];
+      const inView = st.layout === 'wide-tall' || st.layout === 'wide-short' || st.view === 'split' || st.view === view;
+      const on = isShown(s, OVERLAY_KEYS[id]) && inView;
+      show(ovBtns[id], on);
+      if (on) { any = true; vis[view] = true; }
+      const pressed = !!st.overlays[id];
+      toggleClass(ovBtns[id], 'on', pressed);
+      ovBtns[id].setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    }
+    show(ovGroups.below, vis.below);
+    show(ovGroups.above, vis.above);
+    if (overlayBar) show(overlayBar, any);
+  }
+
+  return {
+    /** Container for app-level buttons (drawer / sheet toggles). */
+    actions,
+    update(s, d) {
+      if (!s || !s.run || !s.meta) return;
+      updateRail(s, d);
+      updateTop(s, d);
+      updateFlow(s, d);
+      updateOverlays(s);
+    },
+    destroy() {
+      for (const el of [rail, hudTop, flowStrip, overlayBar]) {
+        if (!el) continue;
+        for (const c of Array.from(el.childNodes)) {
+          if (c.tagName && c.tagName.toLowerCase() === 'canvas') continue;
+          el.removeChild(c);
+        }
+      }
+    },
+    /** Rail rows by resource (tests). */
+    _rows: rows,
+  };
+}

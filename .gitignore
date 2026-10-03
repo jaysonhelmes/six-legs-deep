@@ -1,0 +1,11 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+
+# Node (no dependencies, but just in case)
+node_modules/
+
+# Local profiling output
+*.cpuprofile
