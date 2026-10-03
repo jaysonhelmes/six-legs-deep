@@ -57,7 +57,7 @@ Each constraint is shown on the HUD as a **bottleneck badge**. The badge names t
 |---|---|---|---|
 | `bn_lay_rate` | Queen lay rate | All of these hold: food ≥ egg cost, a brood slot is free, housing is free, yet eggs wait on the lay timer | Royal Chamber levels, Royal Feeding, Queen's Feast, research |
 | `bn_brood_slots` | Brood slots | Brood = brood slots | Nursery placement and levels |
-| `bn_housing` | Housing | Minor adults + all brood ≥ housing | Gallery placement and levels |
+| `bn_housing` | Housing | Minor adults + minor brood ≥ housing (soldier/supermajor/replete/alate brood waits in its own berth or cell, C91) | Gallery placement and levels |
 | `bn_food_cap` | Food cap | Food ≥ 99% of the cap for more than 5 s | Granary levels, repletes |
 | `bn_food` | (secondary) Food | Food < egg cost | More foragers, better trails, Adaptations |
 

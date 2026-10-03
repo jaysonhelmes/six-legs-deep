@@ -145,3 +145,21 @@ test('F23: without spare production at the cap the store pays as before (no spil
   assert.equal(laid(ev), 1, 'one egg due, paid from the store');
   assert.ok(s.run.res.food < 120 - 40, 'the store paid for it');
 });
+
+test('C91: full housing does not block soldier eggs while Barracks berths are free', () => {
+  const { s, d } = capped();
+  d.nest.agg.housingBase = 100; // every Gallery place is taken by the 100 minors
+  d.nest.agg.foodCapBase = 1e6;
+  recompute(s, d, fakeEnv());
+  s.run.res.food = 5e5;
+  s.run.colony.casteTargets = { soldier: 0.9, supermajor: 0, replete: 0 };
+  let soldiers = 0;
+  let minors = 0;
+  for (let i = 0; i < 50; i++) {
+    const ev = colonyStep(s, d, 0.1);
+    soldiers += laid(ev, 'soldier');
+    minors += laid(ev, 'minor');
+  }
+  assert.ok(soldiers > 0, 'soldier eggs are laid into free berths');
+  assert.equal(minors, 0, 'no minor eggs: housing is full');
+});

@@ -6,7 +6,7 @@
 import { BOTTLENECK } from '../data/economy.js';
 import { clampNum } from '../core/math.js';
 import { broodTotal } from '../core/state.js';
-import { broodAllocation } from './population.js';
+import { broodAllocation, housingBrood } from './population.js';
 
 /** Finite number or the fallback. */
 function num(v, dflt = 0) {
@@ -44,7 +44,7 @@ export function tick(s, d, dt, env) {
   else {
     const B = broodTotal(s);
     const foodFree = food - num(col.eggReserve) * num(st.foodCap) >= num(st.eggCost && st.eggCost.minor);
-    if (num(col.adults.minor) + B >= num(st.housing)) id = 'bn_housing';
+    if (num(col.adults.minor) + housingBrood(s) >= num(st.housing)) id = 'bn_housing';
     else if (B >= num(st.broodSlots)) id = 'bn_brood_slots';
     else if (bn.capT > BOTTLENECK.capSec) id = 'bn_food_cap';
     else if (foodFree && num(col.layAcc) < 1) id = 'bn_lay_rate';

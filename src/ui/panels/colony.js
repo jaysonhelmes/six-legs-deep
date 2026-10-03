@@ -7,7 +7,7 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../do
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
 import { nameOf, JOB_TIPS, CASTE_TIPS, ADAPT_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
-import { broodSummary } from '../../systems/population.js';
+import { broodSummary, housingBrood } from '../../systems/population.js';
 import { idleMinors, jobCap } from '../../systems/jobs.js';
 import { cost as adaptCost, isAvailable as adaptAvailable } from '../../systems/adaptations.js';
 import { eggCost } from '../../systems/stats.js';
@@ -335,7 +335,7 @@ export function createPanel(root, { game, ui, bridge }) {
       const slots = num(st.broodSlots, 3);
       slotBar.set(slots > 0 ? brood / slots : 0, 'Brood ' + fmtCount(brood) + ' / ' + fmtCount(slots) + ' slots');
       const housing = num(st.housing, 10);
-      const used = num(adults.minor) + brood;
+      const used = num(adults.minor) + num(q(() => housingBrood(s), brood));
       houseBar.set(housing > 0 ? used / housing : 0, 'Housing ' + fmtCount(used) + ' / ' + fmtCount(housing));
       toggleClass(houseBar.el, 'full', used >= housing);
       setText(layEl, fmtRate(num(st.layRate)) + (c.hungry ? ' (hungry)' : ''));

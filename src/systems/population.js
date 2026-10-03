@@ -59,6 +59,16 @@ function broodOf(s, caste) {
   return n;
 }
 
+/**
+ * [q] Brood that will live in housing when it hatches (minors). Soldier / supermajor / replete / alate brood occupies
+ * its own berth or cell instead (C91), so a full Gallery never blocks soldiers while Barracks berths are free.
+ */
+export function housingBrood(s) {
+  let n = 0;
+  for (const c of s.run.colony.brood) if (own(CASTES, c.c) && CASTES[c.c].house === 'housing') n += c.n;
+  return n;
+}
+
 /** Integer run second used to merge cohorts. */
 function runSecond(s) {
   return Math.floor(num(s.run.time) + EPS);
@@ -83,7 +93,7 @@ function freeRoom(s, d, caste) {
   const st = d.stats;
   const B = broodTotal(s);
   switch (CASTES[caste].house) {
-    case 'housing': return num(st.housing) - num(col.adults.minor) - B;
+    case 'housing': return num(st.housing) - num(col.adults.minor) - housingBrood(s);
     case 'berths': return num(st.berths) - num(col.adults.soldier) - num(col.adults.supermajor) - broodOf(s, 'soldier') - broodOf(s, 'supermajor');
     case 'repleteBerths': return num(st.repleteBerths) - num(col.adults.replete) - broodOf(s, 'replete');
     case 'alateCells': return num(st.alateCells) - num(col.alatesReared) - broodOf(s, 'alate');
@@ -444,8 +454,7 @@ function layBatch(s, d, caste, want, env) {
   const st = d.stats;
   const res = s.run.res;
   const B = broodTotal(s);
-  let n = Math.min(want, num(st.broodSlots) - B, num(st.housing) - num(col.adults.minor) - B);
-  if (caste !== 'minor') n = Math.min(n, freeRoom(s, d, caste));
+  let n = Math.min(want, num(st.broodSlots) - B, freeRoom(s, d, caste)); // each caste is capped by its own home (C91)
   const base = eggCost(s, d, caste);
   if (!base || !(n > EPS)) return 0;
   const sp = d.meta && d.meta.sp ? d.meta.sp : {};

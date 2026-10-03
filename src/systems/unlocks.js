@@ -293,7 +293,7 @@ function adultRate(s, d) {
   if (!d || !d.stats) return 0;
   const col = s.run.colony;
   if (col.hungry) return 0;
-  if (num(col.adults.minor) + broodTotal(s) >= num(d.stats.housing)) return 0;
+  if (num(col.adults.minor) + population.housingBrood(s) >= num(d.stats.housing)) return 0;
   return num(d.stats.layRate);
 }
 
