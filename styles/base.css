@@ -227,6 +227,19 @@ canvas { display: block; }
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   grid-template-areas: 'hud' 'below' 'overlay' 'tabs';
 }
+/* flipped (#view-flip): Below over Above when stacked, Above | seam | Below side by side. Each canvas keeps its size. */
+#app[data-flip='true'][data-view='split'] #stage { grid-template-areas: 'hud' 'below' 'flow' 'above' 'overlay'; }
+#app[data-flip='true'][data-layout='wide-tall'][data-view='split'] #stage { grid-template-rows: auto minmax(0, 45fr) var(--flow-h) minmax(0, 55fr) auto; }
+#app[data-flip='true'][data-view='side'] #stage {
+  grid-template-columns: minmax(0, 45fr) 22px minmax(0, 30fr);
+  grid-template-areas: 'hud hud hud' 'above flow below' 'overlay overlay overlay';
+}
+#app[data-flip='true']:is([data-layout='medium'], [data-layout='narrow'])[data-view='split'] #stage {
+  grid-template-areas: 'hud' 'below' 'flow' 'above' 'overlay' 'tabs';
+}
+#app[data-flip='true']:is([data-layout='medium'], [data-layout='narrow'])[data-view='side'] #stage {
+  grid-template-areas: 'hud hud hud' 'above flow below' 'overlay overlay overlay' 'tabs tabs tabs';
+}
 #app[data-view='above'] #view-below,
 #app[data-view='above'] #flow-strip,
 #app[data-view='below'] #view-above,

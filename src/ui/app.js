@@ -249,6 +249,18 @@ export function mountUI(root, game, opts = {}) {
     viewBtns[id] = b;
     viewTabs.appendChild(b);
   }
+  // Flip: swap which side Above and Below sit on in the two-canvas views (remembered per browser).
+  const FLIP_KEY = 'sld.ui.viewFlip';
+  let flipped = false;
+  try { flipped = !!(win && win.localStorage && win.localStorage.getItem(FLIP_KEY) === '1'); } catch { /* storage blocked */ }
+  const flipBtn = h('button', { type: 'button', class: 'view-tab view-flip', dataset: { tip: 'Swap the sides of the map and the nest.' },
+    text: '⇄', attrs: { 'aria-label': 'Swap map and nest sides', 'aria-pressed': 'false' },
+    on: { click: () => {
+      flipped = !flipped;
+      try { if (win && win.localStorage) win.localStorage.setItem(FLIP_KEY, flipped ? '1' : '0'); } catch { /* this session only */ }
+      syncViews();
+    } } });
+  viewTabs.appendChild(flipBtn);
   /** The view the player picked last in this browser, or null. */
   function storedView() {
     try {
@@ -415,6 +427,11 @@ export function mountUI(root, game, opts = {}) {
     const view = effectiveView(st.view, st.layout);
     root.setAttribute('data-inset', inset ? 'true' : 'false');
     root.setAttribute('data-view', view);
+    root.setAttribute('data-flip', flipped ? 'true' : 'false');
+    flipBtn.hidden = !(view === 'split' || view === 'side');
+    flipBtn.textContent = view === 'side' ? '⇄' : '⇅';
+    toggleClass(flipBtn, 'active', flipped);
+    flipBtn.setAttribute('aria-pressed', flipped ? 'true' : 'false');
     const offered = viewsFor(st.layout);
     for (const id of Object.keys(viewBtns)) {
       viewBtns[id].hidden = !offered.includes(id);

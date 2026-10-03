@@ -1079,3 +1079,4 @@
   .bn-badge, .raid-badge { font-size: var(--fs-xs); padding: 4px 10px; }
   .unlock-ribbon { flex-basis: 100%; max-width: none; }
 }
+.view-tab.view-flip { flex: none; min-width: 34px; font-size: 1rem; }
