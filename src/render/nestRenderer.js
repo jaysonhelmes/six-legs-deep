@@ -2,10 +2,11 @@
 // wavy strata boundaries, flecks/pebbles, roots, stones, water, Strata fossils; batched soil painting; dirty-region
 // redraws on rev/cellDug/chamber changes) with passages drawn as smooth rounded tubes (dark rims, lit floors) and each
 // chamber as one organic cavity (vaulted ceiling, flat floor, a doorway per run of touching passage) → decorative soil
-// margins either side → cache hints → chamber contents clipped to the cavity (seed piles, brood heaps, fungus domes,
-// hanging repletes, alates, midden…) → frost line → flood → ant sprites (BFS fields; the queen on top) → mold spots →
-// labels (level badges, short names where they fit, full name on hover/selection) → placement ghost / tool previews
-// → dig-queue progress → overlays → Hungry vignette, raid shaft flash, gate fight → camera buttons and the queen chip.
+// margins either side → cache hints → chamber set dressing (nestDecor, cached) and contents clipped to the cavity
+// (seed piles, brood heaps, fungus domes, hanging repletes, alates…) → frost line → flood → ant sprites (BFS fields;
+// the queen on top) → mold spots → labels (level badges, short names where they fit, full name on hover/selection)
+// → placement ghost / tool previews → dig-queue progress → overlays → Hungry vignette, raid shaft flash, gate fight
+// → camera buttons and the queen chip.
 // Default framing keeps the Royal Chamber in view at every layout (camera.frame); the player can zoom and pan. A
 // ceremony that moves the view (ceremonyView) hands it back to the default framing when it ends (F20); the public
 // locate API glides to a cell (centerOnCell) and rings it (ping).
@@ -40,6 +41,7 @@ import { seamHub } from './seam.js';
 import { activeCeremony, drawCeremonyNest, compactInt, registerRenderer } from './ceremony.js';
 import { drawNestStrip } from './minimap.js';
 import * as art from './nestArt.js';
+import * as decor from './nestDecor.js';
 
 const COLS = GRID.cols;
 const ROWS = GRID.rows;
@@ -251,6 +253,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   const glows = []; // { uid, t, max }
   const ghostMemo = { key: '', res: null };
   const levelMemo = { key: '', res: null };
+  /** per-chamber static decoration cache (nestDecor.js), at the strata-cache resolution */
+  const decorCache = decor.createDecorCache();
 
   /** Preview channel written by nestInput.js (WP8-internal). ctlHover: hovered camera button. */
   const input = { hoverCell: -1, drag: null, rect: null, levelDir: null, pointer: null, ctlHover: null };
@@ -336,6 +340,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     cache.featRev = -1;
     cache.featRef = null;
     cache.chamberKeys.clear();
+    decorCache.clear();
     cache.force.fill(0);
     geo.rev = -1;
     geo.cellsRef = null;
@@ -1777,6 +1782,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const blight = (s.run.events && (s.run.events.active || []).some((a) => a && a.id === 'ev_fungal_blight'))
       || (s.run.events && (s.run.events.objects || []).some((o) => o && o.kind === 'blight'));
     const ventilated = !!(s.run.research && s.run.research.ventilation_shafts);
+    const winter = !!(d && d.season && d.season.id === 'winter');
     const ui0 = uiOf(ui);
     const sel = ui0.selection && ui0.selection.view === 'nest' ? ui0.selection : null;
     const hov = ui0.hover && ui0.hover.view === 'nest' ? ui0.hover : null;
@@ -1803,7 +1809,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
           ctx.clip();
         }
         ctx.globalAlpha = chamberStatusAlpha(c);
-        drawContent(ctx, s, d, c, k, r, box, unit, { plan, res, stats, colony, blight, ventilated, exposed });
+        drawContent(ctx, s, d, c, k, r, box, unit, { plan, res, stats, colony, blight, ventilated, exposed, winter });
         ctx.globalAlpha = 1;
         if (exposed) {
           ctx.fillStyle = 'rgba(200,230,255,0.16)';
@@ -1876,16 +1882,16 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   }
 
   function drawContent(ctx, s, d, c, k, r, box, unit, o) {
+    // set dressing first (cached static layer), then the live contents, then the subtle animated layer
+    const dOpts = decorOpts(c, r, box, unit, o.winter);
+    decorCache.draw(ctx, c, box, unit, cache.cpp || cppFor(unit), dOpts);
     switch (c.type) {
       case 'royal_chamber':
         drawRoyal(ctx, s, d, c, r, unit, o.plan.get(c.uid), box);
         break;
       case 'nursery':
-        art.drawBroodHeaps(ctx, box, o.plan.get(c.uid) || { egg: 0, larva: 0, pupa: 0 }, o.exposed, unit, MAX_BROOD_SPRITES);
-        break;
       case 'hibernaculum':
-        art.drawHib(ctx, box, unit);
-        art.drawBroodHeaps(ctx, box, o.plan.get(c.uid) || { egg: 0, larva: 0, pupa: 0 }, false, unit, MAX_BROOD_SPRITES);
+        art.drawBroodHeaps(ctx, box, o.plan.get(c.uid) || { egg: 0, larva: 0, pupa: 0 }, c.type === 'nursery' && o.exposed, unit, MAX_BROOD_SPRITES);
         break;
       case 'granary':
         art.drawSeedPile(ctx, box, unit, clamp((o.res.food || 0) / Math.max(1, o.stats.foodCap || 150), 0, 1),
@@ -1906,36 +1912,30 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       case 'midden': {
         const load = adultsTotal(s) / Math.max(1, 100 * Math.max(1, c.level || 1) * ((d && d.meta && d.meta.colonyScale) || 1));
         // ARCH-R: "overloaded" read as more than 100 adults × colonyScale per midden level (DESIGN §7.13 gives no number)
-        art.drawMidden(ctx, box, unit, clamp(load - 1, 0, 1));
+        const dark = clamp(load - 1, 0, 1);
+        if (dark > 0) {
+          ctx.fillStyle = `rgba(10,6,3,${(0.5 * dark).toFixed(3)})`;
+          ctx.fillRect(box.x - unit, box.y - unit, box.w + 2 * unit, box.h + 2 * unit);
+        }
         break;
       }
-      case 'scent_library':
-        art.drawLibrary(ctx, box, unit, time);
-        break;
-      case 'root_aphid_pen':
-        art.drawPen(ctx, box, unit, time, NEST.root);
-        break;
-      case 'thermal_chimney':
-        art.drawChimney(ctx, box, unit, time);
-        break;
-      case 'gate':
-        art.drawGate(ctx, box, unit);
-        break;
-      case 'water_well':
-        art.drawWell(ctx, box, unit, time, rgba(NEST.water, 0.9), rgba(NEST.waterLight, 0.75));
-        break;
-      case 'deep_vault':
-        art.drawVault(ctx, box, unit, NEST.amber);
-        break;
-      case 'barracks':
-        art.drawBarracks(ctx, box, unit);
-        break;
-      case 'gallery':
-        art.drawGallery(ctx, box, unit);
-        break;
       default:
         break;
     }
+    if (decor.hasDecorAnim(c.type)) {
+      dOpts.still = reduced;
+      decor.drawDecorAnim(ctx, c.type, box, unit, reduced ? 0 : time, c.uid, dOpts);
+    }
+  }
+
+  /** Decoration options for a chamber: season flag and, for the Royal Chamber, where the queen rests. */
+  function decorOpts(c, r, box, unit, winter) {
+    if (c.type !== 'royal_chamber') return { winter };
+    const grow = 1 + Math.min(0.5, 0.07 * (Math.max(1, c.level || 1) - 1));
+    const q = queenPos(c, r, unit);
+    const qf = box.w > 0 ? (q.x - box.x) / box.w : 0.4;
+    const qh = (box.y + box.h - q.y) / unit;
+    return { winter, grow, qf, qh, key: `${grow.toFixed(2)}|${qf.toFixed(3)}` };
   }
 
   /**
@@ -2161,7 +2161,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     for (let k = 0; k < shown; k++) {
       const x = box.x + unit * 0.45 + (k % per) * ((box.w - unit * 0.9) / Math.max(1, per - 1));
       const y = box.y + box.h - unit * 0.45 - Math.floor(k / per) * unit * 0.7;
-      atlas.drawAnt(ctx, 'alate', 'none', k % 2 ? Math.PI : 0, (Math.floor(time * 4 + k) & 1), x, y, unit * 0.9, null, NEST.antOutline);
+      atlas.drawAnt(ctx, 'alate', 'none', k % 2 ? Math.PI : 0, (reduced ? 0 : Math.floor(time * 4 + k) & 1), x, y, unit * 0.9, null, NEST.antOutline);
     }
   }
 

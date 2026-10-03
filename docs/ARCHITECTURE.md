@@ -123,7 +123,9 @@
 │  │  │                             horizontal pan past the width, default framing on the Royal Chamber (§13.5)
 │  │  ├─ particles.js               rain, snow, leaves, soil pellets, chitin glints (≤ 300)
 │  │  ├─ nestArt.js                 Below art helpers (pure painters): organic chamber outlines, wavy strata boundary, short
-│  │  │                             chamber names, chamber contents (brood heaps, seed piles, fungus, repletes, alates, midden), mold
+│  │  │                             chamber names, chamber contents (brood heaps, seed piles, fungus, repletes), mold
+│  │  ├─ nestDecor.js               per-chamber-type set dressing (roots and aphids, scent shelves, pools, stone linings…),
+│  │  │                             cached per chamber offscreen; subtle animated layer (wisps, heat, ripples) honouring reduced motion
 │  │  ├─ nestRenderer.js            Below canvas: strata cache, cells, chambers, brood, queen, dig face, frost line, ghosts,
 │  │  │                             labels, camera buttons and queen chip, locate glide and ping
 │  │  ├─ surfaceRenderer.js         Above canvas: terrain cache, fog, territory, trails, sources, rivals, parties, objects
