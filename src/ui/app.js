@@ -3,7 +3,8 @@
 // Owner: WP9. Contract: ARCHITECTURE §14.1, §14.2, §14.4–§14.6; DESIGN §25.
 
 import * as uistate from './uistate.js';
-import { TAB_IDS, getUI, setUI, onUI, sameTarget } from './uistate.js';
+import { TAB_IDS, getUI, setUI, onUI, sameTarget, VIEWS, VIEW_ORDER, VIEW_LABELS, VIEW_KEY, viewsFor, defaultViewFor, effectiveView, viewShows,
+  nextView, toolView } from './uistate.js';
 import { h, show, toggleClass, clear } from './dom.js';
 import { setNotation, fmt, fmtTime } from './format.js';
 import {
@@ -238,13 +239,32 @@ export function mountUI(root, game, opts = {}) {
   banner.hidden = true;
   root.appendChild(banner);
 
+  // View switcher (every layout, C96): Above / Below / Stacked / Side by side; the choice is kept per browser.
   const viewBtns = {};
-  for (const [id, label] of [['above', 'Above'], ['below', 'Below'], ['split', 'Split']]) {
-    const b = h('button', { type: 'button', class: 'view-tab', dataset: { view: id }, text: label, attrs: { 'aria-pressed': 'false' },
-      on: { click: () => setUI({ view: id }) } });
+  viewTabs.setAttribute('role', 'group');
+  for (const id of VIEW_ORDER) {
+    const b = h('button', { type: 'button', class: 'view-tab', dataset: { view: id, tip: VIEW_LABELS[id] + ' view. Key V cycles the views.' },
+      text: VIEW_LABELS[id], attrs: { 'aria-pressed': 'false', 'aria-keyshortcuts': 'V' },
+      on: { click: () => chooseView(id) } });
     viewBtns[id] = b;
     viewTabs.appendChild(b);
   }
+  /** The view the player picked last in this browser, or null. */
+  function storedView() {
+    try {
+      const v = win && win.localStorage ? win.localStorage.getItem(VIEW_KEY) : null;
+      return VIEWS.includes(v) ? v : null;
+    } catch {
+      return null;
+    }
+  }
+  /** Player choice: switch and remember it (programmatic switches, e.g. locate, are not remembered). */
+  function chooseView(id) {
+    if (!VIEWS.includes(id)) return;
+    setUI({ view: id });
+    try { if (win && win.localStorage) win.localStorage.setItem(VIEW_KEY, id); } catch { /* storage blocked: this session only */ }
+  }
+  let viewLayout = null; // the layout the current view was chosen for
 
   const sheetBtn = h('button', { type: 'button', class: 'sheet-handle', attrs: { 'aria-label': 'Resize panel' },
     on: { click: () => setSheet(SHEETS[(SHEETS.indexOf(sheet) + 1) % SHEETS.length]) } }, h('span', { class: 'grip' }));
@@ -343,7 +363,9 @@ export function mountUI(root, game, opts = {}) {
   function openTab(tabId, sub = null, { expand = true } = {}) {
     if (!TAB_IDS.includes(tabId)) return;
     if (!tabVisible(tabId)) return;
-    setUI({ tab: tabId, subTab: sub });
+    // switching to another panel tab puts down the active canvas tool (claim, satellite, chamber placement…), C96
+    const switching = getUI().tab !== tabId;
+    setUI(switching && getUI().tool ? { tab: tabId, subTab: sub, tool: null } : { tab: tabId, subTab: sub });
     markVisited(tabId);
     freshTabs.delete(tabId);
     const st = getUI();
@@ -377,9 +399,11 @@ export function mountUI(root, game, opts = {}) {
     const hh = win ? win.innerHeight : 900;
     const layout = layoutFor(w, hh);
     root.setAttribute('data-layout', layout);
-    if (getUI().layout !== layout) {
+    if (getUI().layout !== layout || viewLayout !== layout) {
+      // a new layout opens in the player's remembered view, else in the layout's own default (C96)
       const patch = { layout };
-      if (layout === 'narrow' && getUI().view === 'split') patch.view = 'above';
+      if (viewLayout !== layout) patch.view = storedView() || defaultViewFor(layout);
+      viewLayout = layout;
       setUI(patch);
     }
     syncViews();
@@ -388,15 +412,18 @@ export function mountUI(root, game, opts = {}) {
   function syncViews() {
     const st = getUI();
     const inset = isInset(game.s);
+    const view = effectiveView(st.view, st.layout);
     root.setAttribute('data-inset', inset ? 'true' : 'false');
-    root.setAttribute('data-view', st.view);
+    root.setAttribute('data-view', view);
+    const offered = viewsFor(st.layout);
     for (const id of Object.keys(viewBtns)) {
-      toggleClass(viewBtns[id], 'active', st.view === id);
-      viewBtns[id].setAttribute('aria-pressed', st.view === id ? 'true' : 'false');
+      viewBtns[id].hidden = !offered.includes(id);
+      toggleClass(viewBtns[id], 'active', view === id);
+      viewBtns[id].setAttribute('aria-pressed', view === id ? 'true' : 'false');
     }
-    const narrowish = st.layout === 'medium' || st.layout === 'narrow';
-    const aboveVis = !narrowish || st.view !== 'below' || inset;
-    const belowVis = !narrowish || st.view !== 'above' || inset;
+    const shows = viewShows(view, st.layout);
+    const aboveVis = shows.above || inset;
+    const belowVis = shows.below || inset;
     if (renderers) {
       const r = renderers;
       if (r.__inset !== inset && r.nest && typeof r.nest.setInset === 'function') { r.__inset = inset; safe(() => r.nest.setInset(inset)); }
@@ -416,6 +443,16 @@ export function mountUI(root, game, opts = {}) {
   }
   offs.push(onUI((st, changed) => {
     if (changed.includes('view') || changed.includes('layout')) syncViews();
+    // tool lifecycle (C96): arming a tool brings its canvas into view; hiding a tool's canvas puts the tool down
+    const tv = toolView(st.tool);
+    if (tv && !isInset(game.s)) {
+      const shows = viewShows(st.view, st.layout);
+      const visible = tv === 'nest' ? shows.below : shows.above;
+      if (!visible) {
+        if (changed.includes('tool')) setUI({ view: tv === 'nest' ? 'below' : 'above' });
+        else if (changed.includes('view') || changed.includes('layout')) setUI({ tool: null });
+      }
+    }
     if (changed.includes('tab') || changed.includes('subTab') || changed.includes('selection') || changed.includes('tool') || changed.includes('glow')) refresh(true);
   }));
 
@@ -569,9 +606,9 @@ export function mountUI(root, game, opts = {}) {
     const st = getUI();
     // the medium drawer docks beside the canvas (styles/panels.css), so it no longer has to close
     if (st.layout === 'narrow' && sheet !== 'peek') setSheet('peek');
-    const narrowish = st.layout === 'medium' || st.layout === 'narrow';
+    const shows = viewShows(st.view, st.layout);
     if (loc.view === 'nest') {
-      if (narrowish && st.view === 'above') setUI({ view: 'below' });
+      if (!shows.below) setUI({ view: 'below' });
       const cols = num(GRID && GRID.cols, 40);
       const cell = nestCellOf(loc);
       const r = renderers && renderers.nest;
@@ -588,7 +625,7 @@ export function mountUI(root, game, opts = {}) {
       if (r && typeof r.ping === 'function') safe(() => r.ping(cell));
       if (num(loc.chamber) > 0) setUI({ selection: { view: 'nest', kind: 'chamber', id: num(loc.chamber) } });
     } else if (loc.view === 'surface' && num(loc.hex, -1) >= 0) {
-      if (narrowish && st.view === 'below') setUI({ view: 'above' });
+      if (!shows.above) setUI({ view: 'above' });
       const r = renderers && renderers.surface;
       if (r && typeof r.centerOn === 'function') safe(() => r.centerOn(num(loc.hex)));
       if (r && typeof r.ping === 'function') safe(() => r.ping(num(loc.hex)));
@@ -805,14 +842,12 @@ export function mountUI(root, game, opts = {}) {
       if (sel && sel.kind === 'trail') runAct('rally', { uid: sel.id }, null);
       return;
     }
-    if (ev.key === 'Tab' && !ev.shiftKey) {
+    // V cycles Above → Below → Stacked → Side by side (C96). Tab stays the browser's focus key: browsers and
+    // keyboard users rely on it, and it never reached the game reliably.
+    if ((ev.key === 'v' || ev.key === 'V') && !ev.shiftKey) {
       const st = getUI();
-      const free = !tag || tag === 'body' || tag === 'canvas' || tag === 'html';
-      if ((st.layout === 'medium' || st.layout === 'narrow') && free) {
-        const order = ['above', 'below', 'split'];
-        setUI({ view: order[(order.indexOf(st.view) + 1) % order.length] });
-        ev.preventDefault();
-      }
+      if (!isInset(game.s)) chooseView(nextView(st.view, st.layout));
+      ev.preventDefault();
     }
   };
   if (docu && docu.addEventListener) {

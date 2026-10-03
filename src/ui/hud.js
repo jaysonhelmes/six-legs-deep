@@ -8,12 +8,13 @@ import {
   RES_NAMES, SEASON_NAMES, BOTTLENECK_NAMES, BOTTLENECK_STATE, OVERLAY_NAMES, OVERLAY_TIPS, OVERLAY_VIEW, nameOf, unlockLabel, unlockHint,
 } from './text.js';
 import { isShown, hasResearch, num, arr, obj } from './reveal.js';
-import { OVERLAY_IDS, setOverlay } from './uistate.js';
+import { OVERLAY_IDS, setOverlay, viewShows } from './uistate.js';
 import { broodSummary } from '../systems/population.js';
 import { firstHatchEta, adultsEta } from './intro.js';
 import { UNLOCKS, REVEAL } from '../data/unlocks.js';
 import { GRID } from '../data/balance.js';
 import { frontWindows } from './rules.js';
+import { rivalName } from '../systems/rivals.js';
 
 /** Rail resources in order with their reveal keys (ARCHITECTURE §11; leaves live in the fungus widget only). */
 export const RAIL_RES = Object.freeze([
@@ -213,6 +214,25 @@ function moldCell(s, o) {
 }
 
 /**
+ * Raids in warning for the HUD raid chip (C72, C96), soonest first. Pure. The raid has its own chip so the bottleneck
+ * badge keeps naming the colony's real limit. Each: { uid, t (seconds to arrival), target: 'nest' | 'trail', rival
+ * (display name), locate: { view: 'surface', hex } (the raiders' nest, else the main entrance) | null }.
+ * @param {Object} s
+ * @returns {Array<Object>}
+ */
+export function raidAlerts(s) {
+  const raids = arr(s && s.run && s.run.war && s.run.war.raids).filter((r) => r && r.phase === 'warning');
+  const list = arr(s && s.run && s.run.rivals && s.run.rivals.list);
+  const entr = arr(s && s.run && s.run.surface && s.run.surface.entrances).find((e) => e && e.kind === 'main');
+  return raids.map((r) => {
+    const rv = list.find((x) => x && x.uid === r.rival);
+    const hex = rv && Number.isInteger(rv.hex) ? rv.hex : entr && Number.isInteger(entr.hex) ? entr.hex : -1;
+    return { uid: num(r.uid), t: Math.max(0, num(r.warn)), target: r.target && r.target.type === 'trail' ? 'trail' : 'nest',
+      rival: rv ? rivalName(rv.type) : 'Rivals', locate: hex >= 0 ? { view: 'surface', hex } : null };
+  }).sort((a, b) => a.t - b.t || a.uid - b.uid);
+}
+
+/**
  * Active negative effects for the HUD warning chips, most severe first. Pure.
  * Each: { id, label, tip, t (seconds left, -1 = until cleared), n (count), locate (for bridge.locate) | null }.
  * locate: { view: 'nest', cell?, row?, chamber? } | { view: 'surface', hex }.
@@ -371,7 +391,19 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
   const seasonBox = h('div', { class: 'season-box' }, dial, h('span', { class: 'season-text' }, seasonName, seasonNext, forecast));
   const badge = h('button', { type: 'button', class: 'bn-badge', dataset: { tipKey: 'bottleneck', glowKey: 'badge' },
     on: { click: () => onBadge() } });
-  const raidBadge = h('button', { type: 'button', class: 'raid-badge', on: { click: () => bridge.openTab('map', 'war') } });
+  // Raid chip (C72, C96): an incoming raid gets its own chip with the countdown; the bottleneck badge keeps the real
+  // limit. A click brings the raiders' nest into view (repeated clicks step through several raids).
+  const raidLabel = h('span', { class: 'threat-label' });
+  const raidTime = h('span', { class: 'threat-time' });
+  const raidBadge = h('button', { type: 'button', class: 'threat-chip raid-chip locatable', dataset: { threat: 'raid' } },
+    h('span', { class: 'threat-ico', attrs: { 'aria-hidden': 'true' } }), raidLabel, raidTime);
+  let raidNext = 0;
+  raidBadge.addEventListener('click', () => {
+    const spots = raidAlerts(game.s).filter((x) => x.locate);
+    if (!spots.length || typeof bridge.locate !== 'function') { bridge.openTab('map', 'war'); return; }
+    bridge.locate(spots[raidNext % spots.length].locate);
+    raidNext = (raidNext + 1) % spots.length;
+  });
   // Warning chips for active negative effects (mold, flood, ladybugs…): the bottleneck badge names only the binding
   // limit, so a chamber halved by mold used to read as "Food cap". Click → bridge.locate (scroll / centre on it).
   const threatBox = h('div', { class: 'threats', role: 'group', attrs: { 'aria-label': 'Active threats' } });
@@ -506,10 +538,17 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
       const cls = 'bn-badge bn-' + bnId + (ui.getUI().glow === 'badge' ? ' glow' : '');
       if (badge.__cls !== cls) { badge.__cls = cls; badge.className = cls; }
     }
-    // raid badge (any raid in warning)
-    const warn = arr(s.run.war && s.run.war.raids).filter((r) => r && r.phase === 'warning');
-    show(raidBadge, warn.length > 0 && bnId !== 'raid');
-    if (warn.length) setText(raidBadge, '⚠ Raid in ' + fmtTime(Math.min(...warn.map((r) => num(r.warn)))));
+    // raid chip (every raid in warning, soonest first)
+    const raids = raidAlerts(s);
+    show(raidBadge, raids.length > 0);
+    if (raids.length) {
+      const first = raids[0];
+      setText(raidLabel, raids.length > 1 ? fmtCount(raids.length) + ' raids' : 'Raid');
+      setText(raidTime, fmtTime(Math.ceil(first.t)));
+      const tip = first.rival + ' raid your ' + first.target + ' in ' + fmtTime(Math.ceil(first.t)) + '. Click to show.';
+      if (raidBadge.dataset.tip !== tip) raidBadge.dataset.tip = tip;
+      raidBadge.setAttribute('aria-label', tip);
+    }
     // warning chips
     const threats = activeThreats(s);
     const shown = threats.slice(0, 3);
@@ -582,9 +621,10 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     const st = ui.getUI();
     let any = false;
     const vis = { below: false, above: false };
+    const shows = viewShows(st.view, st.layout);   // overlays for the canvases on screen (every layout, C96)
     for (const id of OVERLAY_IDS) {
       const view = OVERLAY_VIEW[id];
-      const inView = st.layout === 'wide-tall' || st.layout === 'wide-short' || st.view === 'split' || st.view === view;
+      const inView = view === 'below' ? shows.below : shows.above;
       const on = isShown(s, OVERLAY_KEYS[id]) && inView;
       show(ovBtns[id], on);
       if (on) { any = true; vis[view] = true; }

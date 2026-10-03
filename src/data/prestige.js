@@ -17,9 +17,9 @@ function deepFreeze(o) {
 }
 
 /** Nuptial Flight (DESIGN §13.1, §13.2): alates = floor(SC(base × (fRun/div)^exp × (1 + tPeak/tPeakDiv) × (1 + rearedPer × reared) × …)).
- *  fRunMin (the Flight gate, 1.4e8 → 11 alates) is above div (the formula anchor, 1e8 → 10). */
+ *  fRunMin (the Flight gate, 1.7e8 → 13 alates; ARCHITECTURE §18 C97) is above div (the formula anchor, 1e8 → 10). */
 export const FLIGHT = deepFreeze({
-  fRunMin: 1.4e8, base: 10, div: 1e8, exp: 0.5, tPeakDiv: 400, rearedPer: 0.02, rearedMax: 25, rearedMaxCourt: 50,
+  fRunMin: 1.7e8, base: 10, div: 1e8, exp: 0.5, tPeakDiv: 400, rearedPer: 0.02, rearedMax: 25, rearedMaxCourt: 50,
   royalLevel: 5, tabFRun: 2e7, peakGlow: 0.97, ceremonySprites: 120,
 });
 

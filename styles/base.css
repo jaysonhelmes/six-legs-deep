@@ -76,6 +76,7 @@
   --flow-h: 26px;
   --sheet-peek: 64px;
   --hud-h: 44px;
+  --view-tabs-w: 330px;
 }
 
 /* ------------------------------------------------------------------ tokens: light */
@@ -165,57 +166,71 @@ canvas { display: block; }
 #stage { grid-area: stage; min-width: 0; min-height: 0; position: relative; display: grid; gap: 6px; padding: 8px; }
 #panels { grid-area: panels; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
-/* wide-tall: three columns — rail | Above over Below | panels */
+/* wide-tall: three columns — rail | stage | panels */
 #app[data-layout='wide-tall'] {
   grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--panels-w);
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: 'rail stage panels';
 }
-#app[data-layout='wide-tall'] #stage {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 55fr) var(--flow-h) minmax(0, 45fr) auto;
-  grid-template-areas: 'hud' 'above' 'flow' 'below' 'overlay';
-}
 
-/* wide-short: side by side — Below (30 %) | seam | Above (45 %) | panels; rail becomes a top bar */
+/* wide-short: the rail becomes a top bar; stage | panels */
 #app[data-layout='wide-short'] {
   grid-template-columns: minmax(0, 1fr) 360px;
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: 'rail panels' 'stage panels';
 }
-#app[data-layout='wide-short'] #stage {
-  grid-template-columns: minmax(0, 30fr) 22px minmax(0, 45fr);
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  grid-template-areas: 'hud hud hud' 'below flow above' 'overlay overlay overlay';
-}
 
-/* medium and narrow: one canvas area with Above / Below / Split tabs; rail is a top bar */
+/* medium and narrow: the rail is a top bar over the stage */
 #app[data-layout='medium'], #app[data-layout='narrow'] {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: 'rail' 'stage';
 }
-#app[data-layout='medium'] #stage, #app[data-layout='narrow'] #stage {
+
+/* stage: the view switcher (#view-tabs) picks one of four views on every layout (C96). data-view is the effective view
+   set by app.js: 'split' = Above stacked over Below, 'side' = Below | seam | Above, 'above' / 'below' = one canvas.
+   Wide layouts tuck the switcher into the overlay row; medium and narrow give it its own row under the canvas. */
+#app[data-view='split'] #stage {
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) var(--flow-h) minmax(0, 1fr) auto;
+  grid-template-areas: 'hud' 'above' 'flow' 'below' 'overlay';
+}
+#app[data-layout='wide-tall'][data-view='split'] #stage { grid-template-rows: auto minmax(0, 55fr) var(--flow-h) minmax(0, 45fr) auto; }
+#app[data-view='side'] #stage {
+  grid-template-columns: minmax(0, 30fr) 22px minmax(0, 45fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'hud hud hud' 'below flow above' 'overlay overlay overlay';
+}
+#app[data-view='above'] #stage {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'hud' 'above' 'overlay';
+}
+#app[data-view='below'] #stage {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'hud' 'below' 'overlay';
+}
+#app:is([data-layout='medium'], [data-layout='narrow'])[data-view='split'] #stage {
   grid-template-rows: auto minmax(0, 1fr) var(--flow-h) minmax(0, 1fr) auto auto;
   grid-template-areas: 'hud' 'above' 'flow' 'below' 'overlay' 'tabs';
 }
-#app[data-layout='medium'][data-view='above'] #stage, #app[data-layout='narrow'][data-view='above'] #stage {
+#app:is([data-layout='medium'], [data-layout='narrow'])[data-view='side'] #stage {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: 'hud hud hud' 'below flow above' 'overlay overlay overlay' 'tabs tabs tabs';
+}
+#app:is([data-layout='medium'], [data-layout='narrow'])[data-view='above'] #stage {
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   grid-template-areas: 'hud' 'above' 'overlay' 'tabs';
 }
-#app[data-layout='medium'][data-view='below'] #stage, #app[data-layout='narrow'][data-view='below'] #stage {
+#app:is([data-layout='medium'], [data-layout='narrow'])[data-view='below'] #stage {
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   grid-template-areas: 'hud' 'below' 'overlay' 'tabs';
 }
-#app[data-layout='medium'][data-view='above'] #view-below,
-#app[data-layout='narrow'][data-view='above'] #view-below,
-#app[data-layout='medium'][data-view='above'] #flow-strip,
-#app[data-layout='narrow'][data-view='above'] #flow-strip,
-#app[data-layout='medium'][data-view='below'] #view-above,
-#app[data-layout='narrow'][data-view='below'] #view-above,
-#app[data-layout='medium'][data-view='below'] #flow-strip,
-#app[data-layout='narrow'][data-view='below'] #flow-strip { display: none; }
+#app[data-view='above'] #view-below,
+#app[data-view='above'] #flow-strip,
+#app[data-view='below'] #view-above,
+#app[data-view='below'] #flow-strip { display: none; }
 
 #app[data-layout='narrow'] { --gutter: 16px; }
 #app[data-layout='narrow'] #stage { padding: 8px var(--gutter) calc(var(--sheet-peek) + 8px); }
@@ -250,8 +265,10 @@ canvas { display: block; }
 #view-below { grid-area: below; }
 #flow-strip { grid-area: flow; }
 #overlay-bar { grid-area: overlay; min-width: 0; }
-#view-tabs { grid-area: tabs; display: none; }
-#app[data-layout='medium'] #view-tabs, #app[data-layout='narrow'] #view-tabs { display: flex; }
+/* the view switcher: always on screen; on wide layouts it shares the overlay row (right end) */
+#view-tabs { grid-area: overlay; display: flex; justify-self: end; align-self: center; }
+#app:is([data-layout='medium'], [data-layout='narrow']) #view-tabs { grid-area: tabs; justify-self: stretch; }
+#app:is([data-layout='wide-tall'], [data-layout='wide-short']) #overlay-bar { padding-right: calc(var(--view-tabs-w) + 12px); min-height: 30px; }
 
 #view-above, #view-below {
   position: relative;
@@ -284,7 +301,7 @@ canvas { display: block; }
 }
 #flow-strip { position: relative; min-width: 0; overflow: hidden; border-radius: var(--r-sm); }
 #canvas-seam { position: absolute; inset: 0; width: 100%; height: 100%; }
-#app[data-layout='wide-short'] #flow-strip { writing-mode: vertical-rl; }
+#app[data-view='side'] #flow-strip { writing-mode: vertical-rl; }
 
 /* ------------------------------------------------------------------ photo mode: hide the UI chrome */
 #app[data-photo='true'] #rail,

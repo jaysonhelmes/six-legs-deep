@@ -68,7 +68,7 @@ test('bn_food_cap only after food ≥ 99 % of the cap for more than 5 s; capT re
   assert.notEqual(s.run.bottleneck.id, 'bn_food_cap');
 });
 
-test('priority: raid > frost (online) > hungry > housing > food cap (C72)', () => {
+test('priority: frost (online) > hungry > housing > food cap; an incoming raid never hides the bottleneck (C72)', () => {
   const { s, d } = setup();
   s.run.res.food = 150;
   s.run.bottleneck.capT = 10;
@@ -90,7 +90,7 @@ test('priority: raid > frost (online) > hungry > housing > food cap (C72)', () =
   assert.equal(s.run.bottleneck.id, 'hungry', 'frost is reported online only');
   s.run.war.raids.push({ uid: 1, rival: 1, target: { type: 'nest' }, raiders: 5, warn: 20, phase: 'warning', guard: 0 });
   bn(s, d);
-  assert.equal(s.run.bottleneck.id, 'raid');
+  assert.equal(s.run.bottleneck.id, 'frost', 'a raid in warning has its own HUD chip; the badge keeps the real limit');
 });
 
 test('C72: housing and brood slots outrank a full food store; food cap outranks the lay rate', () => {

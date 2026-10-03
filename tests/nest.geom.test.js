@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { newState, makeDerived } from './helpers.js';
 import { CELL, GRID } from '../src/data/balance.js';
 import * as G from '../src/systems/nestgeom.js';
+import { CHAMBERS } from '../src/data/chambers.js';
 
 const { idx } = G;
 
@@ -40,16 +41,31 @@ test('layerOf follows the DESIGN §7.1 strata table', () => {
   for (const [y, id] of want) assert.equal(G.layerOf(y), id, 'row ' + y);
 });
 
-test('footprint growth: 3×2 Gallery becomes 10×4 at L8 and stops growing; no-growth types keep w0 × h0', () => {
+test('footprint growth: 3×2 Gallery becomes 8×4 at L8 and stops growing; no-growth types keep w0 × h0', () => {
   assert.deepEqual(G.footprint('gallery', 1), { w: 3, h: 2 });
-  assert.deepEqual(G.footprint('gallery', 4), { w: 6, h: 3 });
-  assert.deepEqual(G.footprint('gallery', 8), { w: 10, h: 4 });
-  assert.deepEqual(G.footprint('gallery', 20), { w: 10, h: 4 });
+  assert.deepEqual(G.footprint('gallery', 4), { w: 5, h: 3 });
+  assert.deepEqual(G.footprint('gallery', 8), { w: 8, h: 4 });
+  assert.deepEqual(G.footprint('gallery', 20), { w: 8, h: 4 });
   assert.deepEqual(G.footprint('gallery', 0), { w: 3, h: 2 });
-  assert.deepEqual(G.footprint('royal_chamber', 5), { w: 8, h: 3 });
+  assert.deepEqual(G.footprint('royal_chamber', 5), { w: 7, h: 3 });
   assert.deepEqual(G.footprint('thermal_chimney', 6), { w: 2, h: 4 });
   assert.deepEqual(G.footprint('gate', 3), { w: 2, h: 2 });
   assert.deepEqual(G.footprint('nope', 3), { w: 0, h: 0 });
+});
+
+test('C97 regression: every level-up L → L+1 (L < 8) grows exactly one dimension by one, for every growing chamber', () => {
+  for (const [id, def] of Object.entries(CHAMBERS)) {
+    if (!def.grows) continue;
+    for (let L = 1; L < 8; L++) {
+      const a = G.footprint(id, L);
+      const b = G.footprint(id, L + 1);
+      const dw = b.w - a.w;
+      const dh = b.h - a.h;
+      assert.equal(dw + dh, 1, id + ' L' + L + '→L' + (L + 1) + ' grows one row or column');
+      assert.ok(dw >= 0 && dh >= 0, id + ' never shrinks');
+    }
+    assert.deepEqual(G.footprint(id, 9), G.footprint(id, 8), id + ' stops at L8');
+  }
 });
 
 test('rectCells clips to the grid', () => {

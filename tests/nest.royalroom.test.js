@@ -77,8 +77,8 @@ test('a chamber right under the Royal Chamber is flagged (it cannot grow up: row
 
 test('directed growth that would take the last room is refused with royalRoom; the other direction still works', () => {
   const { s, d } = setup();
-  addChamber(s, 'nursery', 15, 22, 3, 2);          // takes every Flight footprint reaching column 17 → room: x 18..25 only
-  const g = addChamber(s, 'gallery', 26, 20, 3, 2);  // growing left would take column 25
+  addChamber(s, 'nursery', 15, 22, 3, 2);          // takes every Flight footprint reaching column 17 → room: x 18..24 only
+  const g = addChamber(s, 'gallery', 25, 20, 3, 2);  // growing left would take column 24
   nest.derive(s, d);
   const info = nest.levelInfo(s, d, g.uid);
   assert.equal(info.grows, true);
@@ -86,18 +86,18 @@ test('directed growth that would take the last room is refused with royalRoom; t
   assert.equal(info.royalRoom, true);
   assert.equal(info.blocked, false);
   assert.equal(run(s, d, { type: 'levelChamber', uid: g.uid, dir: 'left' }), 'blocked:royalRoom');
-  assert.deepEqual([g.x, g.w, g.status], [26, 3, 'active'], 'nothing paid or changed');
+  assert.deepEqual([g.x, g.w, g.status], [25, 3, 'active'], 'nothing paid or changed');
   // Without a direction the engine picks the safe one.
   assert.equal(run(s, d, { type: 'levelChamber', uid: g.uid }), null);
-  assert.deepEqual([g.x, g.w, g.status], [26, 4, 'growing']);
+  assert.deepEqual([g.x, g.w, g.status], [25, 4, 'growing']);
   assert.equal(nest.blocksRoyalGrowth(s, { x: 17, y: 25, w: 1, h: 1 }), false);
 });
 
 test('when every valid direction would wall the queen in, the level-up is refused (even with no direction)', () => {
   const { s, d } = setup();
   addChamber(s, 'nursery', 15, 22, 3, 2);
-  const g = addChamber(s, 'gallery', 26, 20, 3, 2);
-  setCells(s, [idx(29, 20), idx(29, 21)], CELL.STONE);   // the right side is stone
+  const g = addChamber(s, 'gallery', 25, 20, 3, 2);
+  setCells(s, [idx(28, 20), idx(28, 21)], CELL.STONE);   // the right side is stone
   nest.derive(s, d);
   const info = nest.levelInfo(s, d, g.uid);
   assert.equal(info.blocked, true);
@@ -137,7 +137,7 @@ test('the Royal Chamber itself only grows inside a Flight-level footprint it can
   setCells(s, [idx(14, 20), idx(14, 21), idx(14, 22)], CELL.STONE);      // no footprint from column 14
   setCells(s, [idx(23, 22)], CELL.STONE);                                // none reaching column 23 (row 22)
   nest.derive(s, d);
-  // The only room left is x 15..22: growing right (to column 23, rows 20–21 are free) would strand it.
+  // The only room left is x 16..22: growing right (to column 23, rows 20–21 are free) would strand it.
   const info = nest.levelInfo(s, d, 1);
   assert.deepEqual(info.dirs, { left: true, right: false, up: false, down: false });
   assert.equal(info.royalRoom, true);
@@ -177,7 +177,7 @@ test('relocating the Royal Chamber into a spot with no growth room warns (amber 
 
 test('the Nuptial exit shaft picks a column that keeps the room; an explicit column that does not is warned', () => {
   const { s, d } = setup();
-  addChamber(s, 'gallery', 14, 20, 3, 3);   // room left: x 17..24 or 18..25
+  addChamber(s, 'gallery', 15, 20, 3, 3);   // room left: x 18..24 only (C97: the L5 Royal footprint is 7×3)
   nest.derive(s, d);
   // Default order would try column 24 (centre of the chamber at x 22..26), then 23: both cut every footprint.
   const v = nest.validatePlacement(s, d, 'nuptial_chamber', 22, 24, { shaftCol: 24 });
@@ -191,7 +191,7 @@ test('the Nuptial exit shaft picks a column that keeps the room; an explicit col
 
 test('a satellite shaft that would take the last room is detected (placeSatellite refuses it with royalRoom)', () => {
   const { s, d } = setup();
-  addChamber(s, 'gallery', 14, 20, 3, 3);
+  addChamber(s, 'gallery', 15, 20, 3, 3);
   nest.derive(s, d);
   assert.equal(nest.shaftBoxesRoyal(s, d, 24), true);
   assert.equal(nest.shaftBoxesRoyal(s, d, 30), false);

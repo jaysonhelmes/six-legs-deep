@@ -78,9 +78,9 @@ test('chambers: 16 entries in DESIGN order with the §6.3 shape', () => {
 test('chamber fx keys match the §6.3 contract table', () => {
   const fx = {
     royal_chamber: { lay: 1.15, housing: 10, storage: 150, slots: 3, flightLevel: 5 },
-    gallery: { housing: 10, highL: 30, loam: 1.1 },
+    gallery: { housing: 11, highL: 30, loam: 1.1 },
     nursery: { slots: 3, royalAdj: 0.15 },
-    granary: { cap: 300, capGrowth: 1.65, layer: { clay: 1.25, gravel: 1.5, bedrock: 1.75, aquifer: 1.75 }, claySpoil: 0.005 },
+    granary: { cap: 400, capGrowth: 1.65, layer: { clay: 1.25, gravel: 1.5, bedrock: 1.75, aquifer: 1.75 }, claySpoil: 0.005 },
     scent_library: { insight: 0.05, deep: 1.25, royalAdj: 1.10 },
     midden: { disease: 0.10, diseaseMax: 0.8, output: 0.02, outputMax: 0.2, hygiene: 0.8 },
     barracks: { berths: 8, atk: 0.05, atkMax: 0.5, homeAP: 1.10 },

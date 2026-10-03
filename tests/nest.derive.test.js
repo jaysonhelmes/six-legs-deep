@@ -7,6 +7,11 @@ import { CELL } from '../src/data/balance.js';
 import { addEffect } from '../src/core/effects.js';
 import * as nest from '../src/systems/nest.js';
 import { idx, rectCells } from '../src/systems/nestgeom.js';
+import { CHAMBERS } from '../src/data/chambers.js';
+
+/** Gallery housing per level and granary L1 capacity (data, DESIGN §7.6; tuned by C97). */
+const GH = CHAMBERS.gallery.fx.housing;
+const GC = CHAMBERS.granary.fx.cap;
 
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps * Math.max(1, Math.abs(a), Math.abs(b));
 
@@ -62,17 +67,18 @@ test('skeleton derive reproduces the §5 neutral agg (housing 10, royal slots 3,
   assert.equal(c.cellsTotal, 8);
 });
 
-test('haul example (DESIGN §7.8): a capacity-330 granary at path 8 gives h = 0.49', () => {
+test('haul example (DESIGN §7.8): a granary (capacity GC × 1.10) at path 8 shortens the haul', () => {
   const s = newState();
-  s.run.research.ventilation_shafts = 1; // 300 × 1.10 = 330
+  s.run.research.ventilation_shafts = 1; // GC × 1.10
   const d = makeDerived();
   const g = addChamber(s, 'granary', 21, 7, 2, 2); // cell (21,7) is next to shaft cell (20,7) at dist 7 → path 8
   nest.derive(s, d);
   assert.equal(info(d, g.uid).minDist, 8);
-  assert.ok(near(d.nest.agg.granaryCap, 330));
-  const h = (150 * 20 + 330 * 8) / 480 / 24;
+  const cap = GC * 1.1;
+  assert.ok(near(d.nest.agg.granaryCap, cap));
+  const h = (150 * 20 + cap * 8) / (150 + cap) / 24;
   assert.ok(near(d.nest.agg.haulH, h));
-  assert.equal(d.nest.agg.haulH.toFixed(2), '0.49');
+  assert.ok(d.nest.agg.haulH < 0.83);
 });
 
 test('raid reach: a granary or nursery with any cell within 15 path cells of an entrance', () => {
@@ -88,7 +94,7 @@ test('raid reach: a granary or nursery with any cell within 15 path cells of an 
   const groups = d.nest.agg.broodGroups;
   assert.equal(groups.find((x) => x.uid === n15.uid).inReach, false);
   // reachStorageShare: the in-reach granary's share of 150 + granaryCap
-  assert.ok(near(d.nest.agg.reachStorageShare, 300 / 450));
+  assert.ok(near(d.nest.agg.reachStorageShare, GC / (150 + GC)));
   assert.equal(d.nest.agg.nearestGranaryUid, g14.uid);
 });
 
@@ -106,8 +112,8 @@ test('frost exposure by majority rule halves eff (not frost-immune chambers); sn
   assert.equal(info(d, gate.uid).exposed, false);
   assert.equal(info(d, gate.uid).eff, 1);
   assert.equal(info(d, 1).exposed, false);
-  // housing: 10 + 10 × 1.1 (loam) × 0.5 + 10 × 1.1 × 1
-  assert.ok(near(d.nest.agg.housingBase, 10 + 11 * 0.5 + 11));
+  // housing: 10 (royal) + GH × 1.1 (loam) × 0.5 + GH × 1.1 × 1
+  assert.ok(near(d.nest.agg.housingBase, 10 + GH * 1.1 * 0.5 + GH * 1.1));
   // Frost snap: flags snap, eff unchanged
   d.season.frostRow = 0;
   d.season.snapRow = 4;
@@ -131,7 +137,7 @@ test('eff: ventilation ×1.10, aquifer ×1.2, chamber / chamber_layer effects, h
   assert.ok(near(info(d, g.uid).eff, 1.1 * 0.5 * 0.5));
   assert.equal(info(d, deep.uid).layer, 'aquifer');
   assert.ok(near(info(d, deep.uid).eff, 1.1 * 1.2));
-  assert.ok(near(d.nest.agg.granaryCap, 300 * 1.75 * 1.1 * 1.2));
+  assert.ok(near(d.nest.agg.granaryCap, GC * 1.75 * 1.1 * 1.2));
   // Hygiene: a contributing midden within 6 path cells of a nursery
   const s2 = newState();
   const d2 = makeDerived();
@@ -198,7 +204,7 @@ test('digging / relocating chambers contribute nothing; growing ones at their cu
   grow.target = 3;
   addChamber(s, 'barracks', 5, 30, 3, 2, { status: 'relocating', level: 2 });
   nest.derive(s, d);
-  assert.ok(near(d.nest.agg.housingBase, 10 + 20 * 1.1));
+  assert.ok(near(d.nest.agg.housingBase, 10 + 2 * GH * 1.1));
   assert.equal(d.nest.agg.berthsBase, 0);
   assert.equal(d.nest.agg.chambersActive, 2);
 });
@@ -206,12 +212,12 @@ test('digging / relocating chambers contribute nothing; growing ones at their cu
 test('agg fields: granary layer modifiers and clay share, library insight, barracks, pens, gardens, repletion, wells', () => {
   const s = newState();
   const d = makeDerived();
-  const clay = addChamber(s, 'granary', 5, 30, 2, 2, { level: 2 });  // 300 × 1.65 × 1.25
-  const grav = addChamber(s, 'granary', 10, 45, 2, 2);               // 300 × 1.5
+  const clay = addChamber(s, 'granary', 5, 30, 2, 2, { level: 2 });  // GC × 1.65 × 1.25
+  const grav = addChamber(s, 'granary', 10, 45, 2, 2);               // GC × 1.5
   nest.derive(s, d);
-  const clayCap = 300 * 1.65 * 1.25;
-  assert.ok(near(d.nest.agg.granaryCap, clayCap + 450));
-  assert.ok(near(d.nest.agg.clayFoodShare, clayCap / (150 + clayCap + 450)));
+  const clayCap = GC * 1.65 * 1.25;
+  assert.ok(near(d.nest.agg.granaryCap, clayCap + GC * 1.5));
+  assert.ok(near(d.nest.agg.clayFoodShare, clayCap / (150 + clayCap + GC * 1.5)));
   s.run.research.ventilation_shafts = 1;
   nest.derive(s, d);
   assert.equal(d.nest.agg.clayFoodShare, 0, 'ventilation stops clay spoilage');
@@ -296,16 +302,16 @@ test('royal levels, royalL, gate, adjGranaryRepletion', () => {
   void gate; void gran;
 });
 
-test('gallery housing above L30 adds 10 + (L − 30) per level; ach_seed_bank granary ×1.1', () => {
+test('gallery housing above L30 adds GH + (L − 30) per level; ach_seed_bank granary ×1.1', () => {
   const s = newState();
   const d = makeDerived();
   addChamber(s, 'gallery', 5, 30, 10, 4, { level: 32 }); // clay: no loam bonus
   nest.derive(s, d);
-  assert.ok(near(d.nest.agg.housingBase, 10 + 320 + 1 + 2));
+  assert.ok(near(d.nest.agg.housingBase, 10 + GH * 32 + 1 + 2));
   s.meta.achievements.ach_seed_bank = 0;
   addChamber(s, 'granary', 20, 45, 2, 2);
   nest.derive(s, d);
-  assert.ok(near(d.nest.agg.granaryCap, 450 * 1.1));
+  assert.ok(near(d.nest.agg.granaryCap, GC * 1.5 * 1.1));
 });
 
 test('geometry is rebuilt only when rev changes; d.nest.chambers stays parallel to the state chambers', () => {

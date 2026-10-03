@@ -136,3 +136,23 @@ test('first load: Below is an inset until panel_build is revealed', () => {
   s.meta.seen.panel_build = true;
   assert.equal(isInset(s), false);
 });
+
+test('C96: view helpers — four views on wide/medium, no side by side on narrow, defaults per layout, V-cycle order, tool canvases', async () => {
+  const u = await import('../src/ui/uistate.js');
+  assert.deepEqual(u.viewsFor('wide-tall'), ['above', 'below', 'split', 'side']);
+  assert.deepEqual(u.viewsFor('medium'), ['above', 'below', 'split', 'side']);
+  assert.deepEqual(u.viewsFor('narrow'), ['above', 'below', 'split']);
+  assert.equal(u.defaultViewFor('wide-tall'), 'split');
+  assert.equal(u.defaultViewFor('wide-short'), 'side');
+  assert.equal(u.defaultViewFor('narrow'), 'above');
+  assert.equal(u.effectiveView('side', 'narrow'), 'split');
+  assert.equal(u.effectiveView('bogus', 'wide-tall'), 'split');
+  assert.deepEqual(u.viewShows('above', 'medium'), { above: true, below: false });
+  assert.deepEqual(u.viewShows('side', 'wide-tall'), { above: true, below: true });
+  assert.equal(u.nextView('split', 'wide-tall'), 'side');
+  assert.equal(u.nextView('side', 'wide-tall'), 'above');
+  assert.equal(u.nextView('split', 'narrow'), 'above');
+  assert.equal(u.toolView({ kind: 'claim' }), 'surface');
+  assert.equal(u.toolView({ kind: 'placeChamber', chamber: 'gallery' }), 'nest');
+  assert.equal(u.toolView(null), null);
+});

@@ -86,7 +86,7 @@ test('a placed Gallery activates exactly when its last cell is dug', () => {
   for (const c of rectCells(21, 12, 3, 2)) assert.equal(s.run.nest.cells[c], CELL.CHAMBER);
   assert.equal(d.nest.digFace, -1);
   nest.derive(s, d);
-  assert.ok(near(d.nest.agg.housingBase, 10 + 11));
+  assert.ok(near(d.nest.agg.housingBase, 10 + CHAMBERS.gallery.fx.housing * 1.1));
   assert.equal(stepNest(s, d, 1).length, 0, 'idle afterwards');
   assert.ok(s.run.nest.maint > 0, 'leftover work → maint');
 });
@@ -149,18 +149,23 @@ test('level-up: growing types queue growth cells in the chosen direction; level 
   assert.equal(ch.level, 2);
   assert.equal(ch.status, 'active');
   assert.deepEqual(evs.filter((e) => e.type === 'chamberLeveled').map((e) => e.level), [2]);
-  // L3 → L4 grows both width and height: one dir per axis; the other axis is chosen automatically.
+  // L3 → L4 grows only the height (C97: one side per level-up, never width and height at once).
   ch.level = 3;
   ch.target = 3;
   ch.w = 5;
   ch.h = 2;
   setCells(s, rectCells(21, 12, 5, 2), CELL.CHAMBER);
   const i3 = nest.levelInfo(s, d, ch.uid);
-  assert.equal(i3.dirs.right, true);
+  assert.equal(i3.dirs.right, false);
+  assert.equal(i3.dirs.left, false);
   assert.equal(i3.dirs.up, true);
   assert.equal(i3.dirs.down, true);
+  assert.deepEqual(i3.dirRects.up, { x: 21, y: 11, w: 5, h: 3 });
+  assert.deepEqual(i3.dirRects.down, { x: 21, y: 12, w: 5, h: 3 });
+  assert.equal(run(s, d, { type: 'levelChamber', uid: ch.uid, dir: 'right' }), 'invalid:dir');
   assert.equal(run(s, d, { type: 'levelChamber', uid: ch.uid, dir: 'up' }), null);
-  assert.deepEqual([ch.x, ch.y, ch.w, ch.h], [21, 11, 6, 3]);
+  assert.deepEqual([ch.x, ch.y, ch.w, ch.h], [21, 11, 5, 3]);
+  assert.deepEqual(new Set(s.run.nest.queue.at(-1).cells), new Set(rectCells(21, 11, 5, 1)), 'one new row, nothing else');
 });
 
 test('non-growing chambers (and L > 8) level up at once; max level reported', () => {

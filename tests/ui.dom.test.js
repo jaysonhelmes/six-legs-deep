@@ -608,14 +608,14 @@ test('HUD warning chip: active mold shows a chip; clicking it selects the moldy 
   game.s.run.nest.chambers.push({ uid: 9, type: 'gallery', x: 4, y: 10, w: 4, h: 2, level: 1, status: 'active' });
   game.s.run.events.objects.push({ uid: 50, kind: 'mold', hex: -1, cell: 12 * 40 + 5, t: -1, data: { occ: 1, chamber: 9 } });
   tick();
-  const chip = root.querySelector('.threat-chip');
+  const chip = root.querySelector('.threats .threat-chip');
   assert.ok(chip, 'chip shown');
   assert.match(chip.textContent, /Mold ×1/);
   chip.click();
   assert.deepEqual(uistate.getUI().selection, { view: 'nest', kind: 'chamber', id: 9 });
   game.s.run.events.objects.length = 0;
   tick();
-  assert.equal(root.querySelector('.threat-chip'), null, 'gone once scraped');
+  assert.equal(root.querySelector('.threats .threat-chip'), null, 'gone once scraped');
   assert.deepEqual(errors, []);
 });
 
@@ -923,5 +923,107 @@ test('F14: the Dispatch garrison button shows only for trail raids; a nest raid 
   const trailBtn = button(trailRow, 'Dispatch garrison');
   assert.ok(trailBtn && !trailBtn.hidden, 'trail raids keep the button');
   assert.ok(!/defends the entrance/.test(trailRow.querySelector('.raid-note') ? (trailRow.querySelector('.raid-note').hidden ? '' : trailRow.querySelector('.raid-note').textContent) : ''));
+  assert.deepEqual(errors, []);
+});
+
+// ------------------------------------------------------------------------------------------------ C96 player reports
+/** Reveal the Build panel so the opening inset (Below as a corner preview) is over and views apply. */
+function pastInset() {
+  game.s.run.unlocked.panel_build = true;
+  game.s.meta.seen.panel_build = true;
+  tick();
+}
+const viewBtn = (id) => root.querySelector('#view-tabs button[data-view="' + id + '"]');
+const keyDown = (k, extra = {}) => { const ev = new FEvent('keydown', { key: k, ...extra }); doc.body.dispatchEvent(ev); return ev; };
+
+test('C96: the view switcher is on every layout (Above / Below / Stacked / Side by side), V cycles it, Tab is left to the browser', () => {
+  const store = makeFakeStorage();
+  doc.defaultView.localStorage = store;
+  try {
+    freshApp();
+    pastInset();
+    assert.equal(root.getAttribute('data-layout'), 'wide-tall');
+    assert.equal(root.getAttribute('data-view'), 'split', 'wide-tall stacks by default');
+    for (const id of ['above', 'below', 'split', 'side']) assert.ok(viewBtn(id) && !viewBtn(id).hidden, id);
+    assert.equal(viewBtn('split').textContent, 'Stacked');
+    assert.equal(viewBtn('side').textContent, 'Side by side');
+    viewBtn('side').click();
+    assert.equal(root.getAttribute('data-view'), 'side');
+    assert.equal(store.getItem('sld.ui.view'), 'side', 'remembered per browser');
+    freshApp();
+    pastInset();
+    assert.equal(root.getAttribute('data-view'), 'side', 'restored on the next visit');
+    // V cycles Above → Below → Stacked → Side by side
+    keyDown('v');
+    assert.equal(root.getAttribute('data-view'), 'above');
+    keyDown('V');
+    assert.equal(root.getAttribute('data-view'), 'below');
+    const tab = keyDown('Tab');
+    assert.equal(tab.defaultPrevented, false, 'Tab keeps moving focus');
+    assert.equal(root.getAttribute('data-view'), 'below');
+    // narrow: no room for side by side; a remembered "side" stacks
+    store.setItem('sld.ui.view', 'side');
+    withViewport(375, 812, () => {
+      pastInset();
+      assert.equal(root.getAttribute('data-layout'), 'narrow');
+      assert.equal(viewBtn('side').hidden, true);
+      assert.equal(root.getAttribute('data-view'), 'split');
+      keyDown('v');
+      assert.equal(root.getAttribute('data-view'), 'above', 'cycling skips side by side');
+    });
+  } finally {
+    delete doc.defaultView.localStorage;
+  }
+  assert.deepEqual(errors, []);
+});
+
+test('C96: switching panel tab puts the claim tool down; arming a tool shows its canvas; hiding that canvas cancels it', () => {
+  pastInset();
+  uistate.setUI({ tool: { kind: 'claim' } });
+  ui.openTab('stats');
+  assert.equal(uistate.getUI().tool, null, 'a tab switch ends claiming');
+  uistate.setUI({ tool: { kind: 'claim' } });
+  ui.openTab('stats', null);
+  assert.deepEqual(uistate.getUI().tool, { kind: 'claim' }, 'the same tab keeps the tool');
+  keyDown('9');
+  assert.equal(uistate.getUI().tool, null, 'number keys switch tabs too');
+  // a surface tool armed while only Below shows brings Above in
+  uistate.setUI({ view: 'below' });
+  uistate.setUI({ tool: { kind: 'placeSatellite' } });
+  assert.equal(uistate.getUI().view, 'above');
+  // the player switches to Below: the surface tool is put down
+  viewBtn('below').click();
+  assert.equal(uistate.getUI().tool, null);
+  uistate.setUI({ tool: { kind: 'placeChamber', chamber: 'gallery' } });
+  assert.equal(uistate.getUI().view, 'below', 'nest tools stay with Below');
+  viewBtn('split').click();
+  assert.deepEqual(uistate.getUI().tool, { kind: 'placeChamber', chamber: 'gallery' }, 'still visible when stacked');
+  keyDown('Escape');
+  assert.equal(uistate.getUI().tool, null);
+  assert.deepEqual(errors, []);
+});
+
+test('C72/C96: an incoming raid has its own chip with a countdown; the badge keeps the real bottleneck; a click shows the raiders', () => {
+  pastInset();
+  const s = game.s;
+  s.run.rivals.list.push({ uid: 7, type: 'fire_ants', tier: 2, hex: 40, alive: true, sighted: true, n: 10, radius: 1, extra: [], lost: [] });
+  s.run.war.raids.push({ uid: 3, rival: 7, target: { type: 'nest' }, raiders: 5, warn: 25, phase: 'warning', guard: 0 });
+  s.run.bottleneck = { id: 'bn_housing', since: 0, capT: 0 };
+  tick();
+  const badge = root.querySelector('.bn-badge');
+  assert.ok(badge && !badge.hidden);
+  assert.match(badge.textContent, /Housing/, 'the bottleneck stays visible during a raid warning');
+  const chip = root.querySelector('.raid-chip');
+  assert.ok(chip && !chip.hidden, 'raid chip shown');
+  assert.match(chip.textContent, /Raid/);
+  assert.match(chip.textContent, /25s/);
+  const calls = [];
+  ui.attachRenderers({ surface: { centerOn: (hx) => calls.push(hx) } });
+  chip.click();
+  assert.deepEqual(calls, [40], 'brings the raiders\' nest into view');
+  ui.attachRenderers(null);
+  s.run.war.raids.length = 0;
+  tick();
+  assert.equal(root.querySelector('.raid-chip').hidden, true);
   assert.deepEqual(errors, []);
 });

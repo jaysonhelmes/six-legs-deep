@@ -5,9 +5,9 @@
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtMult, fmtRate } from '../format.js';
-import { nameOf, CHAMBER_TIPS, DIG_KIND_NAMES, unlockHint, reasonText } from '../text.js';
+import { nameOf, CHAMBER_TIPS, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
-import { placementCost, levelInfo } from '../../systems/nest.js';
+import { placementCost, levelInfo, placementRows } from '../../systems/nest.js';
 import { moundCost } from '../../systems/surface.js';
 import { CHAMBER_ORDER, CHAMBERS } from '../../data/chambers.js';
 import { DIG } from '../../data/strata.js';
@@ -108,6 +108,18 @@ export function queueLimit(s) {
     + (traitLevel(s, 'automaton_instincts') > 0 ? fxOf(TRAITS, 'automaton_instincts', 'queue', 2) : 0);
 }
 
+/**
+ * Placement requirements of a chamber type as one line (C99): '' when it can go anywhere below the surface.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {string} id
+ * @returns {string}
+ */
+export function chamberRuleText(s, d, id) {
+  const rows = q(() => placementRows(s, d, id), null);
+  return placementRuleLines(id, rows).join(' ');
+}
+
 /** Safe query. */
 function q(fn, fallback) {
   try {
@@ -143,7 +155,7 @@ export function createPanel(root, { game, ui, bridge }) {
   const digRate = h('span', { class: 'muted' });
   const helpBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Help dig', dataset: { tip: 'Add a burst of work to the first job.' },
     on: { click: (ev) => act('helpDig', {}, ev, helpBtn) } });
-  const backfillBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Backfill…', dataset: { tip: 'Select tunnel cells to fill back in, free.' },
+  const backfillBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Backfill…', dataset: { tip: 'Fill tunnels back in, free: drag a box over them (key B).' },
     on: { click: () => { const t = ui.getUI().tool; ui.setUI({ tool: t && t.kind === 'backfill' ? null : { kind: 'backfill' } }); switchToNest(); } } });
   const queueList = h('div', { class: 'queue' });
   const queueEmpty = note('Nothing queued. Diggers do maintenance and still yield soil.');
@@ -239,6 +251,8 @@ export function createPanel(root, { game, ui, bridge }) {
     const inst = h('span', { class: 'lvl' });
     const costEl = h('span', { class: 'cost' });
     const lockHint = h('span', { class: 'locked-hint' });
+    // C99: placement requirements (depth rule, must touch X, own exit shaft) shown before the player tries to place it.
+    const req = h('span', { class: 'buy-desc buy-req' });
     const place = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Place',
       on: { click: () => {
         const t = ui.getUI().tool;
@@ -247,9 +261,9 @@ export function createPanel(root, { game, ui, bridge }) {
       } } });
     const row = h('div', { class: 'buy-row chamber-row', dataset: { id } }, // the description is on the row: no duplicate tooltip
       h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('chamber', id) }), inst,
-        h('span', { class: 'buy-desc', text: CHAMBER_TIPS[id] || '' }), lockHint),
+        h('span', { class: 'buy-desc', text: CHAMBER_TIPS[id] || '' }), req, lockHint),
       h('div', { class: 'buy-side' }, costEl, place));
-    row.__r = { inst, costEl, lockHint, place };
+    row.__r = { inst, costEl, lockHint, place, req };
     return row;
   }
 
@@ -263,6 +277,9 @@ export function createPanel(root, { game, ui, bridge }) {
     const have = arr(s.run.nest.chambers).filter((c) => c && c.type === id).length;
     const max = maxInstances(s, id);
     setText(r.inst, fmtCount(have) + ' / ' + fmtCount(max));
+    const rules = chamberRuleText(s, d, id);
+    setText(r.req, rules ? 'Placement: ' + rules : '');
+    show(r.req, !!rules);
     const c = unlocked ? q(() => placementCost(s, id), null) : null;
     const capMsg = unlocked && have < max ? overCapHint(c, d) : '';
     setText(r.lockHint, unlocked ? capMsg : unlockHint(key));
@@ -444,7 +461,12 @@ export function createPanel(root, { game, ui, bridge }) {
       if (nestTool) {
         setText(toolText, tool.kind === 'placeChamber' ? 'Placing ' + nameOf('chamber', tool.chamber) + ': click in the nest.'
           : tool.kind === 'relocate' ? 'Relocating: click a new spot in the nest.'
-            : tool.kind === 'backfill' ? 'Backfill: drag over tunnel cells.' : 'Click the edge to grow toward.');
+            : tool.kind === 'backfill' ? 'Backfill: click or drag a box over tunnels. Red cells stay open (a chamber needs them). B or Esc ends.'
+              : 'Click the edge to grow toward: the new row or column is shown.');
+        if (tool.kind === 'placeChamber') {
+          const rules = chamberRuleText(s, d, tool.chamber);
+          if (rules) setText(toolText, 'Placing ' + nameOf('chamber', tool.chamber) + ': ' + rules + ' Click in the nest.');
+        }
       }
       // queue
       const queue = arr(s.run.nest.queue).filter(Boolean);

@@ -103,6 +103,41 @@ export function reasonLabel(reason) {
   return detail ? `${base}: ${detail}` : base;
 }
 
+/** Placement-ghost refusal copy for rule reasons (C99; the Build panel lists the same rules, ui/text.js). */
+const GHOST_RULE_TEXT = Object.freeze({
+  'invalid:root': 'Must touch a root',
+  'invalid:row0': 'Must touch the surface (row 0)',
+  'invalid:shaft': 'Must sit beside an entrance shaft',
+  'invalid:water': 'Must touch a revealed water pocket no other Well uses',
+  'invalid:bounds': 'Does not fit inside the nest',
+  'blocked:shaft': 'A shaft is in the way',
+  'blocked:route': 'No tunnel route reaches it',
+  'blocked:chamber': 'Another chamber is in the way',
+  'blocked:stone': 'Stone in the way',
+  'blocked:water': 'Water in the way',
+  'blocked:layer': 'That layer is closed',
+  'blocked:queued': 'Already queued for digging',
+  'blocked:backfill': 'Being backfilled',
+});
+
+/**
+ * Ghost refusal line (C99): the row rule with its numbers ("Must be at depth 24 or deeper (you are at 17)"), the
+ * other placement rules in words, anything else as the generic reason label.
+ * @param {{ reason?: string, rows?: { min: number, max: number }, rect?: { y: number, h: number } }} res PlacementResult
+ * @returns {string}
+ */
+export function ghostRefusal(res) {
+  const reason = res && res.reason;
+  if (!reason) return '';
+  if (reason === 'invalid:row' && res.rows && res.rect) {
+    const top = res.rect.y;
+    const bot = res.rect.y + res.rect.h - 1;
+    if (top < res.rows.min) return `Must be at depth ${res.rows.min} or deeper (you are at ${top})`;
+    if (bot > res.rows.max) return `Must stay within rows ${res.rows.min}–${res.rows.max} (you reach ${bot})`;
+  }
+  return GHOST_RULE_TEXT[reason] || reasonLabel(reason);
+}
+
 /** Rounded-rect path with per-corner radii (tl, tr, br, bl). */
 function rrect(g, x, y, w, h, tl, tr, br, bl) {
   g.beginPath();
@@ -2548,6 +2583,47 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.lineJoin = 'miter';
   }
 
+  /**
+   * C99: while placing a chamber with a row rule (Nuptial Chamber and Fungus Garden at depth 24, Hibernaculum 30, Deep
+   * Vault 58, Gate rows 0–6…), the rows it may not use are dimmed and the limit is a labelled line across the nest.
+   */
+  function drawDepthRule(ctx, rows, v) {
+    if (!rows) return;
+    const minRow = Number(rows.min);
+    const maxRow = Number(rows.max);
+    const left = v.ox;
+    const width = COLS * v.cell;
+    const line = (row, label) => {
+      const y = v.oy + row * v.cell;
+      ctx.strokeStyle = 'rgba(255,214,120,0.95)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(left + width, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '700 11px system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(15,8,3,0.82)';
+      ctx.fillRect(left + width - tw - 8, y - 15, tw + 6, 14);
+      ctx.fillStyle = '#ffd27a';
+      ctx.fillText(label, left + width - 4, y - 2);
+    };
+    if (Number.isFinite(minRow) && minRow > 1) {
+      ctx.fillStyle = 'rgba(229,72,77,0.10)';
+      ctx.fillRect(left, v.oy, width, minRow * v.cell);
+      line(minRow, `Depth ${minRow}: place at or below this line`);
+    }
+    if (Number.isFinite(maxRow) && maxRow < ROWS - 1) {
+      ctx.fillStyle = 'rgba(229,72,77,0.10)';
+      ctx.fillRect(left, v.oy + (maxRow + 1) * v.cell, width, (ROWS - maxRow - 1) * v.cell);
+      line(maxRow + 1, `Row ${maxRow}: place at or above this line`);
+    }
+  }
+
   function drawGhost(ctx, s, d, tool, unit) {
     const v = view();
     const hc = input.hoverCell >= 0 ? input.hoverCell : (() => {
@@ -2560,6 +2636,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const tint = res.tint === 'green' ? NEST.ghostOk : res.tint === 'amber' ? NEST.ghostWarn : NEST.ghostBad;
     // raid reach zone while placing
     drawNestOverlays(ctx, { raid_reach: true }, overlayInfo(s, d));
+    drawDepthRule(ctx, res.rows, v);
     if (Array.isArray(res.route)) previewPassage(ctx, res.route, rgba(tint, 0.55), v);
     const x = v.ox + g.x * v.cell;
     const y = v.oy + g.y * v.cell;
@@ -2580,7 +2657,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     const lines = [];
-    if (!res.ok && res.reason) lines.push({ t: reasonLabel(res.reason), c: '#ffb3b0' });
+    if (!res.ok && res.reason) lines.push({ t: ghostRefusal(res), c: '#ffb3b0' });
     else lines.push({ t: chamberName(g.type), c: '#f6ead2' });
     const modText = { frostExposed: 'Frost-exposed in winter', floodZone: 'Flood zone', raidReach: 'Within raid reach', haul: 'Haul', layer: 'Layer', adjacency: 'Adjacency', hygiene: 'Hygiene −20%',
       royalRoom: 'Boxes in the Royal Chamber (Flight needs L' + FLIGHT.royalLevel + ')' };
@@ -2604,6 +2681,140 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     void unit;
   }
 
+  /** Diagonal hatch over a list of cells (clipped to them). */
+  function hatchCells(ctx, list, v, color, gap) {
+    if (!list.length) return;
+    let x0 = COLS;
+    let y0 = ROWS;
+    let x1 = -1;
+    let y1 = -1;
+    ctx.save();
+    ctx.beginPath();
+    for (const i of list) {
+      const x = i % COLS;
+      const y = (i / COLS) | 0;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      ctx.rect(v.ox + x * v.cell, v.oy + y * v.cell, v.cell, v.cell);
+    }
+    ctx.clip();
+    const L = v.ox + x0 * v.cell;
+    const T = v.oy + y0 * v.cell;
+    const Wd = (x1 - x0 + 1) * v.cell;
+    const Ht = (y1 - y0 + 1) * v.cell;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, v.cell * 0.1);
+    ctx.beginPath();
+    for (let k = -Ht; k < Wd; k += gap) {
+      ctx.moveTo(L + k, T + Ht);
+      ctx.lineTo(L + k + Ht, T);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Cells being backfilled (C98; DESIGN §7.3, 10 s each): a soil-coloured fill rising from the floor with the timer, a
+   * hatch and a dashed outline, so the player sees what is filling and how far along it is. Always drawn.
+   */
+  function drawPendingBackfill(ctx, s) {
+    const list = s.run.nest.backfill || [];
+    if (!list.length) return;
+    const v = view();
+    const total = Math.max(0.001, Number(DIG && DIG.backfillSec) || 10);
+    const cells = [];
+    for (const b of list) {
+      if (!b || !(b.i >= 0 && b.i < NCELL)) continue;
+      cells.push(b.i);
+      const p = clamp(1 - (Number(b.t) || 0) / total, 0, 1);
+      const x = v.ox + (b.i % COLS) * v.cell;
+      const y = v.oy + ((b.i / COLS) | 0) * v.cell;
+      ctx.fillStyle = 'rgba(40,22,10,0.35)';
+      ctx.fillRect(x, y, v.cell, v.cell);
+      ctx.fillStyle = 'rgba(176,122,70,0.85)';
+      ctx.fillRect(x, y + v.cell * (1 - p), v.cell, v.cell * p);
+    }
+    hatchCells(ctx, cells, v, 'rgba(255,214,150,0.55)', Math.max(4, v.cell * 0.4));
+    ctx.strokeStyle = 'rgba(255,214,150,0.9)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    for (const i of cells) ctx.rect(v.ox + (i % COLS) * v.cell + 0.5, v.oy + ((i / COLS) | 0) * v.cell + 0.5, v.cell - 1, v.cell - 1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const BACKFILL_WHY = Object.freeze({ 'blocked:disconnect': 'would cut a chamber off', 'blocked:shaft': 'shafts stay open' });
+
+  /**
+   * Backfill tool preview (C98): what this stroke (or the hovered cell) will fill (amber hatch), what it cannot (red,
+   * with the reason) and what is already filling; a label sums it up.
+   */
+  function drawBackfillPreview(ctx, s, v) {
+    const pv = input.backfill;
+    const r = input.rect;
+    if (r) {
+      ctx.strokeStyle = '#ffd27a';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(v.ox + Math.min(r.x0, r.x1) * v.cell, v.oy + Math.min(r.y0, r.y1) * v.cell,
+        (Math.abs(r.x1 - r.x0) + 1) * v.cell, (Math.abs(r.y1 - r.y0) + 1) * v.cell);
+      ctx.setLineDash([]);
+    }
+    if (!pv) return;
+    const fill = (list, color) => {
+      if (!list.length) return;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      for (const i of list) ctx.rect(v.ox + (i % COLS) * v.cell, v.oy + ((i / COLS) | 0) * v.cell, v.cell, v.cell);
+      ctx.fill();
+    };
+    const bad = pv.bad.map((b) => b.i);
+    fill(pv.ok, 'rgba(255,200,120,0.35)');
+    hatchCells(ctx, pv.ok, v, 'rgba(255,226,170,0.8)', Math.max(4, v.cell * 0.35));
+    fill(bad, 'rgba(229,72,77,0.45)');
+    ctx.strokeStyle = 'rgba(255,170,170,0.95)';
+    ctx.lineWidth = Math.max(1, v.cell * 0.09);
+    ctx.beginPath();
+    for (const i of bad) {
+      const x = v.ox + (i % COLS) * v.cell;
+      const y = v.oy + ((i / COLS) | 0) * v.cell;
+      const m = v.cell * 0.28;
+      ctx.moveTo(x + m, y + m);
+      ctx.lineTo(x + v.cell - m, y + v.cell - m);
+      ctx.moveTo(x + v.cell - m, y + m);
+      ctx.lineTo(x + m, y + v.cell - m);
+    }
+    ctx.stroke();
+    // label: "Backfill 6 cells" / "2 stay open: would cut a chamber off"
+    const lines = [];
+    if (pv.ok.length) lines.push({ t: `Backfill ${pv.ok.length} cell${pv.ok.length === 1 ? '' : 's'} (free, ${Math.round(Number(DIG && DIG.backfillSec) || 10)} s)`, c: '#ffe2aa' });
+    if (bad.length) {
+      const why = BACKFILL_WHY[pv.bad[0].reason] || 'cannot be filled';
+      lines.push({ t: pv.ok.length || bad.length > 1 ? `${bad.length} stay open: ${why}` : `Can't backfill: ${why}`, c: '#ffb3b0' });
+    }
+    if (pv.pending.length && !pv.ok.length && !bad.length) lines.push({ t: 'Already being backfilled', c: '#ffe2aa' });
+    if (!lines.length) {
+      if (!r || (r.x0 === r.x1 && r.y0 === r.y1)) return;
+      lines.push({ t: 'No tunnel cells here', c: '#f6ead2' });
+    }
+    const ax = v.ox + pv.x0 * v.cell;
+    let ly = v.oy + pv.y0 * v.cell - 4;
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    for (let k = lines.length - 1; k >= 0; k--) {
+      const tw = ctx.measureText(lines[k].t).width;
+      ctx.fillStyle = 'rgba(15,8,3,0.82)';
+      ctx.fillRect(ax - 2, ly - 13, tw + 6, 14);
+      ctx.fillStyle = lines[k].c;
+      ctx.fillText(lines[k].t, ax + 1, ly);
+      ly -= 15;
+    }
+  }
+
   function drawToolPreviews(ctx, s, d, unit) {
     const tool = uiOf(ui).tool;
     const v = view();
@@ -2622,23 +2833,13 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         ctx.fillText(text, last.x + 11, last.y - 1.5);
       }
     }
-    if (input.rect) {
+    if (tool && tool.kind === 'backfill') drawBackfillPreview(ctx, s, v);
+    else if (input.rect) {
       const r = input.rect;
-      const x0 = Math.min(r.x0, r.x1);
-      const y0 = Math.min(r.y0, r.y1);
-      const x1 = Math.max(r.x0, r.x1);
-      const y1 = Math.max(r.y0, r.y1);
-      ctx.fillStyle = 'rgba(255,200,120,0.25)';
-      const cells = s.run.nest.cells || [];
-      ctx.beginPath();
-      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-        const i = y * COLS + x;
-        if (cells[i] === CELL.TUNNEL) ctx.rect(v.ox + x * v.cell, v.oy + y * v.cell, v.cell, v.cell);
-      }
-      ctx.fill();
       ctx.strokeStyle = '#ffd27a';
       ctx.setLineDash([4, 3]);
-      ctx.strokeRect(v.ox + x0 * v.cell, v.oy + y0 * v.cell, (x1 - x0 + 1) * v.cell, (y1 - y0 + 1) * v.cell);
+      ctx.strokeRect(v.ox + Math.min(r.x0, r.x1) * v.cell, v.oy + Math.min(r.y0, r.y1) * v.cell,
+        (Math.abs(r.x1 - r.x0) + 1) * v.cell, (Math.abs(r.y1 - r.y0) + 1) * v.cell);
       ctx.setLineDash([]);
     }
     if (tool && tool.kind === 'levelDir') {
@@ -2650,6 +2851,43 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
           levelMemo.res = safe(() => nestSys.levelInfo(s, d, tool.uid), null);
         }
         const dirs = (levelMemo.res && levelMemo.res.dirs) || {};
+        // C97: the exact cells the hovered direction adds (one row or one column), so the player sees the growth
+        // before confirming; the other offered directions are outlined faintly.
+        const rects = (levelMemo.res && levelMemo.res.dirRects) || {};
+        for (const dir of ['left', 'right', 'up', 'down']) {
+          const nr = rects[dir];
+          if (!nr || !dirs[dir]) continue;
+          const hot = input.levelDir === dir;
+          const add = [];
+          for (let y = nr.y; y < nr.y + nr.h; y++) {
+            for (let x = nr.x; x < nr.x + nr.w; x++) {
+              if (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) continue;
+              add.push(y * COLS + x);
+            }
+          }
+          if (!add.length) continue;
+          ctx.fillStyle = hot ? 'rgba(94,209,122,0.45)' : 'rgba(94,209,122,0.12)';
+          ctx.beginPath();
+          for (const i of add) ctx.rect(v.ox + (i % COLS) * v.cell, v.oy + ((i / COLS) | 0) * v.cell, v.cell, v.cell);
+          ctx.fill();
+          if (hot) {
+            ctx.strokeStyle = NEST.ghostOk;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3, 2]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            const tx = v.ox + nr.x * v.cell;
+            const ty = v.oy + nr.y * v.cell - 4;
+            const label = `+${add.length} cells (${dir})`;
+            ctx.font = '600 11px system-ui, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = 'rgba(15,8,3,0.82)';
+            ctx.fillRect(tx - 2, ty - 13, ctx.measureText(label).width + 6, 14);
+            ctx.fillStyle = '#c8f0c0';
+            ctx.fillText(label, tx + 1, ty);
+          }
+        }
         const r = chamberRectPx(c);
         const arrows = [['left', r.x - unit * 0.6, r.y + r.h / 2, Math.PI], ['right', r.x + r.w + unit * 0.6, r.y + r.h / 2, 0],
           ['up', r.x + r.w / 2, r.y - unit * 0.6, -Math.PI / 2], ['down', r.x + r.w / 2, r.y + r.h + unit * 0.6, Math.PI / 2]];
@@ -3036,6 +3274,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     drawMold(ctx, s);
     drawLabels(ctx, W);
 
+    drawPendingBackfill(ctx, s);
     drawToolPreviews(ctx, s, d, unit);
     drawDigQueue(ctx, s, d);
     const ui0 = uiOf(ui);

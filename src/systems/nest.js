@@ -1126,7 +1126,8 @@ function growthCheck(s, d, geo, ch, j, hd, vd, dw, dh) {
  */
 function planLevel(s, d, ch, dir, { ignoreQueue = false, ignoreCost = false } = {}) {
   const P = { reason: null, cost: null, grows: false, rect: null, growSoil: [], growOpen: [], work: 0,
-    dirs: { left: false, right: false, up: false, down: false }, blocked: false, max: false, royalRoom: false };
+    dirs: { left: false, right: false, up: false, down: false }, dirRects: { left: null, right: null, up: null, down: null },
+    blocked: false, max: false, royalRoom: false };
   const def = CHAMBERS[ch.type];
   if (!def) return fail(P, 'invalid');
   const maxL = effMaxL(s, def);
@@ -1159,8 +1160,22 @@ function planLevel(s, d, ch, dir, { ignoreQueue = false, ignoreCost = false } = 
       // current cells stay an obstacle (its new rectangle contains them), and once the room is gone nothing is refused.
       const guard = royalGuard(s, d, 0);
       const safeOf = (c) => !!c && (!guard || (ch.uid === 1 ? guard.keeps(c.rect) : !guard.blocks(c.rect)));
-      if (dw > 0) for (const hd of ['left', 'right']) P.dirs[hd] = vOpts.some((vd) => safeOf(combo(hd, vd)));
-      if (dh > 0) for (const vd of ['up', 'down']) P.dirs[vd] = hOpts.some((hd) => safeOf(combo(hd, vd)));
+      // C97: footprints grow one side per level, so exactly one of dw / dh is non-zero for a fresh chamber; dirRects
+      // holds the rectangle each offered direction would grow to (the level-direction tool previews its new cells).
+      if (dw > 0) {
+        for (const hd of ['left', 'right']) {
+          const c = vOpts.map((vd) => combo(hd, vd)).find(safeOf);
+          P.dirs[hd] = !!c;
+          P.dirRects[hd] = c ? { ...c.rect } : null;
+        }
+      }
+      if (dh > 0) {
+        for (const vd of ['up', 'down']) {
+          const c = hOpts.map((hd) => combo(hd, vd)).find(safeOf);
+          P.dirs[vd] = !!c;
+          P.dirRects[vd] = c ? { ...c.rect } : null;
+        }
+      }
       let any = null;
       let safe = null;
       for (const hd of hOpts) {
@@ -1218,6 +1233,7 @@ function doLevel(s, d, ch, P, env) {
   const nest = s.run.nest;
   if (!spend(s, P.cost)) return false;
   if (P.grows && P.rect) {
+    const from = { x: ch.x, y: ch.y, w: ch.w, h: ch.h };
     ch.x = P.rect.x;
     ch.y = P.rect.y;
     ch.w = P.rect.w;
@@ -1226,7 +1242,7 @@ function doLevel(s, d, ch, P, env) {
     ch.status = 'growing';
     ch.target = ch.level + 1;
     const job = { uid: nest.nextUid++, kind: 'grow', chamber: ch.uid, cells: P.growSoil.slice(), cur: 0, prog: 0,
-      paidFood: P.cost.food > 0 ? P.cost.food : 0, blueprint: false };
+      paidFood: P.cost.food > 0 ? P.cost.food : 0, blueprint: false, from };
     nest.queue.push(job);
     nest.rev++;
     rebuild(s, d);
@@ -1537,7 +1553,24 @@ export function validatePlacement(s, d, type, x, y, { route = null, relocateUid 
     eta: W > 0 ? (ahead + P.work) / W : -1,
     cost: P.cost,
     mods,
+    // C99: the row rule and the footprint, so a refusal can say "Must be at depth 24 or deeper (you are at 17)".
+    rows: placementRows(s, d, type),
+    rect: P.rect ? { ...P.rect } : null,
   };
+}
+
+/**
+ * [q] Row range a chamber type's footprint must stay inside (C99; DESIGN §7.4 step 2 row rule): min = the effective
+ * top row (species / Shallow Soil adjustments included), max = the data rowMax. Unknown type → { min: 0, max: ROWS − 1 }.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} type
+ * @returns {{ min: number, max: number }}
+ */
+export function placementRows(s, d, type) {
+  const def = CHAMBERS[type];
+  if (!def) return { min: 0, max: ROWS - 1 };
+  return { min: effRowMin(s, d, type), max: def.rowMax };
 }
 
 /**
@@ -1564,21 +1597,24 @@ export function placementCost(s, type) {
  * directions, growth-cell work (auto direction), blocked (grows but every direction blocked), max, and royalRoom
  * (extra, C66): some otherwise valid direction is withheld because it would take the Royal Chamber's last room to
  * reach the Flight level (with blocked, that is the only reason left: level the Royal Chamber to L5 first, or relocate).
+ * Extras (C97): dirRects = the rectangle each offered direction grows to (null when not offered), rect = the auto choice.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number} uid
  * @returns {{ cost: Object|null, grows: boolean, dirs: { left: boolean, right: boolean, up: boolean, down: boolean },
- *   work: number, blocked: boolean, max: boolean, royalRoom: boolean }}
+ *   dirRects: Object, rect: Object|null, work: number, blocked: boolean, max: boolean, royalRoom: boolean }}
  */
 export function levelInfo(s, d, uid) {
   const f = findChamber(s, uid);
   if (!f) {
-    return { cost: null, grows: false, dirs: { left: false, right: false, up: false, down: false }, work: 0, blocked: true, max: true,
-      royalRoom: false };
+    return { cost: null, grows: false, dirs: { left: false, right: false, up: false, down: false },
+      dirRects: { left: null, right: null, up: null, down: null }, rect: null, work: 0, blocked: true, max: true, royalRoom: false };
   }
   const P = planLevel(s, d, f.ch, null, { ignoreQueue: true, ignoreCost: true });
-  return { cost: P.cost, grows: P.grows, dirs: { ...P.dirs }, work: P.work, blocked: P.grows && P.blocked, max: P.max,
-    royalRoom: P.grows && !P.max && P.royalRoom };
+  const dirRects = {};
+  for (const k of Object.keys(P.dirRects)) dirRects[k] = P.dirRects[k] ? { ...P.dirRects[k] } : null;
+  return { cost: P.cost, grows: P.grows, dirs: { ...P.dirs }, dirRects, rect: P.rect ? { ...P.rect } : null, work: P.work,
+    blocked: P.grows && P.blocked, max: P.max, royalRoom: P.grows && !P.max && P.royalRoom };
 }
 
 /**
@@ -2092,6 +2128,52 @@ function planBackfill(s, d, list) {
   return null;
 }
 
+/**
+ * [q] Backfill preview for a painted area (ARCHITECTURE §18 C98; the Backfill tool, DESIGN §7.3). Splits the cells of
+ * `list` into those that can be backfilled together (`ok`, a valid `backfill` command as they are), those that cannot
+ * (`bad`: { i, reason } with 'blocked:shaft' or 'blocked:disconnect') and those already being backfilled (`pending`).
+ * Soil, chamber and other non-tunnel cells are ignored, so a rough rectangle over a tunnel network just works. When the
+ * whole set would cut a chamber (or a queued job) off from every entrance, cells are kept greedily, deepest path
+ * distance first, so dead-end stubs are filled and the cells a chamber still needs are flagged.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number[]} list cell indices (any order; duplicates and out-of-range values are skipped)
+ * @returns {{ ok: number[], bad: Array<{ i: number, reason: string }>, pending: number[] }}
+ */
+export function backfillPreview(s, d, list) {
+  const out = { ok: [], bad: [], pending: [] };
+  if (!Array.isArray(list) || !list.length) return out;
+  const geo = G.getGeom(s, d);
+  const cells = s.run.nest.cells;
+  const seen = new Set();
+  const cand = [];
+  for (const c of list) {
+    if (!isCell(c) || seen.has(c)) continue;
+    seen.add(c);
+    if (cells[c] !== CELL.TUNNEL || geo.chamberAt[c] >= 0) continue;
+    if (geo._backfill[c]) out.pending.push(c);
+    else if (geo._shaft[c]) out.bad.push({ i: c, reason: 'blocked:shaft' });
+    else cand.push(c);
+  }
+  if (!cand.length) return out;
+  if (!disconnects(s, geo, cand)) {
+    out.ok = cand;
+    return out;
+  }
+  const key = (c) => (geo.entDist[c] >= 0 ? geo.entDist[c] : N + 1);
+  cand.sort((a, b) => key(b) - key(a) || a - b);
+  const acc = [];
+  for (const c of cand) {
+    acc.push(c);
+    if (disconnects(s, geo, acc)) {
+      acc.pop();
+      out.bad.push({ i: c, reason: 'blocked:disconnect' });
+    }
+  }
+  out.ok = acc;
+  return out;
+}
+
 /** Blueprint snapshot of the current layout (chambers except the original Royal Chamber; tunnel cells off-shaft). */
 function snapshotBlueprint(s, d, name) {
   const geo = ensureGeom(s, d);
@@ -2301,6 +2383,10 @@ export const handlers = {
         const dh = ch.h - fp.h;
         const jobSet = new Set(job.cells);
         let old = null;
+        // C97: a growth job remembers the footprint it grew from (older saves fall back to the footprint formula).
+        const jf = job.from;
+        if (jf && isInt(jf.x) && isInt(jf.y) && isInt(jf.w) && isInt(jf.h) && jf.w > 0 && jf.h > 0 && jf.w <= ch.w && jf.h <= ch.h
+          && jf.x >= ch.x && jf.y >= ch.y && jf.x + jf.w <= ch.x + ch.w && jf.y + jf.h <= ch.y + ch.h) old = { x: jf.x, y: jf.y, w: jf.w, h: jf.h };
         for (const ox of [ch.x, ch.x + dw]) {
           for (const oy of [ch.y, ch.y + dh]) {
             if (old) break;

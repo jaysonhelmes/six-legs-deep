@@ -4,6 +4,7 @@
 
 import { GRID, CELL } from '../data/balance.js';
 import * as nestgeom from '../systems/nestgeom.js';
+import * as nestSys from '../systems/nest.js';
 
 const COLS = GRID.cols;
 const ROWS = GRID.rows;
@@ -183,6 +184,8 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     inp.hoverCell = cell ? cell.i : -1;
     const tool = getUI(ui).tool;
     inp.levelDir = tool && tool.kind === 'levelDir' ? dirAt(tool.uid, p.x, p.y) : null;
+    if (tool && tool.kind === 'backfill' && !down) inp.backfill = cell ? backfillPreview({ x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y }) : null;
+    else if (!down || down.mode !== 'backfill') inp.backfill = null;
     const key = targetKey(target);
     if (key !== hoverKey) {
       hoverKey = key;
@@ -224,6 +227,38 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
   function clearPreviews() {
     inp.drag = null;
     inp.rect = null;
+    inp.backfill = null;
+  }
+
+  /**
+   * Backfill tool preview (C98): the tunnel cells of a painted rectangle split by nest.backfillPreview into fillable
+   * (ok), refused (bad, with the reason) and already filling (pending). Memoized per rectangle and nest revision.
+   */
+  const bfMemo = { key: '', res: null };
+  function backfillPreview(r) {
+    const s = game && game.s;
+    if (!s || !r) return null;
+    const x0 = Math.max(0, Math.min(r.x0, r.x1));
+    const x1 = Math.min(COLS - 1, Math.max(r.x0, r.x1));
+    const y0 = Math.max(0, Math.min(r.y0, r.y1));
+    const y1 = Math.min(ROWS - 1, Math.max(r.y0, r.y1));
+    const key = `${x0}|${y0}|${x1}|${y1}|${s.run.nest.rev}|${(s.run.nest.backfill || []).length}`;
+    if (bfMemo.key === key && bfMemo.res) return bfMemo.res;
+    const list = [];
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) list.push(y * COLS + x);
+    let res = null;
+    try {
+      res = nestSys.backfillPreview(s, game.d, list);
+    } catch {
+      res = null;
+    }
+    if (!res) {
+      const arr = cellsArr();
+      res = { ok: list.filter((i) => arr[i] === CELL.TUNNEL), bad: [], pending: [] };
+    }
+    bfMemo.key = key;
+    bfMemo.res = { x0, y0, x1, y1, ok: res.ok || [], bad: res.bad || [], pending: res.pending || [] };
+    return bfMemo.res;
   }
 
   function onDown(e) {
@@ -262,7 +297,10 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     if (tool && tool.kind === 'backfill' && cell) mode = 'backfill';
     else if (!tool && cell && isOpen(cell.i) && target && (target.kind === 'cell' || target.kind === 'shaft' || target.kind === 'chamber' || target.kind === 'nursery')) mode = 'tunnelCandidate';
     down = { x: p.x, y: p.y, lastX: p.x, lastY: p.y, cx: e.clientX, cy: e.clientY, cell, target, mode, moved: false, id: e.pointerId };
-    if (mode === 'backfill') inp.rect = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
+    if (mode === 'backfill') {
+      inp.rect = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
+      inp.backfill = backfillPreview(inp.rect);
+    }
     try {
       canvas.setPointerCapture(e.pointerId);
     } catch {
@@ -322,6 +360,7 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       if (cell && inp.rect) {
         inp.rect.x1 = cell.x;
         inp.rect.y1 = cell.y;
+        inp.backfill = backfillPreview(inp.rect);
       }
     }
   }
@@ -360,19 +399,16 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     if (dn.mode === 'backfill') {
       const r = inp.rect;
       inp.rect = null;
+      inp.backfill = null;
       if (r) {
-        const cells = [];
-        const arr = cellsArr();
-        for (let y = Math.min(r.y0, r.y1); y <= Math.max(r.y0, r.y1); y++) {
-          for (let x = Math.min(r.x0, r.x1); x <= Math.max(r.x0, r.x1); x++) {
-            const i = y * COLS + x;
-            if (arr[i] === CELL.TUNNEL) cells.push(i);
-          }
-        }
-        if (cells.length) {
-          const res = act('backfill', { cells }, e.clientX, e.clientY);
-          if (res.ok) setUI(ui, { tool: null });
-        } else call(bridge, 'reject', 'invalid', e.clientX, e.clientY);
+        // C98: only the fillable cells are sent (shaft cells, cells a chamber still needs and soil are skipped), and the
+        // tool stays on for the next stroke (Esc, right-click or the Backfill button ends it).
+        const pv = backfillPreview(r);
+        const cells = pv ? pv.ok.slice() : [];
+        if (cells.length) act('backfill', { cells }, e.clientX, e.clientY);
+        else if (pv && pv.bad.length) call(bridge, 'reject', pv.bad[0].reason === 'blocked:shaft' ? 'blocked:shaft' : 'blocked:disconnect', e.clientX, e.clientY);
+        else if (pv && pv.pending.length) call(bridge, 'reject', 'invalid:pending', e.clientX, e.clientY);
+        else call(bridge, 'reject', 'invalid:cell', e.clientX, e.clientY);
       }
       return;
     }
@@ -497,6 +533,7 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     inp.hoverCell = -1;
     inp.levelDir = null;
     inp.ctlHover = null;
+    if (!down || down.mode !== 'backfill') inp.backfill = null;
     if (hoverKey !== '') {
       hoverKey = '';
       setUI(ui, { hover: null });
@@ -516,6 +553,12 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       focused = typeof document !== 'undefined' && document.activeElement === canvas;
     } catch {
       focused = false;
+    }
+    if (focused && (e.key === 'b' || e.key === 'B') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const t = getUI(ui).tool;
+      setUI(ui, { tool: t && t.kind === 'backfill' ? null : { kind: 'backfill' } });
+      clearPreviews();
+      return;
     }
     if (!focused || !renderer.scrollBy) return;
     const v = renderer.getView ? renderer.getView() : { cell: 12, H: 300 };

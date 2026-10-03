@@ -37,7 +37,7 @@ export const CHAMBERS = freeze({
     w0: 3, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
     place: { food: 40 }, placeGrowth: 2.5,
     f0: 10, s0: 24, g: 1.30, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
-    fx: { housing: 10, highL: 30, loam: 1.1 },
+    fx: { housing: 11, highL: 30, loam: 1.1 },
   },
   nursery: {
     id: 'nursery', name: 'Nursery', unlock: 'chamber_nursery',
@@ -53,7 +53,7 @@ export const CHAMBERS = freeze({
     w0: 2, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
     place: { food: 60 }, placeGrowth: 2.5,
     f0: 15, s0: 36, g: 1.55, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
-    fx: { cap: 300, capGrowth: 1.65, layer: { clay: 1.25, gravel: 1.5, bedrock: 1.75, aquifer: 1.75 }, claySpoil: 0.005 },
+    fx: { cap: 400, capGrowth: 1.65, layer: { clay: 1.25, gravel: 1.5, bedrock: 1.75, aquifer: 1.75 }, claySpoil: 0.005 },
   },
   scent_library: {
     id: 'scent_library', name: 'Scent Library', unlock: 'chamber_scent_library',

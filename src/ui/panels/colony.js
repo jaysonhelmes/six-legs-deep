@@ -1,17 +1,17 @@
 // Colony panel: brood pipeline (eggs / larvae / pupae, lay rate, housing, egg reserve slider, Fungal Brood), caste
-// slider and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets and
+// slider and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets (a target slider per chip; +/− and drags edit targets in auto mode, C94) and
 // presets, Adaptations, alate rearing. Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
-// Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, adaptations.cost / isAvailable, stats.eggCost.
+// Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, adaptations.cost / isAvailable, stats.eggCost.
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
 import { nameOf, JOB_TIPS, CASTE_TIPS, ADAPT_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { broodSummary, housingBrood } from '../../systems/population.js';
-import { idleMinors, jobCap } from '../../systems/jobs.js';
+import { idleMinors, jobCap, withTarget, effectiveTargets } from '../../systems/jobs.js';
 import { cost as adaptCost, isAvailable as adaptAvailable } from '../../systems/adaptations.js';
 import { eggCost } from '../../systems/stats.js';
-import { JOB_ORDER, JOBS } from '../../data/jobs.js';
+import { JOB_ORDER, JOBS, TARGET_UI } from '../../data/jobs.js';
 import { ADAPTATION_ORDER, ADAPTATIONS } from '../../data/adaptations.js';
 import { CASTES } from '../../data/castes.js';
 import { SLIDERS } from '../../data/economy.js';
@@ -35,6 +35,33 @@ const STEPS = [1, 10, 100, 'max'];
 /** Slider limits (DESIGN §5.1 egg reserve ≤ 90 % of the food cap, §5.5 caste targets sum ≤ 90 %). */
 const RESERVE_MAX = num(SLIDERS && SLIDERS.eggReserveMax, 0.9);
 const CASTE_SUM_MAX = num(SLIDERS && SLIDERS.casteSumMax, 0.9);
+
+/** Ratio-target step of one +/− click or chip drag in auto mode (C94). */
+const TARGET_STEP = num(TARGET_UI && TARGET_UI.step, 0.05);
+/** How long (ms) a sent target map is used as the base for the next nudge, before the queued command has applied. */
+const TARGET_PENDING_MS = 600;
+
+/**
+ * Job targets from the current job split (fractions of all assigned workers, Σ ≤ 1, rounded to 0.1 %), used when the
+ * player turns Automatic jobs on so that nothing moves until a target is changed (C94). null when nobody has a job.
+ * @param {Object<string, number>} jobs
+ * @returns {Object<string, number>|null}
+ */
+export function targetsFromJobs(jobs) {
+  const ids = jobIds();
+  let total = 0;
+  for (const j of ids) total += Math.max(0, num(obj(jobs)[j]));
+  if (!(total > 0)) return null;
+  const out = {};
+  let sum = 0;
+  for (const j of ids) {
+    out[j] = Math.floor((Math.max(0, num(obj(jobs)[j])) / total) * 1000) / 1000;
+    sum += out[j];
+  }
+  const big = ids.reduce((a, j) => (out[j] > out[a] ? j : a), ids[0]);
+  out[big] = Math.round((out[big] + Math.max(0, 1 - sum)) * 1000) / 1000;
+  return out;
+}
 
 /** Job ids in display order. */
 export function jobIds() {
@@ -87,6 +114,8 @@ export function createPanel(root, { game, ui, bridge }) {
   const el = h('div', { class: 'panel panel-colony' });
   root.appendChild(el);
   let step = 1;
+  /** Last target map sent ({ map, at }): the base for the next nudge until the queued command has applied. */
+  let pendingTargets = null;
 
   // --- brood pipeline ---
   const eggN = h('span', { class: 'pipe-num' });
@@ -161,21 +190,31 @@ export function createPanel(root, { game, ui, bridge }) {
       on: { click: () => { step = sv; for (const b of Array.from(stepRow.children)) toggleClass(b, 'selected', b.dataset.step === String(sv)); } } }));
   }
   const autoBox = h('input', { type: 'checkbox', class: 'check' });
-  autoBox.addEventListener('change', (ev) => act('setAutoJobs', { on: !!autoBox.checked }, ev, autoBox));
-  const autoRow = h('label', { class: 'toggle-row', dataset: { tip: 'Jobs follow the target ratios automatically.' } }, autoBox, h('span', { text: 'Automatic jobs' }));
+  autoBox.addEventListener('change', (ev) => {
+    const on = !!autoBox.checked;
+    if (on && !game.s.run.colony.thresholdJobs) { // keep the current split: nothing moves until a target is changed
+      const t = targetsFromJobs(game.s.run.colony.jobs);
+      if (t) sendTargets(t, ev, autoBox);
+    }
+    act('setAutoJobs', { on }, ev, autoBox);
+  });
+  const autoRow = h('label', { class: 'toggle-row', dataset: { tip: 'Jobs follow the target ratios automatically: set a target on each job (+/− change it by 5%). Turning this on keeps your current split.' } }, autoBox, h('span', { text: 'Automatic jobs' }));
   const thrBox = h('input', { type: 'checkbox', class: 'check' });
   thrBox.addEventListener('change', (ev) => act('setThresholdJobs', { on: !!thrBox.checked }, ev, thrBox));
-  const thrRow = h('label', { class: 'toggle-row', dataset: { tip: 'Targets shift toward the current bottleneck.' } }, thrBox, h('span', { text: 'Respond to bottlenecks' }));
+  const thrRow = h('label', { class: 'toggle-row', dataset: { tip: 'Workers shift toward the current bottleneck (nurses for full brood slots, diggers for a long dig queue, herders when honeydew is short) and drift back to your targets once it clears.' } }, thrBox, h('span', { text: 'Respond to bottlenecks' }));
   const jobList = h('div', { class: 'job-list' });
+  const targetNote = h('p', { class: 'note' });
   const presetRow = h('div', { class: 'btn-row presets' });
+  const presetBtns = [];
   for (let slot = 0; slot < 3; slot++) {
     const save = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Save ' + (slot + 1),
       on: { click: (ev) => act('saveJobPreset', { slot, name: 'Preset ' + (slot + 1) }, ev, save) } });
     const apply = h('button', { type: 'button', class: 'btn btn-small', text: 'Use ' + (slot + 1),
-      on: { click: (ev) => act('applyJobPreset', { slot }, ev, apply) } });
+      on: { click: (ev) => { if (act('applyJobPreset', { slot }, ev, apply).ok) pendingTargets = null; } } });
+    presetBtns.push({ save, apply });
     presetRow.append(h('span', { class: 'preset' }, apply, save));
   }
-  const jobsSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title' }, 'Jobs ', idleEl), stepRow, h('div', { class: 'toggles' }, autoRow, thrRow), jobList, presetRow);
+  const jobsSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title' }, 'Jobs ', idleEl), stepRow, h('div', { class: 'toggles' }, autoRow, thrRow), jobList, targetNote, presetRow);
 
   // --- adaptations ---
   const adaptList = h('div', { class: 'list adapt-list' });
@@ -210,6 +249,43 @@ export function createPanel(root, { game, ui, bridge }) {
     return Math.max(0, Math.min(step, Math.floor(available)));
   }
 
+  // --- ratio targets (auto mode, C94) ---
+  /** Jobs follow the targets (auto or threshold mode): +/− and drags edit targets instead of moving workers. */
+  function autoMode() {
+    const c = obj(game.s.run.colony);
+    return !!(c.autoJobs || c.thresholdJobs);
+  }
+
+  /** The targets to build the next change on: the last map sent while its command is still queued, else the state. */
+  function baseTargets() {
+    if (pendingTargets && Date.now() - pendingTargets.at < TARGET_PENDING_MS) return pendingTargets.map;
+    pendingTargets = null;
+    return obj(game.s.run.colony.jobTargets);
+  }
+
+  function sendTargets(map, ev = null, src = null) {
+    const res = act('setJobTargets', { targets: map }, ev, src);
+    pendingTargets = res.ok ? { map, at: Date.now() } : null;
+    return res;
+  }
+
+  /** Set one job's target (0..1); the others scale down when the total would pass 100 %. */
+  function setTarget(id, frac, ev = null, src = null) {
+    const base = baseTargets();
+    const v = Math.max(0, Math.min(1, frac));
+    if (Math.abs(num(base[id]) - v) < 1e-9) return;
+    sendTargets(withTarget(base, id, v), ev, src);
+  }
+
+  /** Move up to one step of target from one job to another (chip drag in auto mode). */
+  function moveTarget(from, to, ev, src) {
+    const base = baseTargets();
+    const amt = Math.min(TARGET_STEP, num(base[from]));
+    if (!(amt > 0)) return;
+    const next = withTarget(base, from, num(base[from]) - amt);
+    sendTargets(withTarget(next, to, num(next[to]) + amt), ev, src);
+  }
+
   // --- job chips ---
   function createJobChip(id) {
     const n = h('span', { class: 'job-num' });
@@ -217,12 +293,14 @@ export function createPanel(root, { game, ui, bridge }) {
     const target = h('span', { class: 'job-target' });
     const minus = h('button', { type: 'button', class: 'btn btn-icon', text: '−', attrs: { 'aria-label': 'Fewer ' + nameOf('job', id) + 's' },
       on: { click: (ev) => {
+        if (autoMode()) { setTarget(id, num(baseTargets()[id]) - TARGET_STEP, ev, minus); return; }
         const cur = num(obj(game.s.run.colony.jobs)[id]);
         const k = amountFor(cur);
         if (k > 0) act('shiftJob', { from: id, to: 'idle', n: k }, ev, minus);
       } } });
     const plus = h('button', { type: 'button', class: 'btn btn-icon', text: '+', attrs: { 'aria-label': 'More ' + nameOf('job', id) + 's' },
       on: { click: (ev) => {
+        if (autoMode()) { setTarget(id, num(baseTargets()[id]) + TARGET_STEP, ev, plus); return; }
         const s = game.s;
         const idle = q(() => idleMinors(s), 0);
         const jobs = obj(s.run.colony.jobs);
@@ -231,10 +309,19 @@ export function createPanel(root, { game, ui, bridge }) {
         const k = amountFor(avail);
         act('shiftJob', { from, to: id, n: Math.max(1, k) }, ev, plus);
       } } });
+    const tSl = sliderRow('Target', { min: 0, max: 100, step: 1, tip: 'Share of workers this job should get. Raising it past a 100% total lowers the others.' },
+      (v) => setTarget(id, v / 100, null, tSl.input));
+    tSl.el.className += ' job-target-row';
+    Object.assign(tSl.el.style, { gridColumn: '1 / -1', gridTemplateColumns: '3.4em minmax(0, 1fr) auto', margin: '4px 0 0', gap: '6px' });
+    tSl.out.style.minWidth = '3.2em';
     const chip = h('div', { class: 'job-chip', dataset: { job: id, tip: JOB_TIPS[id] }, draggable: true },
       h('i', { class: 'ico ico-job-' + id, attrs: { 'aria-hidden': 'true' } }),
-      h('span', { class: 'job-name', text: nameOf('job', id) }), n, cap, target, h('span', { class: 'job-btns' }, minus, plus));
+      h('span', { class: 'job-name', text: nameOf('job', id) }), n, cap, target, h('span', { class: 'job-btns' }, minus, plus), tSl.el);
+    // Sliding the target thumb must not start a chip drag (a draggable ancestor swallows range drags in some browsers).
+    tSl.input.addEventListener('pointerdown', () => { chip.draggable = false; });
+    for (const t of ['pointerup', 'pointercancel', 'change', 'blur']) tSl.input.addEventListener(t, () => { chip.draggable = true; });
     chip.addEventListener('dragstart', (ev) => {
+      if (ev.target === tSl.input) { ev.preventDefault(); return; }
       if (ev.dataTransfer) {
         ev.dataTransfer.setData('text/plain', 'job:' + id);
         ev.dataTransfer.effectAllowed = 'move';
@@ -249,23 +336,40 @@ export function createPanel(root, { game, ui, bridge }) {
       if (!data.startsWith('job:')) return;
       const from = data.slice(4);
       if (from === id) return;
+      if (autoMode()) {
+        if (from !== 'idle') moveTarget(from, id, ev, chip);
+        return;
+      }
       const avail = from === 'idle' ? q(() => idleMinors(game.s), 0) : num(obj(game.s.run.colony.jobs)[from]);
       const k = amountFor(avail);
       if (k > 0) act('shiftJob', { from, to: id, n: k }, ev, chip);
     });
-    chip.__r = { n, cap, target, minus, plus };
+    chip.__r = { n, cap, target, minus, plus, tSl };
     return chip;
   }
 
-  function updateJobChip(chip, id, s, d) {
+  function updateJobChip(chip, id, s, d, eff) {
     const r = chip.__r;
     const c = obj(s.run.colony);
     setText(r.n, fmtCount(num(obj(c.jobs)[id])));
     const capV = q(() => jobCap(s, d, id), Infinity);
     setText(r.cap, Number.isFinite(capV) ? '/ ' + fmtCount(capV) : '');
-    const auto = !!c.autoJobs;
+    const auto = !!(c.autoJobs || c.thresholdJobs);
     const tgt = num(obj(c.jobTargets)[id]);
-    setText(r.target, auto ? fmtPct(tgt, { signed: false }) : '');
+    show(r.tSl.el, auto);
+    // The bottleneck bias (Respond to bottlenecks) on top of the player's target.
+    const extra = auto && eff ? num(eff[id]) - tgt : 0;
+    setText(r.target, Math.abs(extra) >= 0.005 ? fmtPct(extra) : '');
+    r.target.title = Math.abs(extra) >= 0.005 ? 'Respond to bottlenecks: ' + fmtPct(num(eff[id]), { signed: false }) + ' right now' : '';
+    if (auto) {
+      const pct = (v) => fmtPct(v / 100, { signed: false });
+      r.tSl.set(Math.round(tgt * 100), { text: fmtPct(tgt, { signed: false }), fmt: pct });
+    }
+    const verb = auto ? ' target by ' + Math.round(TARGET_STEP * 100) + '%' : '';
+    r.minus.title = auto ? 'Lower the ' + nameOf('job', id).toLowerCase() + verb : '';
+    r.plus.title = auto ? 'Raise the ' + nameOf('job', id).toLowerCase() + verb : '';
+    r.minus.setAttribute('aria-label', auto ? 'Lower ' + nameOf('job', id) + ' target' : 'Fewer ' + nameOf('job', id) + 's');
+    r.plus.setAttribute('aria-label', auto ? 'Raise ' + nameOf('job', id) + ' target' : 'More ' + nameOf('job', id) + 's');
     toggleClass(chip, 'glow', ui.getUI().glow === 'job:' + id);
   }
 
@@ -388,7 +492,19 @@ export function createPanel(root, { game, ui, bridge }) {
       setText(idleEl, fmtCount(idle) + ' idle' + (num(c.militia) > 0 ? ' · ' + fmtCount(c.militia) + ' militia' : ''));
       show(jobsSec, num(adults.minor) > 0 || isShown(s, 'panel_colony'));
       const ids = jobIds().filter((id) => isShown(s, jobKey(id)) || num(obj(c.jobs)[id]) > 0);
-      syncList(jobList, ids, (id) => id, createJobChip, (chip, id) => updateJobChip(chip, id, s, d));
+      const auto = !!(c.autoJobs || c.thresholdJobs);
+      const eff = auto ? q(() => effectiveTargets(s), null) : null;
+      syncList(jobList, ids, (id) => id, createJobChip, (chip, id) => updateJobChip(chip, id, s, d, eff));
+      show(stepRow, !auto); // the ×1 / ×10 / Max steps move workers, which auto mode does not do
+      let tSum = 0;
+      for (const id of jobIds()) tSum += num(obj(c.jobTargets)[id]);
+      show(targetNote, auto);
+      if (auto) {
+        const left = Math.max(0, 1 - tSum);
+        setText(targetNote, 'Targets total ' + fmtPct(Math.min(1, tSum), { signed: false })
+          + (left >= 0.005 ? ' · ' + fmtPct(left, { signed: false }) + ' of workers stay idle' : '')
+          + '. Workers are reassigned every 5 s; a share a job cannot use goes to foragers.');
+      }
       const autoAvail = isShown(s, 'job_presets') || hasResearch(s, 'age_polyethism') || traitLevel(s, 'automaton_instincts') > 0 || fedLevel(s, 'automated_brood') > 0;
       show(autoRow, autoAvail);
       setProp(autoBox, 'checked', !!c.autoJobs);
@@ -396,6 +512,17 @@ export function createPanel(root, { game, ui, bridge }) {
       show(thrRow, thrAvail);
       setProp(thrBox, 'checked', !!c.thresholdJobs);
       show(presetRow, hasResearch(s, 'hive_mind'));
+      if (hasResearch(s, 'hive_mind')) {
+        const presets = arr(s.meta.automation && s.meta.automation.jobPresets);
+        presetBtns.forEach((b, slot) => {
+          const p = presets[slot];
+          const t = p && obj(p.targets);
+          setProp(b.apply, 'disabled', !p);
+          b.apply.title = t ? jobIds().filter((j) => num(t[j]) > 0).map((j) => nameOf('job', j) + ' ' + fmtPct(num(t[j]), { signed: false })).join(', ') : 'Empty: save your current targets first';
+          setProp(b.save, 'disabled', slot > presets.length);
+          b.save.title = 'Save the current targets in slot ' + (slot + 1);
+        });
+      }
 
       // adaptations
       const aIds = adaptIds().filter((id) => isShown(s, adaptKey(id)) || num(obj(s.run.adaptations)[id]) > 0);

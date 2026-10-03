@@ -18,8 +18,85 @@ export const OVERLAY_IDS = Object.freeze(['climate', 'raid_reach', 'haul', 'adja
 /** Layout ids (DESIGN §25.1). */
 export const LAYOUTS = Object.freeze(['wide-tall', 'wide-short', 'medium', 'narrow']);
 
-/** View ids for medium/narrow layouts. */
-export const VIEWS = Object.freeze(['split', 'above', 'below']);
+/**
+ * View ids (every layout, C96): 'split' = Above stacked over Below, 'side' = side by side (Below | seam | Above),
+ * 'above' / 'below' = one canvas. Display and V-key cycling order is VIEW_ORDER.
+ */
+export const VIEWS = Object.freeze(['split', 'side', 'above', 'below']);
+export const VIEW_ORDER = Object.freeze(['above', 'below', 'split', 'side']);
+export const VIEW_LABELS = Object.freeze({ above: 'Above', below: 'Below', split: 'Stacked', side: 'Side by side' });
+/** localStorage key of the player's chosen view (a per-browser UI convenience, outside the save). */
+export const VIEW_KEY = 'sld.ui.view';
+
+/**
+ * Views a layout offers: side by side needs at least the medium width (≥ 768 px).
+ * @param {string} layout
+ * @returns {string[]}
+ */
+export function viewsFor(layout) {
+  return layout === 'narrow' ? VIEW_ORDER.filter((v) => v !== 'side') : [...VIEW_ORDER];
+}
+
+/**
+ * The view a layout starts in when the player has not picked one: wide-tall and medium stack, wide-short sits side by
+ * side (DESIGN §25.1), narrow shows Above.
+ * @param {string} layout
+ * @returns {string}
+ */
+export function defaultViewFor(layout) {
+  if (layout === 'wide-short') return 'side';
+  if (layout === 'narrow') return 'above';
+  return 'split';
+}
+
+/**
+ * The view actually laid out: an unknown view stacks, and side by side stacks on narrow screens.
+ * @param {string} view
+ * @param {string} layout
+ * @returns {'split'|'side'|'above'|'below'}
+ */
+export function effectiveView(view, layout) {
+  const v = VIEWS.includes(view) ? view : 'split';
+  return v === 'side' && !viewsFor(layout).includes('side') ? 'split' : v;
+}
+
+/**
+ * Which canvases a view shows.
+ * @param {string} view
+ * @param {string} layout
+ * @returns {{ above: boolean, below: boolean }}
+ */
+export function viewShows(view, layout) {
+  const v = effectiveView(view, layout);
+  return { above: v !== 'below', below: v !== 'above' };
+}
+
+/**
+ * The next view for the V key (cycles through the layout's views).
+ * @param {string} view
+ * @param {string} layout
+ * @returns {string}
+ */
+export function nextView(view, layout) {
+  const list = viewsFor(layout);
+  const i = list.indexOf(effectiveView(view, layout));
+  return list[(i + 1) % list.length];
+}
+
+/** Canvas each tool works on (ARCHITECTURE §14.4 tool kinds). */
+export const TOOL_VIEW = Object.freeze({
+  placeChamber: 'nest', relocate: 'nest', backfill: 'nest', levelDir: 'nest',
+  claim: 'surface', flag: 'surface', reroute: 'surface', placeSatellite: 'surface', moveAphids: 'surface', tournament: 'surface',
+});
+
+/**
+ * 'nest' | 'surface' for a tool, or null (no tool / unknown kind).
+ * @param {Object|null} tool
+ * @returns {'nest'|'surface'|null}
+ */
+export function toolView(tool) {
+  return tool && typeof tool.kind === 'string' && Object.prototype.hasOwnProperty.call(TOOL_VIEW, tool.kind) ? TOOL_VIEW[tool.kind] : null;
+}
 
 /**
  * A fresh UIState with the documented defaults.

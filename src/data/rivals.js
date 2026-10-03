@@ -72,9 +72,11 @@ export const MAP_BOSS_ORDER = f(['old_ridge_supercolony', 'great_rival']);
 
 /**
  * Spawning (DESIGN §8.9): initial tier rings (used by mapgen), max concurrent rivals by map radius, respawn delay
- * [min, max] seconds after a conquest, and the outermost ring band (rings radius − outerBand + 1 .. radius).
+ * [min, max] seconds after a conquest, and the outermost ring band (rings radius − outerBand + 1 .. radius). retrySec: a
+ * respawn that finds no hex clear of the player's land (C95) looks again after this many seconds.
  */
-export const SPAWN = f({ tier1Ring: [4, 5], tier2Ring: [6, 7], maxByRadius: { 8: 2, 12: 3, 16: 4 }, respawnSec: [600, 1200], outerBand: 2 });
+export const SPAWN = f({ tier1Ring: [4, 5], tier2Ring: [6, 7], maxByRadius: { 8: 2, 12: 3, 16: 4 }, respawnSec: [600, 1200], outerBand: 2,
+  retrySec: 30 });
 
 /**
  * Conquered rivals kept in s.run.rivals.list (ARCHITECTURE §18 C77, save size): conquered non-boss rivals are compacted

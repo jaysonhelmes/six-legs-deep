@@ -2,7 +2,8 @@
 // thresholds (retarget toward the bottleneck), saved presets (hive_mind) and the per-tick consistency rule.
 // Owner: WP2. Contract: ARCHITECTURE §8.1 (jobs.js), §9 (job commands), DESIGN §6.2–§6.3.
 // ARCH-R: auto assignment runs while autoJobs OR thresholdJobs is on (threshold mode retargets, so it implies following
-// the targets). Locked/capped jobs' shares are redistributed to the other unlocked jobs in proportion to their targets.
+// the targets). Locked jobs' shares and shares above a cap go to foragers (C94). Threshold mode never edits the player's
+// targets: it keeps a decaying per-job bias in run.colony.jobBias (optional field, C94) and follows targets + bias.
 // ARCH-R: "herders up when honeydew is short for a pending purchase" is read as: the next alate egg while rearing, or the
 // next level of an available honeydew-costing Adaptation, costs more honeydew than is stored (and fits under the cap).
 // ARCH-R: shiftJob clamps n to what is available in `from` and to the room under `to`'s cap (rejecting only when that is 0).
@@ -158,42 +159,103 @@ function enforce(s) {
   }
 }
 
+/** Jobs the response-threshold bias can raise (C94), in the order their bias is applied. */
+const BIAS_JOBS = Object.freeze(['nurse', 'digger', 'herder']);
+
 /**
- * Set jobs = targets × available minors (available = minors − militia), honouring caps and locked jobs. The pool is
- * min(1, Σ targets) × available; shares of capped/locked jobs go to the other unlocked jobs by their targets.
+ * [q] Pure: a copy of `targets` (every job key, 0..1) with `job` set to `value`. When that pushes Σ above 1, the other
+ * jobs are scaled down proportionally so Σ = 1 (C94: the Colony panel's target sliders and +/− nudges).
+ * @param {Object<string, number>} targets
+ * @param {string} job
+ * @param {number} value
+ * @returns {Object<string, number>}
+ */
+export function withTarget(targets, job, value) {
+  const out = cleanTargets(targets);
+  if (!isJob(job)) return out;
+  const v = clampNum(num(value), 0, 1);
+  out[job] = v;
+  let others = 0;
+  for (const j of JOB_ORDER) if (j !== job) others += out[j];
+  if (v + others > 1 + EPS && others > 0) {
+    const keep = Math.max(0, 1 - v) / others;
+    for (const j of JOB_ORDER) if (j !== job) out[j] = clampNum(out[j] * keep, 0, 1);
+  }
+  // Round away float dust so Σ ≤ 1 survives setJobTargets' validation (Σ ≤ 1 + 1e-9).
+  for (const j of JOB_ORDER) out[j] = Math.round(out[j] * 1e9) / 1e9;
+  let sum = 0;
+  for (const j of JOB_ORDER) sum += out[j];
+  if (sum > 1) {
+    const big = JOB_ORDER.filter((j) => j !== job).sort((a, b) => out[b] - out[a])[0];
+    if (big) out[big] = clampNum(out[big] - (sum - 1), 0, 1);
+  }
+  return out;
+}
+
+/**
+ * [q] The targets the automation follows: the player's targets (run.colony.jobTargets) plus, in threshold mode, the
+ * bottleneck bias (run.colony.jobBias, C94). A biased job is raised by its bias (to at most THRESHOLDS.shiftMax, or the
+ * player's own target if higher), taken from the unassigned share first, then from the unbiased jobs proportionally.
+ * @param {import('../core/types.js').State} s
+ * @returns {Object<string, number>}
+ */
+export function effectiveTargets(s) {
+  const col = s.run.colony;
+  const out = cleanTargets(col.jobTargets);
+  const bias = col.thresholdJobs && thresholdAvailable(s) && isMap(col.jobBias) ? col.jobBias : null;
+  if (!bias) return out;
+  const biased = (j) => num(bias[j]) > EPS;
+  for (const job of BIAS_JOBS) {
+    const b = clampNum(num(bias[job]), 0, 1);
+    const amt = Math.min(b, Math.max(0, THRESHOLDS.shiftMax - out[job]));
+    if (!(amt > EPS)) continue;
+    let total = 0;
+    let others = 0;
+    for (const j of JOB_ORDER) {
+      total += out[j];
+      if (j !== job && !biased(j)) others += out[j];
+    }
+    const fromFree = Math.min(amt, Math.max(0, 1 - total));
+    const take = Math.min(amt - fromFree, others);
+    if (take > 0) {
+      const keep = 1 - take / others;
+      for (const j of JOB_ORDER) if (j !== job && !biased(j)) out[j] = clampNum(out[j] * keep, 0, 1);
+    }
+    out[job] = clampNum(out[job] + fromFree + Math.max(0, take), 0, 1);
+  }
+  return out;
+}
+
+/** Most nurses that still speed brood up: JOBS.nurse.fx.maxPerSlot per brood slot (Infinity without the stat). */
+function usefulNurses(d) {
+  const slots = d && d.stats ? num(d.stats.broodSlots, NaN) : NaN;
+  return Number.isFinite(slots) ? JOBS.nurse.fx.maxPerSlot * Math.max(0, slots) : Infinity;
+}
+
+/**
+ * Set jobs = effective targets × available minors (available = minors − militia). The pool is min(1, Σ targets) ×
+ * available; a job's share above its cap (herder, gardener) and the share of a locked job go to foragers (C94), so
+ * they are worked instead of left idle. The bottleneck bias never adds nurses past the useful maximum (4 per slot).
  */
 function assignByTargets(s, d) {
   const col = s.run.colony;
-  const tg = col.jobTargets || {};
+  const tg = effectiveTargets(s);
+  const base = cleanTargets(col.jobTargets);
   const avail = clampNum(num(col.adults.minor) - num(col.militia));
   let tSum = 0;
-  for (const j of JOB_ORDER) tSum += clampNum(num(tg[j]), 0, 1);
-  const pool = Math.min(1, tSum) * avail;
+  for (const j of JOB_ORDER) tSum += tg[j];
+  const scale = tSum > 1 ? 1 / tSum : 1;
+  let surplus = 0;
   const out = {};
-  const capped = {};
-  for (const j of JOB_ORDER) out[j] = 0;
-  let fixed = 0;
-  for (let iter = 0; iter <= JOB_ORDER.length; iter++) {
-    const free = JOB_ORDER.filter((j) => !capped[j] && num(tg[j]) > 0 && jobUnlocked(s, j));
-    const rem = pool - fixed;
-    if (free.length === 0 || !(rem > 0)) break;
-    let w = 0;
-    for (const j of free) w += num(tg[j]);
-    let newly = false;
-    for (const j of free) {
-      const cap = jobCap(s, d, j);
-      if (rem * num(tg[j]) / w >= cap) {
-        out[j] = cap;
-        fixed += cap;
-        capped[j] = true;
-        newly = true;
-      }
-    }
-    if (!newly) {
-      for (const j of free) out[j] = rem * num(tg[j]) / w;
-      break;
-    }
+  for (const j of JOB_ORDER) {
+    const want = avail * tg[j] * scale;
+    if (j === 'forager') { out[j] = want; continue; }
+    let cap = jobUnlocked(s, j) ? jobCap(s, d, j) : 0;
+    if (j === 'nurse' && tg.nurse > base.nurse + EPS) cap = Math.min(cap, Math.max(avail * base.nurse * scale, usefulNurses(d)));
+    out[j] = Math.min(want, cap);
+    surplus += want - out[j];
   }
+  out.forager += surplus;
   for (const j of JOB_ORDER) col.jobs[j] = clampNum(out[j]);
 }
 
@@ -225,41 +287,52 @@ function honeydewShort(s, d) {
   return false;
 }
 
-/** Raise one job target by up to THRESHOLDS.shiftStep (max shiftMax), taken from the unassigned share, then the others. */
-function raiseTarget(tg, job) {
-  const amt = Math.min(THRESHOLDS.shiftStep, Math.max(0, THRESHOLDS.shiftMax - num(tg[job])));
-  if (!(amt > 0)) return;
-  let total = 0;
-  let others = 0;
-  for (const j of JOB_ORDER) {
-    total += num(tg[j]);
-    if (j !== job) others += num(tg[j]);
+/**
+ * [q] Response-threshold signal per bias job (C94): 1 = raise (the bottleneck binds and more workers help), 0 = hold
+ * (it binds but more workers would not help, or it is easing), −1 = relax. nurse: bn_brood_slots binds (raise while
+ * nurses < 4 per brood slot). digger: dig queue > THRESHOLDS.digQueueSec of work at the current rate (hold above half
+ * of that). herder: honeydew short for a pending purchase (raise while a herder trail has room). Locked jobs relax.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {{ nurse: number, digger: number, herder: number }}
+ */
+export function thresholdTriggers(s, d) {
+  const col = s.run.colony;
+  let nurse = -1;
+  if (jobUnlocked(s, 'nurse') && s.run.bottleneck.id === 'bn_brood_slots') nurse = num(col.jobs.nurse) < usefulNurses(d) - 1 ? 1 : 0;
+  let digger = -1;
+  if (jobUnlocked(s, 'digger')) {
+    const q = digQueueSeconds(d);
+    digger = q > THRESHOLDS.digQueueSec ? 1 : q > THRESHOLDS.digQueueSec / 2 ? 0 : -1;
   }
-  const fromFree = Math.min(amt, Math.max(0, 1 - total));
-  let take = amt - fromFree;
-  let taken = 0;
-  if (take > 0 && others > 0) {
-    take = Math.min(take, others);
-    const keep = 1 - take / others;
-    for (const j of JOB_ORDER) if (j !== job) tg[j] = clampNum(num(tg[j]) * keep, 0, 1);
-    taken = take;
-  }
-  tg[job] = clampNum(num(tg[job]) + fromFree + taken, 0, 1);
+  let herder = -1;
+  if (jobUnlocked(s, 'herder') && honeydewShort(s, d)) herder = jobCap(s, d, 'herder') - num(col.jobs.herder) > 0.5 ? 1 : 0;
+  return { nurse, digger, herder };
 }
 
-/** response_thresholds: shift targets toward the current bottleneck (nurses, diggers, herders). */
-function shiftTargets(s, d) {
+/** response_thresholds: move each bias by `n` rebalance steps (up shiftStep on 1, down decayStep on −1, kept on 0). */
+function updateBias(s, d, n) {
   const col = s.run.colony;
-  const tg = col.jobTargets;
-  if (!isMap(tg)) return;
-  if (s.run.bottleneck.id === 'bn_brood_slots' && jobUnlocked(s, 'nurse')) raiseTarget(tg, 'nurse');
-  if (jobUnlocked(s, 'digger') && digQueueSeconds(d) > THRESHOLDS.digQueueSec) raiseTarget(tg, 'digger');
-  if (jobUnlocked(s, 'herder') && honeydewShort(s, d)) raiseTarget(tg, 'herder');
+  const trig = thresholdTriggers(s, d);
+  const prev = isMap(col.jobBias) ? col.jobBias : {};
+  const next = {};
+  let any = false;
+  for (const j of BIAS_JOBS) {
+    const b = clampNum(num(prev[j]), 0, THRESHOLDS.biasMax);
+    let v = b;
+    if (trig[j] > 0) v = Math.min(THRESHOLDS.biasMax, b + n * THRESHOLDS.shiftStep);
+    else if (trig[j] < 0) v = Math.max(0, b - n * THRESHOLDS.decayStep);
+    next[j] = Math.round(v * 1e9) / 1e9;
+    if (next[j] > 0) any = true;
+  }
+  if (any) col.jobBias = next;
+  else delete col.jobBias;
 }
 
 /**
  * Per tick: consistency (Σ jobs + militia ≤ minors). Every THRESHOLDS.rebalanceSec of run time while auto or threshold
- * mode is on: threshold retargeting (if available), then jobs = targets × available minors.
+ * mode is on: the threshold bias moves (if available; one step per rebalance boundary crossed), then jobs = effective
+ * targets × available minors. Existing workers are reassigned at once, so the counts match the targets after ≤ 5 s.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number} dt
@@ -270,11 +343,13 @@ export function tick(s, d, dt, env) {
   enforce(s);
   if (!(dt > 0)) return;
   const col = s.run.colony;
+  if (!col.thresholdJobs && col.jobBias !== undefined) delete col.jobBias;
   if (!col.autoJobs && !col.thresholdJobs) return;
   const R = THRESHOLDS.rebalanceSec;
   const t0 = num(s.run.time);
-  if (Math.floor((t0 + dt) / R + EPS) === Math.floor(t0 / R + EPS)) return;
-  if (col.thresholdJobs && thresholdAvailable(s)) shiftTargets(s, d);
+  const n = Math.floor((t0 + dt) / R + EPS) - Math.floor(t0 / R + EPS);
+  if (n <= 0) return;
+  if (col.thresholdJobs && thresholdAvailable(s)) updateBias(s, d, n);
   assignByTargets(s, d);
   enforce(s);
 }
@@ -381,7 +456,10 @@ export const handlers = {
   /** setThresholdJobs { on }: response-threshold mode (needs response_thresholds, or the innate automation). */
   setThresholdJobs: {
     validate(s, d, cmd) { return toggleValidate(cmd, thresholdAvailable(s)); },
-    apply(s, d, cmd) { s.run.colony.thresholdJobs = cmd.on; },
+    apply(s, d, cmd) {
+      s.run.colony.thresholdJobs = cmd.on;
+      if (!cmd.on) delete s.run.colony.jobBias;
+    },
   },
 
   /** saveJobPreset { slot, name? }: store the current targets (needs hive_mind; up to PRESETS.max slots). */

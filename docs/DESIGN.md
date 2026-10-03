@@ -276,8 +276,8 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 
 ### 6.3 Job automation
 - **Manual (start):** +/− buttons and drag between job chips. New adults go to `forager`.
-- **`age_polyethism` research (60 insight, ~10–15 min into run 1):** preset ratio sliders. New adults and rebalancing follow the targets (young workers nurse, middle-aged dig, old forage, as flavour). This is deliberately cheap and early.
-- **`response_thresholds` research:** auto-assignment retargets the current bottleneck. For example: nurses up when `bn_brood_slots`/brood time binds, diggers up when the dig queue has more than 60 s of work, herders when honeydew is short for a pending purchase.
+- **`age_polyethism` research (60 insight, ~10–15 min into run 1):** preset ratio sliders. New adults and rebalancing follow the targets (young workers nurse, middle-aged dig, old forage, as flavour). This is deliberately cheap and early. Each job chip gets a target slider (step 5 %); in auto mode +/− nudge the target by 5 % instead of moving workers, and raising one past a 100 % total scales the others down. Every 5 s all workers are reassigned to the targets. A share a job cannot use (locked, or above the herder/gardener cap) is foraged. Turning auto on keeps the current split as the targets (ARCHITECTURE C94).
+- **`response_thresholds` research:** auto-assignment retargets the current bottleneck. For example: nurses up when `bn_brood_slots`/brood time binds, diggers up when the dig queue has more than 60 s of work, herders when honeydew is short for a pending purchase. The player's targets stay as set: the automation adds a bias to the bottleneck job, +5 % of the workforce per 5 s while the trigger holds and more workers help (up to +30 %, never past 50 % of workers, nurses never past 4 per brood slot), and −2.5 % per 5 s once it clears (ARCHITECTURE C94).
 - **`automaton_instincts` Bloodline trait (5 alates, run 2–3):** both of the above are innate every run, plus the Adaptation autobuyer and dig queue +2.
 
 ### 6.4 Nutrition (ratio multiplier, from A)
@@ -330,6 +330,8 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 ### 7.3 Tunnels, backfill, relocate, demolish
 - **Tunnel:** drag from any open cell. Each cell costs its layer's work (×0.5 with `load_chains`). Tunnels give no housing.
 - **Backfill:** select open tunnel cells → filled for free over 10 s. Not allowed if it would disconnect a chamber from every entrance.
+  - The Backfill tool (Build panel, or `B` over the nest) paints a box: it fills every tunnel cell in it that can go, skips soil and chambers, and keeps open (red, with the reason) the shaft cells and the cells a chamber still needs. The tool stays on for the next stroke.
+  - Cells being backfilled are drawn hatched, filling up from the floor as their 10 s run out.
 - **Relocate a chamber:** pick a new valid spot.
   - Cost: 50% of the dig work of the new footprint. The level is kept.
   - The chamber is inactive until its new cells are dug. The old cells become tunnel.
@@ -342,14 +344,15 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
    - It also warns (amber) when the footprint would take the Royal Chamber's last room to grow to **L5**, which the Nuptial Flight requires: "Boxes in the Royal Chamber". The placement is still allowed. The advisor never suggests such a spot unless nothing else fits, and an enlargement with no chosen direction grows away from the queen's room.
 2. Validity:
    - The footprint must be undug soil or existing tunnel. It must not overlap stone (unless `acid_excavation`), water or another chamber.
-   - It must satisfy the chamber's row rule.
+   - It must satisfy the chamber's row rule. The Build panel lists each chamber's rule ("Depth 24 or deeper", "Must touch a root", "Needs its own exit shaft"), the ghost's refusal names the numbers ("Must be at depth 24 or deeper (you are at 17)"), and the limit row is drawn as a line while placing.
    - It must connect to an open cell, either directly or via the auto-route.
 3. Placement food is paid immediately. The cells join the dig queue. The chamber **activates at 100% excavated** and fills in visibly while being dug.
 4. **Enlarge (from A):** a chamber's footprint grows with level up to L8:
-   - width `w = w0 + min(L,8) − 1`;
-   - height `h = h0 + floor((min(L,8) − 1)/3)`.
-   - Example: a 3×2 Gallery becomes 10×4 at L8.
-   - The player picks the growth direction (left/right, up/down). The new cells are queued, and that level's effect starts when they are dug.
+   - **each level-up adds exactly one row or one column**, on one side: the height grows at L4 and L7, the width at every other level;
+   - height `h = h0 + floor((min(L,8) − 1)/3)`;
+   - width `w = w0 + (min(L,8) − 1) − floor((min(L,8) − 1)/3)`.
+   - Example: a 3×2 Gallery becomes 8×4 at L8; the Royal Chamber is 7×3 at L5.
+   - The player picks the growth direction (left/right for a column, up/down for a row) and sees the exact new cells before confirming. The new cells are queued, and that level's effect starts when they are dug.
    - Level-ups that do not grow the footprint (L > 8, or chambers marked "no growth") take effect immediately.
    - If every direction is blocked, the level-up button is disabled ("Blocked: relocate or clear space"). **Layout planning matters.**
    - **The queen's room is protected from growth.** While the Royal Chamber is below L5, another chamber may not grow into the last space the Royal Chamber needs to reach L5: such directions are not offered, and the level-up is refused with "Would wall in the Royal Chamber — level it to L5 first, or relocate." Only a deliberate placement or relocation can take that space, with the amber warning of step 1. The Royal Chamber's own growth stays inside a footprint it can still complete. The block lifts once it reaches L5 (ARCHITECTURE §18 C66).
@@ -366,9 +369,9 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 | id | Name | Unlock | Max inst. | Footprint L1 | Placement rule | F_place | F0 | S0 | g | Max L | Effect per level |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `royal_chamber` | Royal Chamber | start (pre-dug, L1) | 1 (+1 `polygyny`, +2 `queens_council`) | 4×2, grows | Extra ones: row ≥ 20 | extra: 1e5 × 10^k | 50 | 90 | 2.20 | — | Lay ×1.15 per level above 1. L1 base: 10 housing, 150 food storage, 3 brood slots. **L5 required for the Flight.** |
-| `gallery` | Gallery | first time housing is full (≥ 9 adults) | 4 (+2 `gallery_arches`) | 3×2, grows | row ≥ 1 | 40 | 10 | 24 | 1.30 | — | +10 housing per level. Each level above 30 adds `10 + (L − 30)` instead. Loam ×1.1. |
+| `gallery` | Gallery | first time housing is full (≥ 9 adults) | 4 (+2 `gallery_arches`) | 3×2, grows | row ≥ 1 | 40 | 10 | 24 | 1.30 | — | +11 housing per level. Each level above 30 adds `11 + (L − 30)` instead. Loam ×1.1. |
 | `nursery` | Nursery | 8 adults | 3 | 3×2, grows | row ≥ 1 | 80 | 20 | 45 | 1.60 | — | +3 brood slots. Microclimate (§17.2). Adjacent to `royal_chamber`: +15% brood speed. |
-| `granary` | Granary | food earned ≥ 120 or food cap reached | 3 | 2×2, grows | row ≥ 1 | 60 | 15 | 36 | 1.55 | — | Capacity `300 × 1.65^(L−1)` × layer modifier (clay 1.25 with spoilage, gravel 1.5, bedrock 1.75). |
+| `granary` | Granary | food earned ≥ 120 or food cap reached | 3 | 2×2, grows | row ≥ 1 | 60 | 15 | 36 | 1.55 | — | Capacity `400 × 1.65^(L−1)` × layer modifier (clay 1.25 with spoilage, gravel 1.5, bedrock 1.75). |
 | `scent_library` | Scent Library | 30 adults | 2 | 3×2, grows | row ≥ 1 | 600 | 150 | 120 | 2.00 | — | +0.05 insight/s. Gravel or deeper ×1.25. Adjacent to `royal_chamber` ×1.10. |
 | `midden` | Midden | 120 adults | 2 | 2×2, grows | row ≥ 1 | 200 | 50 | 75 | 1.60 | 8 | Disease-event chance −10% (combined max −80%). +2% all output (additive group, combined max +20%). **Hygiene penalty:** a Nursery or Fungus Garden within 6 path cells gets −20%. |
 | `barracks` | Barracks | `polymorphism` | 2 | 3×2, grows | row ≥ 1 | 1,200 | 300 | 150 | 1.70 | — | +8 berths. Soldier/supermajor ATK +5% (combined cap +50%). Within 12 path cells of an entrance: garrison deploys instantly and home AP +10%. |
@@ -405,7 +408,7 @@ Path cells are measured by BFS over open cells, starting from the row-0 cell of 
   ```
   - Storage nodes are the Royal Chamber (150) plus granaries.
   - `h` is added to every main-entrance trail's effective distance (§8.5). Trails from satellites and outposts use `h = 0.5`.
-  - Example: at the start the Royal Chamber is at path 20, so `h = 0.83`. Adding a shallow granary of capacity 330 at path 8 gives `h = (150·20 + 330·8)/480/24 = 0.49`.
+  - Example: at the start the Royal Chamber is at path 20, so `h = 0.83`. Adding a shallow granary of capacity 440 (400 × 1.10 with `ventilation_shafts`) at path 8 gives `h = (150·20 + 440·8)/590/24 = 0.46`.
   - **Shallow storage = faster foraging. Deep storage = bigger and safer.**
 - **Raid reach (from D):** a Granary or Nursery with any cell within **15 path cells** of an entrance can be robbed or hit in a lost nest defence (§9.10). The ghost overlay shades the reach zone red.
 
@@ -1044,7 +1047,7 @@ All of the following are required:
 1. `royal_chamber` L5.
 2. `nuptial_preparation` researched.
 3. A `nuptial_chamber` built, including its exit shaft (the second entrance).
-4. `f_run ≥ 1.4e8`. This guarantees at least 11 alates (the formula is anchored at 1e8 → 10, §13.2).
+4. `f_run ≥ 1.7e8`. This guarantees at least 13 alates (the formula is anchored at 1e8 → 10, §13.2).
 
 The **Prestige tab** appears when `f_run ≥ 2e7` or `nuptial_preparation` is researched, whichever comes first. ("Visible" would be ambiguous, because locked research nodes are always shown greyed.) It shows a requirements checklist and the live projection.
 
@@ -1060,7 +1063,7 @@ alates = floor( SC_alates( 10 × √(f_run / 1e8) × (1 + t_peak/400) × (1 + 0.
 | Situation | f_run | t_peak | reared | W | Alates |
 |---|---|---|---|---|---|
 | Formula anchor | 1e8 | 20 | 0 | 1.0 | **10** |
-| Flight gate (§13.1) | 1.4e8 | 0 | 0 | 1.0 | **11** |
+| Flight gate (§13.1) | 1.7e8 | 0 | 0 | 1.0 | **13** |
 | Run 1, bot ~45 min (human ~55–65), winter | 1.3e8 | 175 | 25 | 1.0 | **24** |
 | Run 1, bot ~60 min (human ~75), summer | 2.1e8 | 200 | 25 | 1.25 | **40** |
 | Run 1, bot ~90 min | 4.5e8 | 215 | 25 | 1.0 | **48** |
@@ -1780,7 +1783,7 @@ The torpor floor (from B) is a backstop. If any code path would reduce adults of
 | Hibernaculum | `overwintering` | ~30–40 min |
 | Nuptial Chamber and exit shaft | `nuptial_preparation` | ~20–44 min (the bot rushes it at ~20) |
 | Fungus widget, Fungus Garden, Nutrition ring | `fungiculture` | ~45–50 min |
-| Flight button active | All of §13.1 (gated by `f_run ≥ 1.4e8`) | ~50–75 min (bot ~42–55) |
+| Flight button active | All of §13.1 (gated by `f_run ≥ 1.7e8`) | ~50–75 min (bot ~42–55) |
 | Bloodline tab | First Flight | ~60–90 min |
 | Hardships | 150 lifetime alates | ~2.5–3 h |
 | Supercolony teaser (greyed Federation tab, daughter-colony trails) | 1,000 lifetime alates | ~3–4 h |
@@ -1834,7 +1837,7 @@ The torpor floor (from B) is a backstop. If any code path would reduce adults of
 | 30–40 | Pavement Ants conquered (~60 soldiers, or Formic Acid + Serrated/Thick). Early Warning, Trophic Eggs. |
 | 42:00 | **First hard winter.** The frost line reaches row 18, so nurseries must be deep (or use a Hibernaculum / Thermal Brood Shuttling). |
 | 40–50 | Nuptial Preparation (~44 min). Dig the Nuptial Chamber and its exit shaft, which creates the **second entrance hex**. Alate rearing begins. |
-| 46–65 | **Flight available** (≥ 11 alates; ~23–31 with reared alates). Fungiculture and Nutrition. Red Wood Ants appear. The Alates/min meter rises. |
+| 46–65 | **Flight available** (≥ 13 alates; ~23–31 with reared alates). Fungiculture and Nutrition. Red Wood Ants appear. The Alates/min meter rises. |
 | 60–90 | The Flight becomes clearly worth it: **30–60 alates** with reared alates and summer weather. Most players fly. |
 
 ### 24.3 Calibration evidence
@@ -2066,7 +2069,7 @@ Expected size: about 13–15k lines (core ~6k, view ~3k, UI ~2.5k, tests ~2.5k).
 2. `sc()` is continuous and monotonic at each threshold.
 3. `E(N)` matches the §5.2 table, including `E(200) = 111.8`.
 4. **A new game hatches its first worker within 15–30 s with zero input.**
-5. Prestige thresholds: base `f_run = 1e8` → 10 alates (formula anchor; the Flight gate `f_run = 1.4e8` gives 11); 5,000 → 3 kinship; 1,000 (the Speciation gate) → 20 genes. Worked examples in §13–15 match to ±1.
+5. Prestige thresholds: base `f_run = 1e8` → 10 alates (formula anchor; the Flight gate `f_run = 1.7e8` gives 13); 5,000 → 3 kinship; 1,000 (the Speciation gate) → 20 genes. Worked examples in §13–15 match to ±1.
 6. Lanchester: stepped vs closed form within 5% (homogeneous) and 10% (mixed). The preview is deterministic and does not advance `state.rng`.
 7. Offline vs online within 2% (1 h, events off, 100% efficiency).
 8. Saves: round trip deep-equal; each migration has a fixture; a corrupted checksum is rejected.
@@ -2097,7 +2100,7 @@ Expected size: about 13–15k lines (core ~6k, view ~3k, UI ~2.5k, tests ~2.5k).
 | Lever | Controls |
 |---|---|
 | Gallery growth 1.30, housing 10/level | Mid-run population curve |
-| Flight gate 1.4e8 (formula anchor 1e8), exponent 0.5, `t_peak` divisor 400; Prestige tab 2e7 | First Flight timing and payoff growth; when the bot starts its Nuptial Preparation rush |
+| Flight gate 1.7e8 (formula anchor 1e8), exponent 0.5, `t_peak` divisor 400; Prestige tab 2e7 | First Flight timing and payoff growth; when the bot starts its Nuptial Preparation rush |
 | Scent Library 0.05/s (growth 2.0), research costs, insight per hex (0.75 × ring), scout exponent 0.6 | Research cadence |
 | Lineage 0.05 per alate up to 100, then `6√(A/100)` (food only) | Run-2+ speed-up and cycle-1 stability |
 | Alates-per-flight softcap 3e4 | Layer-2 stability (kinship blow-up guard) |
@@ -2397,6 +2400,16 @@ Tests were updated only where they pin these numbers:
 - `meta.layers` and `meta.derive`: the Speciation fixtures use `SPEC.kinshipMin`, and a Speciation pays 20 genes.
 - `meta.traits`: the Sprawl cost.
 - `war.combat`: Old Ridge `1e6 × (1+m)^1.5`, Front `1e8 × 10^s`.
+
+### Player-report pass: chamber space and growth (ARCHITECTURE §18 C97)
+Players asked for "granary and gallery space a little easier" and reported chambers that "expand in 2 directions at once". The footprint now grows one row or column per level (§7.4), which also makes growth cheaper to dig.
+
+| Item | Old | New | Reason (measured effect) |
+|---|---|---|---|
+| Footprint growth (§7.4) | width every level, height at L4 / L7 too (3×2 → 10×4 at L8) | **one row (L4, L7) or one column per level** (3×2 → 8×4) | The two-axis levels grew an L-shape round a corner. Alone this moved the Flight ~3.5 min earlier (8-seed mean 45.5 → 41.9 min). |
+| Gallery housing per level (§7.6) | 10 | **11** | +10%. 12 (+20%) pulled seed 1 to 30 min even with the gate at 2e8: housing is the main growth limit. |
+| Granary capacity at L1 (§7.6) | 300 | **400** | +33%, nearly free for pacing on its own. |
+| Flight gate `f_run` (§13.1) | 1.4e8 (11 alates) | **1.7e8** (13 alates) | Compensation. Flight available, seeds 1–8 (dt 0.1): before 38:02, 50:21, 37:43, 56:15, 41:21, 50:00, 47:08, 42:58 (mean 45.5); after 38:59, 51:49, 42:07, 38:21, 46:27, 35:51, 52:07, 50:28 (mean 44.5). The strict seeds 1 and 2 stay inside 38–60 min. |
 
 ### Open issues for the shipped pacing bot
 1. **Flight availability is bimodal.** It lands either before the first hard winter (42–48 min, forage ×0.3) or just after it, depending on the seed. With the shipped bot it is 41–45 or 51–56 min (Pacing-bot pass).

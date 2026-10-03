@@ -190,7 +190,8 @@ function disc(center, radius, mapR) {
 }
 
 /**
- * Rival land = disc(hex, radius) ∪ extra − lost, inside the current map radius; sorted ascending (C29, C47).
+ * Rival land = disc(hex, radius) ∪ extra − lost − player-held hexes (claimed / conquered, C95), inside the current map
+ * radius; sorted ascending (C29, C47).
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Rival} rival
  * @returns {number[]}
@@ -202,6 +203,9 @@ export function rivalLand(s, rival) {
   const set = new Set(disc(rival.hex, rival.radius, mapR));
   if (Array.isArray(rival.extra)) for (const h of rival.extra) if (isHex(h) && h < limit) set.add(h);
   if (Array.isArray(rival.lost)) for (const h of rival.lost) set.delete(h);
+  // C95: a hex the player holds (claimed or conquered) is never rival land, whatever the disc covers
+  const S = s.run.surface;
+  if (S && S.claimed && S.conquered) for (const h of Array.from(set)) if (S.claimed[h] || S.conquered[h]) set.delete(h);
   return Array.from(set).sort((a, b) => a - b);
 }
 
@@ -235,9 +239,72 @@ function ownedMask(s, d) {
 }
 
 /**
+ * C95: hexes a new rival may never cover: derived owned land, claimed and conquered hexes, and every entrance's
+ * auto-claim radius (the radius surface.rebuildTerritory uses), so a spawn never lands on or over land the player holds.
+ */
+function playerMask(s, d) {
+  const S = s.run.surface;
+  const m = new Uint8Array(HEX.count);
+  const D = d && d.surface && d.surface.owned && d.surface.owned.length === HEX.count ? d.surface.owned : null;
+  for (let i = 0; i < HEX.count; i++) if ((D && D[i]) || S.claimed[i] || S.conquered[i]) m[i] = 1;
+  const autoR = TERRITORY.autoBase + Math.floor(Math.max(0, num(S.mound)) / TERRITORY.autoPerMound);
+  const mapR = mapRadius(s);
+  for (const e of S.entrances) if (e && isHex(e.hex)) for (const h of disc(e.hex, autoR, mapR)) m[h] = 1;
+  return m;
+}
+
+/** Grow a hex mask by `steps` rings (every hex within `steps` of a marked hex). */
+function dilate(mask, steps) {
+  const out = Uint8Array.from(mask);
+  let frontier = [];
+  for (let i = 0; i < out.length; i++) if (out[i]) frontier.push(i);
+  for (let k = 0; k < steps && frontier.length; k++) {
+    const next = [];
+    for (const h of frontier) {
+      for (const n of neighbors(h)) {
+        if (n >= 0 && n < out.length && !out[n]) {
+          out[n] = 1;
+          next.push(n);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+/** True when a nest at `hex` with land radius `landR` would cover a player-held hex (C95). */
+function overlapsPlayer(s, d, hex, landR) {
+  if (!isHex(hex)) return false;
+  const m = playerMask(s, d);
+  return disc(hex, landR, mapRadius(s)).some((h) => m[h]);
+}
+
+/**
+ * C95: per-run memo of spawn searches that found no hex (never saved), keyed by what could free a hex: the surface
+ * revision (claims, conquests, creep, new rivals), the mound, the map radius and the rival list. A failed search is
+ * not repeated every tick until one of them changes.
+ */
+const spawnFail = new WeakMap();
+function spawnKey(s, extra = '') {
+  const S = s.run.surface;
+  return [S.rev, num(S.mound), mapRadius(s), s.run.rivals.list.length, extra].join('|');
+}
+function failedBefore(s, kind, key) {
+  const m = spawnFail.get(s.run);
+  return !!m && m[kind] === key;
+}
+function markFailed(s, kind, key) {
+  let m = spawnFail.get(s.run);
+  if (!m) spawnFail.set(s.run, (m = {}));
+  m[kind] = key;
+}
+
+/**
  * Pick a hex for a new rival nest in rings [ringMin, ringMax] (clamped to the map), avoiding stone/puddles, sources,
- * entrances, other rivals' land (and their land radius), owned land within `landR`, and hexes closer than `gap` to
- * `avoid`. Relaxes the land constraints if nothing fits. Uses s as the RNG holder. Returns −1 if no hex at all.
+ * entrances, other rivals' land (and their land radius) and hexes closer than `gap` to `avoid`. The new land (radius
+ * `landR`) never covers a player-held hex (C95); only the rival-spacing rule is relaxed when nothing fits. Uses s as
+ * the RNG holder (no draw when nothing fits). Returns −1 when no hex qualifies; callers then postpone the spawn.
  */
 function chooseSpawnHex(s, d, { ringMin, ringMax, landR = 0, avoid = [], gap = 0, preferLog = false }) {
   const S = s.run.surface;
@@ -249,18 +316,15 @@ function chooseSpawnHex(s, d, { ringMin, ringMax, landR = 0, avoid = [], gap = 0
   for (const e of S.entrances) if (e) busy.add(e.hex);
   const alive = s.run.rivals.list.filter((r) => r.alive);
   for (const r of alive) busy.add(r.hex);
-  const own = ownedMask(s, d);
-  const ownedHexes = [];
-  for (let i = 0; i < HEX.count; i++) if (own[i]) ownedHexes.push(i);
+  const blocked = dilate(playerMask(s, d), Math.max(0, Math.floor(num(landR))));
   const strict = [];
   const loose = [];
   for (let i = countInRadius(lo - 1); i < countInRadius(hi); i++) {
     const code = S.terrain[i];
-    if (code === STONE || code === PUDDLE || busy.has(i)) continue;
+    if (code === STONE || code === PUDDLE || busy.has(i) || blocked[i]) continue;
     if (avoid.some((a) => hexDist(a, i) < gap)) continue;
     loose.push(i);
     if (alive.some((r) => hexDist(r.hex, i) <= num(r.radius) + landR)) continue;
-    if (ownedHexes.some((h) => hexDist(h, i) <= landR)) continue;
     strict.push(i);
   }
   let pool = strict.length ? strict : loose;
@@ -349,11 +413,14 @@ function spawnBosses(s, d) {
   const R = mapRadius(s);
   const or = BOSSES.old_ridge_supercolony;
   if (lvl(s.cycle.traits, 'budding') >= 1 && num(s.cycle.alatesCycle) >= or.alatesCycle && !list.some((r) => r.type === or.id)) {
-    const hex = chooseSpawnHex(s, d, { ringMin: R, ringMax: R, landR: or.radius });
+    const key = spawnKey(s);
+    const hex = failedBefore(s, 'or', key) ? -1 : chooseSpawnHex(s, d, { ringMin: R, ringMax: R, landR: or.radius });
     if (hex >= 0) createRival(s, { type: or.id, hex });
+    else markFailed(s, 'or', key);
   }
   const gr = BOSSES.great_rival;
-  if (lvl(s.era.federation, 'megacolony') >= 1 && !list.some((r) => r.type === gr.id)) {
+  const grKey = spawnKey(s);
+  if (lvl(s.era.federation, 'megacolony') >= 1 && !list.some((r) => r.type === gr.id) && !failedBefore(s, 'gr', grKey)) {
     let hexes = [];
     for (const gap of [gr.minGap, 1]) {   // spread the nests apart; on a crowded map settle for distinct hexes
       hexes = [];
@@ -367,6 +434,8 @@ function spawnBosses(s, d) {
     if (hexes.length === gr.nests) {
       const group = s.run.rivals.nextUid;
       for (const hex of hexes) createRival(s, { type: gr.id, hex, group });
+    } else {
+      markFailed(s, 'gr', grKey);
     }
   }
 }
@@ -387,13 +456,20 @@ function fillRivals(s, d) {
   const RV = s.run.rivals;
   let count = RV.respawn.length;
   for (const r of RV.list) if (r.alive && !isBoss(r)) count++;
+  if (count >= want) return;
+  // C95: when no hex fits (the player holds the outer band) wait until the land, the map or the rivals change
+  const key = () => spawnKey(s, count + ':' + num(RV.topTier));
+  if (failedBefore(s, 'fill', key())) return;
   while (count < want) {
     const tier = Math.max(num(RV.topTier), maxAliveTier(s)) + 1;
     const type = tier >= ELDER.fromTier ? ELDER.id : RIVAL_ORDER[tier - 1];
     const landR = hasOwn(RIVALS, type) ? RIVALS[type].radius : ELDER.radius;
     const hex = chooseSpawnHex(s, d, { ringMin: R - SPAWN.outerBand + 1, ringMax: R, landR,
       preferLog: hasOwn(RIVALS, type) && !!RIVALS[type].log });
-    if (hex < 0) break;
+    if (hex < 0) {
+      markFailed(s, 'fill', key());
+      break;
+    }
     createRival(s, { tier, hex });
     count++;
   }
@@ -407,7 +483,21 @@ function fillRivals(s, d) {
  * @returns {void}
  */
 export function spawnInitial(s, d, specs) {
-  if (Array.isArray(specs)) for (const spec of specs) if (spec && typeof spec === 'object') createRival(s, spec);
+  if (Array.isArray(specs)) {
+    for (const spec of specs) {
+      if (!spec || typeof spec !== 'object') continue;
+      // C95: a spec whose land would cover player-held hexes moves to a free outer-band hex, else waits as a respawn
+      const landR = hasOwn(RIVALS, spec.type) ? RIVALS[spec.type].radius : ELDER.radius;
+      if (isHex(spec.hex) && overlapsPlayer(s, d, spec.hex, landR)) {
+        const R = mapRadius(s);
+        const hex = chooseSpawnHex(s, d, { ringMin: R - SPAWN.outerBand + 1, ringMax: R, landR });
+        if (hex >= 0) createRival(s, { ...spec, hex });
+        else s.run.rivals.respawn.push({ in: SPAWN.retrySec, tier: Math.max(1, Math.floor(num(spec.tier, 1))) });
+        continue;
+      }
+      createRival(s, spec);
+    }
+  }
   spawnBosses(s, d);
   surface.touch(s);
 }
@@ -1119,7 +1209,7 @@ function creep(s, d, r) {
   const land = rivalLand(s, r);
   const inLand = new Set(land);
   const limit = countInRadius(mapRadius(s));
-  const own = ownedMask(s, d);
+  const own = playerMask(s, d);   // C95: creep never takes a player-held hex
   const others = new Set();
   for (const x of s.run.rivals.list) if (x.alive && x !== r) for (const h of rivalLand(s, x)) others.add(h);
   const entr = new Set(s.run.surface.entrances.map((e) => e && e.hex));
@@ -1259,7 +1349,10 @@ export function tick(s, d, dt, env) {
       const type = tier >= ELDER.fromTier ? ELDER.id : RIVAL_ORDER[tier - 1];
       const landR = hasOwn(RIVALS, type) ? RIVALS[type].radius : ELDER.radius;
       const hex = chooseSpawnHex(s, d, { ringMin: R - SPAWN.outerBand + 1, ringMax: R, landR, preferLog: hasOwn(RIVALS, type) && !!RIVALS[type].log });
-      if (hex < 0) continue;
+      if (hex < 0) {
+        e.in = SPAWN.retrySec;   // C95: no hex clear of the player's land yet: look again later
+        continue;
+      }
       RV.respawn.splice(i, 1);
       createRival(s, { tier, hex });
     }

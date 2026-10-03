@@ -1,6 +1,6 @@
 // Jobs of minor workers, loose foraging, job automation thresholds and saved job presets.
 // Owner: WP2. Contract: ARCHITECTURE §6.2 (numbers from DESIGN §6.2, §6.3).
-// ARCH-R: THRESHOLDS.shiftStep / shiftMax (how far response_thresholds moves a target per rebalance, and its ceiling) and
+// ARCH-R: THRESHOLDS.shiftStep / decayStep / biasMax / shiftMax (the response_thresholds bias, C94), TARGET_UI.step and
 // PRESETS (3 saved presets, name length) are not numbered in DESIGN or the contract; they are added here as data.
 
 /**
@@ -40,9 +40,14 @@ export const LOOSE_FORAGE = 0.1;
 
 /**
  * Automation: response_thresholds triggers (dig queue > digQueueSec of work), the auto-assign cadence (rebalanceSec),
- * the target share moved toward a bottleneck job per rebalance (shiftStep) and the most a shifted job may reach (shiftMax).
+ * the bottleneck bias (C94): while a trigger holds, a job's bias rises by shiftStep per rebalance up to biasMax; once it
+ * clears, it falls by decayStep per rebalance back to 0. A biased job's effective target never exceeds shiftMax (unless
+ * the player's own target is already higher). The player's targets themselves are never changed by the automation.
  */
-export const THRESHOLDS = deepFreeze({ digQueueSec: 60, rebalanceSec: 5, shiftStep: 0.02, shiftMax: 0.5 });
+export const THRESHOLDS = deepFreeze({ digQueueSec: 60, rebalanceSec: 5, shiftStep: 0.05, decayStep: 0.025, biasMax: 0.3, shiftMax: 0.5 });
+
+/** Colony panel: how far one +/− click (or a drag between chips) moves a job's ratio target in auto mode (C94). */
+export const TARGET_UI = deepFreeze({ step: 0.05 });
 
 /** Saved job presets (hive_mind): at most `max` slots (ARCHITECTURE §4 jobPresets), names up to `nameMax` characters. */
 export const PRESETS = deepFreeze({ max: 3, nameMax: 40 });

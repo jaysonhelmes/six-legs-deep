@@ -162,8 +162,10 @@ export function layerOf(y) {
 }
 
 /**
- * Chamber footprint at a level (DESIGN §7.4): growing types w = w0 + min(L,8) − 1, h = h0 + floor((min(L,8) − 1)/3);
- * others w0 × h0. Level 0 (being dug) uses the L1 footprint. Unknown type → { w: 0, h: 0 }.
+ * Chamber footprint at a level (DESIGN §7.4, ARCHITECTURE §18 C97): each level-up grows exactly one side by one row or
+ * column. With L' = min(L, 8): h = h0 + floor((L' − 1)/3) (the height grows at L4 and L7) and w = w0 + (L' − 1) −
+ * floor((L' − 1)/3) (the width grows at every other level). Others w0 × h0. Level 0 (being dug) uses the L1 footprint.
+ * Unknown type → { w: 0, h: 0 }.
  * @param {string} type
  * @param {number} level
  * @returns {{ w: number, h: number }}
@@ -173,7 +175,8 @@ export function footprint(type, level) {
   if (!def) return { w: 0, h: 0 };
   if (!def.grows) return { w: def.w0, h: def.h0 };
   const L = Math.max(1, Math.min(Math.floor(level) || 1, GEOM.footprintMaxL));
-  return { w: def.w0 + L - 1, h: def.h0 + Math.floor((L - 1) / 3) };
+  const tall = Math.floor((L - 1) / 3);
+  return { w: def.w0 + L - 1 - tall, h: def.h0 + tall };
 }
 
 /**

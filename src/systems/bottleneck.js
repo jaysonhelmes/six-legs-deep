@@ -14,10 +14,11 @@ function num(v, dflt = 0) {
 }
 
 /**
- * Priority (C72): 'raid' (a raid in warning) > 'frost' (brood frozen, online) > 'hungry' > bn_housing > bn_brood_slots >
+ * Priority (C72): 'frost' (brood frozen, online) > 'hungry' > bn_housing > bn_brood_slots >
  * bn_food_cap (food ≥ 99 % of the cap for more than 5 s, tracked in capT) > bn_lay_rate (food, slot and housing free but
  * layAcc < 1) > bn_food (food < egg cost) > null. Housing and slots come before the food cap because they block eggs
- * outright, and food then piles up at the cap only as a consequence (DESIGN §2.2 "Housing · eggs blocked").
+ * outright, and food then piles up at the cap only as a consequence (DESIGN §2.2 "Housing · eggs blocked"). An incoming
+ * raid is not a colony limit: the HUD shows it as its own chip, so the badge keeps naming the real bottleneck (C72).
  * `since` = run.time of the last change; emits bottleneckChanged {id}.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
@@ -37,9 +38,7 @@ export function tick(s, d, dt, env) {
   else bn.capT = 0;
 
   let id = null;
-  const raids = run.war && Array.isArray(run.war.raids) ? run.war.raids : [];
-  if (raids.some((r) => r && r.phase === 'warning')) id = 'raid';
-  else if (!(env && env.offline) && col.brood.length > 0 && broodAllocation(s, d).frozenShare > 0) id = 'frost';
+  if (!(env && env.offline) && col.brood.length > 0 && broodAllocation(s, d).frozenShare > 0) id = 'frost';
   else if (col.hungry) id = 'hungry';
   else {
     const B = broodTotal(s);

@@ -79,32 +79,74 @@ export function subTabStrip(ids, labels, onPick) {
   };
 }
 
+/** How long (ms) a slider keeps showing the player's choice while the state has not caught up (ARCHITECTURE C94). */
+export const SLIDER_HOLD_MS = 2500;
+
+/** Default clock for sliderRow (ms). */
+function nowMs() {
+  const p = globalThis.performance;
+  return p && typeof p.now === 'function' ? p.now() : Date.now();
+}
+
 /**
- * Labelled range slider row with a value readout. set(value, { max, disabled, text }).
+ * Labelled range slider row with a value readout. set(value, { max, disabled, text, fmt }) is called by the panel
+ * refresh with the stored value.
+ * Stable readout (C94): while the pointer is down on the slider, and after a change until the stored value catches up,
+ * the thumb and the readout show the player's choice (formatted with `fmt`, else the number) instead of `text`.
+ * The hold ends when the stored value equals the choice, moves to some other value (e.g. clamped), or SLIDER_HOLD_MS
+ * after the change (a refused command): then the stored value shows again.
  * @param {string} label
  * @param {{ min?: number, max?: number, step?: number, tip?: string }} opts
  * @param {(value: number) => void} onChange called on 'change' (release) and, when live, on 'input'
- * @param {{ live?: boolean }} [mode]
+ * @param {{ live?: boolean, clock?: () => number }} [mode] clock: ms time source (tests)
  */
-export function sliderRow(label, { min = 0, max = 100, step = 1, tip = null } = {}, onChange, { live = false } = {}) {
+export function sliderRow(label, { min = 0, max = 100, step = 1, tip = null } = {}, onChange, { live = false, clock = nowMs } = {}) {
   const input = h('input', { type: 'range', class: 'range', min, max, step, value: min, attrs: { 'aria-label': label } });
   const out = h('output', { class: 'range-out' });
   const el = h('label', { class: 'range-row', dataset: tip ? { tip } : null },
     h('span', { class: 'range-label', text: label }), input, out);
-  const fire = () => onChange(Number(input.value));
-  input.addEventListener('change', fire);
-  if (live) input.addEventListener('input', fire);
-  input.addEventListener('input', () => { if (el.__fmt) setText(out, el.__fmt(Number(input.value))); });
+  const tol = Math.max(1e-9, Math.abs(Number(step) || 1) * 1e-6);
+  const same = (a, b) => Math.abs(Number(a) - Number(b)) <= tol;
+  let lastSet = null;     // last stored value given to set()
+  let pending = null;     // { v, base, at }: the player's choice, the stored value when it was made, and when
+  let dragging = false;
+  const showOut = (v) => setText(out, el.__fmt ? el.__fmt(v) : String(v));
+  const choose = () => {
+    const v = Number(input.value);
+    pending = { v, base: lastSet, at: clock() };
+    showOut(v);
+    return v;
+  };
+  input.addEventListener('pointerdown', () => { dragging = true; });
+  for (const t of ['pointerup', 'pointercancel', 'blur']) input.addEventListener(t, () => { dragging = false; });
+  input.addEventListener('input', () => {
+    const v = choose();
+    if (live) onChange(v);
+  });
+  input.addEventListener('change', () => {
+    dragging = false;
+    onChange(choose());
+  });
   return {
     el, input, out,
-    /** Update value/max/readout without fighting a drag in progress. */
+    /** Update value/max/readout without fighting a drag in progress or a change the state has not applied yet. */
     set(value, { max: mx = null, disabled = false, text = null, fmt = null } = {}) {
       if (mx !== null) setProp(input, 'max', String(mx));
       setProp(input, 'disabled', !!disabled);
       if (fmt) el.__fmt = fmt;
-      const dragging = globalThis.document && globalThis.document.activeElement === input;
-      if (!dragging) setProp(input, 'value', String(value));
-      setText(out, text !== null ? text : el.__fmt ? el.__fmt(dragging ? Number(input.value) : value) : String(value));
+      lastSet = value;
+      if (pending) {
+        const settled = same(value, pending.v);
+        const movedElsewhere = pending.base !== null && !same(value, pending.base);
+        if (settled || movedElsewhere || clock() - pending.at > SLIDER_HOLD_MS) pending = null;
+      }
+      if (dragging || pending) {
+        showOut(Number(input.value));
+        return;
+      }
+      const sv = String(value);
+      if (input.value !== sv) input.value = sv;  // also while focused (setProp skips focused inputs)
+      setText(out, text !== null ? text : el.__fmt ? el.__fmt(value) : sv);
     },
   };
 }

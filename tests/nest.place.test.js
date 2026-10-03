@@ -219,10 +219,11 @@ test('tints and modifiers: frost-exposed / flood zone / raid reach → amber; de
   const rr = g.mods.find((m) => m.key === 'raidReach');
   assert.ok(rr && rr.value === 5);
   assert.equal(g.tint, 'amber');
-  // Haul preview for a granary: with ventilation (330 capacity) at path 8 → 0.49
+  // Haul preview for a granary: with ventilation (capacity cap × 1.10) at path 8
   s.run.research.ventilation_shafts = 1;
   const h = vp(s, d, 'granary', 21, 7).mods.find((m) => m.key === 'haul');
-  assert.ok(h && near(h.value, (150 * 20 + 330 * 8) / 480 / 24));
+  const gcap = CHAMBERS.granary.fx.cap * 1.1;
+  assert.ok(h && near(h.value, (150 * 20 + gcap * 8) / (150 + gcap) / 24));
   // Hygiene: a nursery within 6 path cells of an active midden
   addChamber(s, 'midden', 25, 20, 2, 2);
   const hy = vp(s, d, 'nursery', 22, 20);
@@ -329,20 +330,20 @@ test('findPlacement keeps growth room (C60): galleries stay out of the Royal Cha
 test('ghost warns (amber, royalRoom) when a footprint takes the Royal Chamber’s last room to reach the Flight level', () => {
   const { s, d } = setup();
   const royal = s.run.nest.chambers.find((c) => c.uid === 1);
-  Object.assign(royal, { x: 18, y: 20, w: 7, h: 3, level: 4, target: 4 });   // L4 footprint, one column short of L5
-  setCells(s, rectCells(18, 20, 7, 3), CELL.CHAMBER);
+  Object.assign(royal, { x: 18, y: 20, w: 6, h: 3, level: 4, target: 4 });   // L4 footprint, one column short of L5
+  setCells(s, rectCells(18, 20, 6, 3), CELL.CHAMBER);
   addChamber(s, 'nursery', 15, 19, 3, 2);                                    // boxes in the left side
   nest.derive(s, d);
-  assert.equal(nest.blocksRoyalGrowth(s, { x: 25, y: 20, w: 3, h: 2 }), true, 'the right side was the last room');
-  const r = vp(s, d, 'scent_library', 25, 20);
+  assert.equal(nest.blocksRoyalGrowth(s, { x: 24, y: 20, w: 3, h: 2 }), true, 'the right side was the last room');
+  const r = vp(s, d, 'scent_library', 24, 20);
   assert.ok(r.mods.some((m) => m.key === 'royalRoom'), JSON.stringify(r.mods));
   assert.equal(r.tint === 'amber' || r.tint === 'red', true);
   // Further right leaves the column free: no warning.
-  assert.equal(nest.blocksRoyalGrowth(s, { x: 26, y: 20, w: 3, h: 2 }), false);
+  assert.equal(nest.blocksRoyalGrowth(s, { x: 25, y: 20, w: 3, h: 2 }), false);
   // Relocating the boxing chamber itself frees the room again.
   const nur = s.run.nest.chambers.find((c) => c.type === 'nursery');
-  assert.equal(nest.blocksRoyalGrowth(s, { x: 25, y: 20, w: 3, h: 2 }, nur.uid), false);
+  assert.equal(nest.blocksRoyalGrowth(s, { x: 24, y: 20, w: 3, h: 2 }, nur.uid), false);
   // Once the Royal Chamber has reached the Flight level, nothing warns.
   royal.level = 5;
-  assert.equal(nest.blocksRoyalGrowth(s, { x: 25, y: 20, w: 3, h: 2 }), false);
+  assert.equal(nest.blocksRoyalGrowth(s, { x: 24, y: 20, w: 3, h: 2 }), false);
 });

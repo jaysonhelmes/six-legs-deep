@@ -83,7 +83,7 @@ and takes the game back.
 | Right-click or long-press | Context actions (cancels an active tool instead) | Context actions (cancels an active tool instead) |
 
 View keys act on the canvas you clicked last. Anywhere: `1`–`9` open tabs, `Space` hand-forages the selected source,
-`M` / `R` Mark or Rally the selected trail, `Tab` switches Above / Below / Split on small screens, and `Esc` cancels a
+`M` / `R` Mark or Rally the selected trail, `B` toggles the Backfill tool (nest view focused), `V` cycles the view (Above, Below, Stacked, Side by side; also the switcher under the map), and `Esc` cancels a
 tool, clears the selection, then closes the panel drawer or lowers the panel sheet. **Settings → Keyboard and view
 controls** lists the same keys in the game.
 

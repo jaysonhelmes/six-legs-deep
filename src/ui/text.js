@@ -405,7 +405,7 @@ export const CASTE_TIPS = Object.freeze({
 /** Chamber effect tooltips. */
 export const CHAMBER_TIPS = Object.freeze({
   royal_chamber: 'Home of the queen. Levels raise lay rate ×1.15.',
-  gallery: 'Room for 10 more ants per level.',
+  gallery: 'Room for ' + num0(CHAMBERS.gallery && CHAMBERS.gallery.fx && CHAMBERS.gallery.fx.housing, 10) + ' more ants per level.',
   nursery: '+3 brood slots. Next to the queen: brood +15%.',
   granary: 'Stores food. Shallow hauls faster; deep is safer.',
   scent_library: 'Produces insight. Deeper and royal-adjacent is better.',
@@ -421,6 +421,42 @@ export const CHAMBER_TIPS = Object.freeze({
   nuptial_chamber: 'Rears alates and opens a second entrance.',
   deep_vault: '+1 h offline cap and +5% flight alates per level.',
 });
+
+/** Special placement rules (DESIGN §7.6 "Placement rule" column; data `rule`), as player text (C99). */
+export const PLACEMENT_RULE_TEXT = Object.freeze({
+  touchRoot: 'Must touch a root.',
+  touchRow0: 'Must touch the surface (row 0).',
+  shaftTop: 'Must sit beside an entrance shaft.',
+  touchWater: 'Must touch a revealed water pocket.',
+  nuptialShaft: 'Needs its own exit shaft to the surface (queued with it).',
+});
+
+/** Name of the layer holding a row (data/strata.js), '' when unknown. */
+function layerNameAt(row) {
+  for (const L of Object.values(LAYERS)) if (L && row >= L.y0 && row <= L.y1) return L.name || L.id;
+  return '';
+}
+
+/**
+ * Placement requirements of a chamber type for the Build panel (C99): the depth rule ("Depth 24 or deeper (clay)",
+ * "Rows 0–6 only") and the special rule. Row 1 (just under the surface) and the bottom row are not rules worth
+ * naming. `rows` = nest.placementRows (effective rows); defaults to the data table.
+ * @param {string} id chamber type
+ * @param {{ min: number, max: number }|null} [rows]
+ * @returns {string[]} lines ([] = no special requirement)
+ */
+export function placementRuleLines(id, rows = null) {
+  const def = CHAMBERS[id];
+  if (!def) return [];
+  const min = rows && Number.isFinite(rows.min) ? rows.min : num0(def.rowMin, 0);
+  const max = rows && Number.isFinite(rows.max) ? rows.max : num0(def.rowMax, 79);
+  const bottom = LAYERS.aquifer ? LAYERS.aquifer.y1 : 79;
+  const out = [];
+  if (max < bottom) out.push('Rows ' + min + '–' + max + ' only.');
+  else if (min > 1) out.push('Depth ' + min + ' or deeper' + (layerNameAt(min) ? ' (' + layerNameAt(min).toLowerCase() + ')' : '') + '.');
+  if (def.rule && PLACEMENT_RULE_TEXT[def.rule]) out.push(PLACEMENT_RULE_TEXT[def.rule]);
+  return out;
+}
 
 /** Adaptation effect tooltips. */
 export const ADAPT_TIPS = Object.freeze({
