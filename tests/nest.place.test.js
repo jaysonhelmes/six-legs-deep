@@ -227,8 +227,9 @@ test('tints and modifiers: frost-exposed / flood zone / raid reach → amber; de
   const gcap = CHAMBERS.granary.fx.cap * 1.1;
   assert.ok(h && near(h.value, (150 * 20 + gcap * 8) / (150 + gcap) / 24));
   // Hygiene: a nursery within 6 path cells of an active midden
-  addChamber(s, 'midden', 25, 20, 2, 2);
+  addChamber(s, 'midden', 22, 22, 2, 2); // C137: below it, so the nursery's reserved room extends upward (bl)
   const hy = vp(s, d, 'nursery', 22, 20);
+  assert.equal(hy.anchor, 'bl');
   assert.ok(hy.mods.some((m) => m.key === 'hygiene' && m.value === 0.8));
   assert.equal(hy.tint, 'amber');
   // Granary layer modifier in gravel ×1.5
@@ -308,19 +309,27 @@ test('findPlacement: a valid spot; nurseries go next to the Royal Chamber; null 
   void xy;
 });
 
-test('findPlacement keeps growth room (C60): galleries stay out of the Royal Chamber\'s L8 envelope and can grow', () => {
+test('findPlacement keeps growth room (C60, C137): galleries stay out of the Royal Chamber\'s reserved room and can grow', () => {
   const { s, d } = setup();
+  // C137: the Royal Chamber's Flight-level room is reserved (hard); every placed gallery reserves its own L8 room.
   const royal = s.run.nest.chambers.find((c) => c.uid === 1);
-  const fm = nestgeomFootprint('royal_chamber', 8);
-  const side = Math.floor((fm.w - royal.w) / 2);
-  const env = { x0: royal.x - side, x1: royal.x - side + fm.w - 1, y0: royal.y, y1: royal.y + fm.h - 1 };
+  const R = royal.res;
+  const env = { x0: R.x, x1: R.x + R.w - 1, y0: R.y, y1: R.y + R.h - 1 };
   for (let k = 0; k < 4; k++) {
     const g = nest.findPlacement(s, d, 'gallery');
     assert.ok(g, 'gallery ' + k + ' placed');
     const fp = nestgeomFootprint('gallery', 1);
     const overlap = !(g.x + fp.w - 1 < env.x0 || g.x > env.x1 || g.y + fp.h - 1 < env.y0 || g.y > env.y1);
-    assert.equal(overlap, false, 'gallery ' + k + ' at ' + JSON.stringify(g) + ' blocks the Royal envelope ' + JSON.stringify(env));
-    addChamber(s, 'gallery', g.x, g.y, fp.w, fp.h);
+    assert.equal(overlap, false, 'gallery ' + k + ' at ' + JSON.stringify(g) + ' blocks the Royal reservation ' + JSON.stringify(env));
+    const cmd = { type: 'placeChamber', chamber: 'gallery', x: g.x, y: g.y };
+    assert.equal(nest.handlers.placeChamber.validate(s, d, cmd), null);
+    nest.handlers.placeChamber.apply(s, d, cmd, null);
+    const ch = s.run.nest.chambers.at(-1);
+    assert.ok(ch.res, 'placed with a reservation');
+    Object.assign(ch, { status: 'active', level: 1 });
+    for (const c of rectCells(ch.x, ch.y, ch.w, ch.h)) s.run.nest.cells[c] = CELL.CHAMBER;
+    s.run.nest.queue.length = 0;
+    s.run.nest.rev++;
     nest.derive(s, d);
   }
   for (const ch of s.run.nest.chambers) {

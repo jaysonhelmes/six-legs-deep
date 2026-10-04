@@ -6,6 +6,7 @@ import { h, setText, show, toggleClass, setStyle, setBar, syncList } from './dom
 import { fmt, fmtRate, fmtCount, fmtTime, fmtClock, fmtMult } from './format.js';
 import {
   RES_NAMES, SEASON_NAMES, BOTTLENECK_NAMES, BOTTLENECK_STATE, OVERLAY_NAMES, OVERLAY_TIPS, OVERLAY_VIEW, nameOf, unlockLabel, unlockHint,
+  colonyTitle,
 } from './text.js';
 import { isShown, hasResearch, num, arr, obj } from './reveal.js';
 import { OVERLAY_IDS, setOverlay, viewShows } from './uistate.js';
@@ -505,7 +506,7 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
   function updateRail(s, d) {
     const st = obj(d && d.stats);
     const rates = obj(d && d.rates);
-    setText(brandName, (s.meta.settings && s.meta.settings.colonyName) || 'Six Legs Deep');
+    setText(brandName, colonyTitle(s));   // C149: with the equipped title cosmetic
     setText(brandSub, brandSubtitle(s, d));
     for (const r of RAIL_RES) {
       const x = rows[r.res];

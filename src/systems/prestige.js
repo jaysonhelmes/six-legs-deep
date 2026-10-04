@@ -25,7 +25,7 @@
 import { SOFTCAPS, CLAMP_MAX, GRID, HEX, CELL } from '../data/balance.js';
 import {
   FLIGHT, LINEAGE, LINEAGE_LAY_EXP, SUPER, SPEC, PASSIVE, ACH_BONUS, ACH_META, HARDSHIP_ORDER, HARDSHIPS, SITES, SITE_ORDER,
-  BOONS, BOON_ORDER, EDICTS, LANDING, RESET, FOUNDING_STORES,
+  BOONS, BOON_ORDER, EDICTS, LANDING, RESET, FOUNDING_STORES, LANDING_USELESS,
 } from '../data/prestige.js';
 import { TRAITS } from '../data/bloodline.js';
 import { FEDERATION } from '../data/federation.js';
@@ -600,17 +600,35 @@ function compactStrata(strata) {
   }
 }
 
-/** Landing chooser for a flight (3 seeded options with 1–2 tags, 3 boons), drawn from the main RNG. */
+/**
+ * C147: the landing-site tags and Founding Boons a landing may offer under a Hardship (null = a normal run): the full
+ * draw orders minus LANDING_USELESS[hardship]. Pure; the draw stays seeded from the main RNG.
+ * @param {string|null} hardship
+ * @returns {{ sites: string[], boons: string[] }}
+ */
+export function landingPool(hardship) {
+  const skip = typeof hardship === 'string' && Object.prototype.hasOwnProperty.call(LANDING_USELESS, hardship) ? LANDING_USELESS[hardship] : null;
+  const sites = skip ? SITE_ORDER.filter((id) => !skip.sites.includes(id)) : SITE_ORDER.slice();
+  const boons = skip ? BOON_ORDER.filter((id) => !skip.boons.includes(id)) : BOON_ORDER.slice();
+  return { sites, boons };
+}
+
+/**
+ * Landing chooser for a flight (3 seeded options with 1–2 tags, 3 boons), drawn from the main RNG. Options useless
+ * under the coming Hardship are never drawn (landingPool, C147), and Eternal Winter offers no starting season.
+ */
 function buildPending(s, alates, hardship, carryAdults) {
+  const hs = typeof hardship === 'string' && HARDSHIPS[hardship] ? hardship : null;
+  const pool = landingPool(hs);
   const options = [];
   for (let i = 0; i < LANDING.options; i++) {
     const seed = deriveSeed(s);
     const n = randInt(s, LANDING.tagsMin, LANDING.tagsMax);
-    options.push({ seed, tags: shuffle(s, SITE_ORDER.slice()).slice(0, n) });
+    options.push({ seed, tags: shuffle(s, pool.sites.slice()).slice(0, n) });
   }
-  const boons = shuffle(s, BOON_ORDER.slice()).slice(0, LANDING.boons);
-  return { kind: 'landing', options, boons, chooseSeason: lv(s.cycle.traits, 'seasonal_wisdom') > 0, alates,
-    hardship: typeof hardship === 'string' && HARDSHIPS[hardship] ? hardship : null, carryAdults };
+  const boons = shuffle(s, pool.boons.slice()).slice(0, LANDING.boons);
+  return { kind: 'landing', options, boons, chooseSeason: lv(s.cycle.traits, 'seasonal_wisdom') > 0 && hs !== 'eternal_winter', alates,
+    hardship: hs, carryAdults };
 }
 
 /**

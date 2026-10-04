@@ -21,6 +21,12 @@ function setup({ food = 1e6, soil = 1e6 } = {}) {
   for (const id of CHAMBER_ORDER) if (CHAMBERS[id].unlock) s.run.unlocked[CHAMBERS[id].unlock] = true;
   s.run.unlocked.royal_levelup = true;
   Object.assign(s.run.res, { food, soil, chitin: 1e6, honeydew: 1e6 });
+  // C137: these tests cover the C66 guard of a Royal Chamber without a reservation (older saves where its Flight-level
+  // room was not free); a reserved Royal Chamber is covered in nest.reservation.test.js.
+  const r = s.run.nest.chambers.find((c) => c.uid === 1);
+  delete r.res;
+  r.noRes = true;
+  s.run.nest.rev++;
   nest.derive(s, d);
   return { s, d };
 }

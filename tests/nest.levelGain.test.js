@@ -74,7 +74,7 @@ test('C107: per-type lines — nursery slots, library insight, midden caps, roya
   const royal = nest.levelGain(s, d, 1);
   assert.equal(royal.lines[0].stat, 'lay');
   assert.ok(Math.abs(royal.lines[0].from - 1) < 1e-9 && Math.abs(royal.lines[0].to - 1.15) < 1e-9);
-  const mid = place(s, d, 'midden', 14, 20);
+  const mid = place(s, d, 'midden', 12, 20); // C137: x 15–21 is the queen's reserved room
   const ml = nest.levelGain(s, d, mid.uid).lines;
   const dis = ml.find((l) => l.stat === 'disease');
   assert.equal(dis.sign, -1);
@@ -98,7 +98,7 @@ test('C108: cheapestLevel picks the lowest next cost that can level; busy (and m
   run(s, d, { type: 'digTunnel', cells: [idx(21, 12), idx(22, 12), idx(23, 12)] });
   settle(s, d);
   const a = place(s, d, 'gallery', 24, 12);
-  const b = place(s, d, 'gallery', 24, 14);
+  const b = place(s, d, 'gallery', 24, 16); // C137: clear of a's reserved 8 × 4 room
   a.level = 6; // 10 × 1.3^6 ≈ 48.3 food
   b.level = 3; // 10 × 1.3^3 × 2 ≈ 43.9 food (k = 1)
   let c = nest.cheapestLevel(s, d, 'gallery');
@@ -119,10 +119,10 @@ test('C108: cheapestLevel picks the lowest next cost that can level; busy (and m
   assert.match(cheapestLabel('granary', { level: 2, cost: { food: 50 }, count: 1 }), /^Level up \(L2 → L3, 50(\.0)? food\)$/);
 });
 
-test('C108: hotkeys — L / Shift+L / G / R with a nest chamber selected; R on a trail is not a chamber key', () => {
+test('C108 / C142: hotkeys — L (cheapest) / Shift+L (this one) / G / R with a nest chamber selected; R on a trail is not a chamber key', () => {
   const sel = { view: 'nest', kind: 'chamber', id: 7 };
-  assert.deepEqual(chamberHotkey('l', false, sel), { kind: 'level', uid: 7 });
-  assert.deepEqual(chamberHotkey('L', true, sel), { kind: 'levelCheapest', uid: 7 });
+  assert.deepEqual(chamberHotkey('l', false, sel), { kind: 'levelCheapest', uid: 7 }, 'C142: L levels the cheapest of the type');
+  assert.deepEqual(chamberHotkey('L', true, sel), { kind: 'level', uid: 7 }, 'C142: Shift+L levels the selected chamber');
   assert.deepEqual(chamberHotkey('g', false, sel), { kind: 'levelDir', uid: 7 });
   assert.deepEqual(chamberHotkey('R', false, { view: 'nest', kind: 'nursery', id: 3 }), { kind: 'relocate', uid: 3 });
   assert.equal(chamberHotkey('r', false, { view: 'surface', kind: 'trail', id: 5 }), null, 'R with a trail selected stays Rally');
@@ -131,8 +131,14 @@ test('C108: hotkeys — L / Shift+L / G / R with a nest chamber selected; R on a
   const { s, d } = setup();
   assert.deepEqual(chamberHotkeyAction(s, d, { kind: 'relocate', uid: 1 }), { tool: { kind: 'relocate', uid: 1 } });
   assert.deepEqual(chamberHotkeyAction(s, d, { kind: 'level', uid: 1 }), { cmd: { type: 'levelChamber', args: { uid: 1 } } });
+  // C137: the Royal Chamber grows into its reserved room: no side to pick; a legacy one (no reservation) still can
   const g = chamberHotkeyAction(s, d, { kind: 'levelDir', uid: 1 });
-  assert.deepEqual(g, { tool: { kind: 'levelDir', uid: 1 } }, 'the Royal Chamber grows: G picks its side');
+  assert.match(g.reject, /reserved space/);
+  const r1 = s.run.nest.chambers.find((c) => c.uid === 1);
+  delete r1.res;
+  r1.noRes = true;
+  s.run.nest.rev++;
+  assert.deepEqual(chamberHotkeyAction(s, d, { kind: 'levelDir', uid: 1 }), { tool: { kind: 'levelDir', uid: 1 } }, 'legacy: G picks its side');
 });
 
 test('C108: app.js routes R to Rally for a selected trail before the chamber hotkeys', async () => {

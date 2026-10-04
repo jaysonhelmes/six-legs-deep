@@ -711,6 +711,123 @@ DECOR.barracks = {
 };
 
 /**
+ * A resting supermajor (C136 War Hall): a huge square head with crossed mandibles laid on the floor, the small thorax
+ * and gaster behind it, centred at (x, y) (its floor contact), size s px; dir ±1 = which way the head faces.
+ */
+function bigSleeper(g, x, y, s, dir, rim) {
+  const parts = [[-0.34, -0.16, 0.2, 0.16], [-0.08, -0.2, 0.12, 0.1], [0.24, -0.26, 0.26, 0.24]];
+  const e = Math.max(0.7, s * 0.05);
+  for (const [fill, grow] of [[rim, e], [SLEEPER, 0]]) {
+    g.fillStyle = fill;
+    g.beginPath();
+    for (const [dx, dy, rx, ry] of parts) {
+      const cx = x + dir * s * dx;
+      const cy = y + s * dy;
+      g.moveTo(cx + s * rx + grow, cy);
+      g.ellipse(cx, cy, s * rx + grow, s * ry + grow, 0, 0, TAU);
+    }
+    g.fill();
+  }
+  // the head's midline groove and a sheen on it
+  const hx = x + dir * s * 0.24;
+  const hy = y - s * 0.26;
+  g.strokeStyle = 'rgba(0,0,0,0.35)';
+  g.lineWidth = Math.max(0.6, s * 0.025);
+  g.beginPath();
+  g.moveTo(hx, hy - s * 0.22);
+  g.lineTo(hx, hy + s * 0.08);
+  g.stroke();
+  g.fillStyle = 'rgba(255,235,200,0.2)';
+  g.beginPath();
+  g.ellipse(hx - dir * s * 0.09, hy - s * 0.1, s * 0.08, s * 0.05, 0, 0, TAU);
+  g.fill();
+  // closed mandibles resting on the floor in front of the head
+  g.fillStyle = '#4a2f1a';
+  g.strokeStyle = 'rgba(20,10,4,0.6)';
+  g.lineWidth = Math.max(0.5, s * 0.02);
+  for (const d of [-1, 1]) {
+    g.beginPath();
+    mandiblePath(g, hx + dir * s * 0.2, hy + s * 0.12 + d * s * 0.04, s * 0.3, dir > 0 ? 0.1 * d : Math.PI - 0.1 * d, -d * dir, true);
+    g.fill();
+    g.stroke();
+  }
+}
+
+// War Hall (C136): huge supermajors asleep in deep floor hollows, giant mounted mandible trophies and battle plates on
+// the back wall, and a heap of shed head capsules in a corner.
+DECOR.war_hall = {
+  layout(bw, bh, seed) {
+    const R = rng(seed, 17);
+    const n = Math.max(1, Math.floor((bw - 0.6) / 2.8));
+    const giants = [];
+    for (let k = 0; k < n; k++) giants.push({ x: 0.3 + ((bw - 0.6) * (k + 0.5)) / n + (R() - 0.5) * 0.25, dir: R() < 0.5 ? -1 : 1, s: 0.95 + R() * 0.2 });
+    const trophies = [];
+    const ty = Math.max(0.5, Math.min(bh * 0.36, bh - 1.1));
+    const [lo, hi] = spanAt(bw, bh, ty, 0.5);
+    const nt = Math.max(1, Math.min(5, Math.floor((hi - lo) / 1.6)));
+    for (let k = 0; k < nt; k++) trophies.push({ x: lo + ((hi - lo) * (k + 0.5)) / nt, y: ty + (R() - 0.5) * 0.1, kind: k % 2 ? 'plate' : 'mandibles' });
+    return { giants, trophies, heap: R() < 0.5 ? 0.1 : 0.9, tall: bh > 1.7 };
+  },
+  back(g, box, u, L) {
+    const floor = box.y + box.h;
+    // deep floor hollows, one per sleeping giant
+    g.fillStyle = 'rgba(150,108,66,0.26)';
+    g.beginPath();
+    for (const gi of L.giants) {
+      const x = box.x + gi.x * u;
+      g.moveTo(x + u * 0.95, floor);
+      g.ellipse(x, floor, u * 0.95, u * 0.2, 0, Math.PI, 0);
+    }
+    g.fill();
+    // giant mandible trophies and battle plates on the back wall (over the sleepers' heads when the hall is tall)
+    if (L.tall) {
+      for (const t of L.trophies) {
+        const x = box.x + t.x * u;
+        const y = box.y + t.y * u;
+        if (t.kind === 'mandibles') {
+          const s = u * 0.62;
+          g.fillStyle = 'rgba(0,0,0,0.3)';
+          g.fillRect(x - s * 0.5, y + s * 0.42, s, s * 0.12);
+          g.fillStyle = '#714a28';
+          g.strokeStyle = 'rgba(30,18,10,0.65)';
+          g.lineWidth = lw(u, 0.025, 0.5);
+          for (const d of [-1, 1]) {
+            g.beginPath();
+            mandiblePath(g, x + d * s * 0.14, y + s * 0.42, s, -Math.PI / 2 + d * 0.22, -d, true);
+            g.fill();
+            g.stroke();
+          }
+          g.fillStyle = 'rgba(255,226,170,0.22)';
+          g.beginPath();
+          g.ellipse(x - s * 0.3, y - s * 0.15, s * 0.06, s * 0.2, 0.3, 0, TAU);
+          g.fill();
+        } else {
+          const s = u * 0.32;
+          g.fillStyle = '#3a281b';
+          g.strokeStyle = 'rgba(190,140,86,0.85)';
+          g.lineWidth = lw(u, 0.04, 0.6);
+          g.beginPath();
+          g.moveTo(x - s, y - s * 0.8);
+          g.quadraticCurveTo(x, y - s * 1.15, x + s, y - s * 0.8);
+          g.quadraticCurveTo(x + s, y + s * 0.5, x, y + s * 1.05);
+          g.quadraticCurveTo(x - s, y + s * 0.5, x - s, y - s * 0.8);
+          g.fill();
+          g.stroke();
+          g.strokeStyle = 'rgba(236,206,156,0.4)';
+          g.beginPath();
+          for (const d of [-1, 1]) mandiblePath(g, x - d * s * 0.35, y + s * 0.5, s * 0.95, d > 0 ? -Math.PI * 0.3 : -Math.PI * 0.7, d);
+          g.stroke();
+        }
+      }
+    }
+    for (const gi of L.giants) bigSleeper(g, box.x + gi.x * u, floor - u * 0.05, u * Math.min(1.7, box.h / u * 0.75) * gi.s, gi.dir, 'rgba(238,208,160,0.4)');
+    // a heap of shed head capsules in a corner
+    const hx = box.x + box.w * L.heap;
+    for (let k = 0; k < 3; k++) pebble(g, hx + (k - 1) * u * 0.18, floor - u * (0.12 + (k === 1 ? 0.12 : 0)), u * 0.15, u * 0.12, 0.2 * k, '#5e4129', 'rgba(255,230,190,0.2)');
+  },
+};
+
+/**
  * A sickle-shaped ant mandible from its base (x, y), `len` px long pointing at `ang`, curling toward side `d` (±1),
  * with two teeth on the inner edge; `closed` makes a fillable outline, otherwise just the inner and outer strokes.
  */

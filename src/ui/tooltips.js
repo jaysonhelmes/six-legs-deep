@@ -148,6 +148,8 @@ export function tipForTarget(t, s, d) {
       try { links = chamberLinks(s, d, c.uid); } catch { links = []; }
       for (const l of links) lines.push((l.good ? 'Link: ' : 'Penalty: ') + linkText(l));
       if (k === 'nursery') lines.push('Click to groom. ' + groomText(s, d, c.uid));
+      // C137: it grows into the faint outline around it
+      if (c.res && (c.res.w > c.w || c.res.h > c.h)) lines.push('Grows into its reserved space (the faint outline).');
       return { title: nameOf('chamber', c.type) + ' L' + fmtCount(num(c.level)), lines: lines.filter(Boolean) };
     }
     // C106: a pending blueprint chamber's planned outline
@@ -189,6 +191,8 @@ export function tipForTarget(t, s, d) {
       if (num(info.work) > 0) lines.push('Dig work ' + fmt(num(info.work)) + ' per cell');
       if (info.root) lines.push(info.rootOwn ? 'Cultivated root: grown by your colony. Root Aphid Pens can touch it.' : 'A root grows down here.');
       if (info.water) lines.push('Water pocket: cannot be dug.');
+      // C137: inside a chamber's reserved full-size room
+      if (info.reserved) lines.push('Reserved: the ' + nameOf('chamber', info.reserved) + ' grows here. No new tunnels or chambers.');
       return { title: nameOf('layer', info.layer) + ' · row ' + Math.floor(num(t.i) / num(GRID && GRID.cols, 40)), lines };
     }
     return null;

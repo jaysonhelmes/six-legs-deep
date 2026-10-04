@@ -125,7 +125,7 @@ test('moleTunnel: deterministic staircase of 6–12 cells in rows 1–60, never 
 test('autoLevelStep levels the cheapest affordable chamber and returns false when nothing is affordable', () => {
   const { s, d } = setup({ digW: 1e6 });
   run(s, d, { type: 'placeChamber', chamber: 'gate', x: 21, y: 0 });
-  run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 22 });
+  assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 22, y: 22 }), null); // C137: x ≤ 21 is the queen's reserved room
   stepNest(s, d, 1);
   const gal = s.run.nest.chambers.find((c) => c.type === 'gallery');
   assert.equal(nest.autoLevelStep(s, d, fakeEnv()), true);
@@ -148,7 +148,9 @@ test('blueprints: save needs ancestral_blueprint; 1 slot (5 with blueprint_memor
   assert.equal(run(s, d, { type: 'saveBlueprint', slot: 0, name: 'Home' }), null);
   const bp = s.era.blueprints[0];
   assert.equal(bp.name, 'Home');
-  assert.deepEqual(bp.chambers, [{ type: 'gallery', x: 24, y: 12, w: 3, h: 2, level: 1 }]);
+  // C137: saved with its reserved full-size room (the L1 room sits in one corner of it)
+  assert.deepEqual(bp.chambers.map(({ res, ...c }) => c), [{ type: 'gallery', x: 24, y: 12, w: 3, h: 2, level: 1 }]);
+  assert.deepEqual(bp.chambers[0].res, s.run.nest.chambers.find((c) => c.type === 'gallery').res);
   assert.deepEqual(bp.tunnels.sort((a, b) => a - b), [idx(21, 12), idx(22, 12), idx(23, 12)]);
   assert.deepEqual(JSON.parse(JSON.stringify(s.era.blueprints)), s.era.blueprints);
   assert.equal(run(s, d, { type: 'loadBlueprint', slot: 0 }), null);
@@ -206,7 +208,8 @@ test('applyBlueprint queues tunnels then chambers in BFS order at −50 % placem
   assert.equal(nest.applyBlueprint(s, d3), 3, 'gallery locked → two tunnel jobs + nursery only');
   assert.equal(s.run.nest.chambers.filter((c) => c.type === 'gallery').length, 0);
   // C106: the locked gallery is kept as a pending blueprint chamber (it queues itself once unlocked).
-  assert.deepEqual(s.run.nest.bpPending, [{ type: 'gallery', x: 24, y: 12 }]);
+  assert.deepEqual(s.run.nest.bpPending.map(({ res, ...p }) => p), [{ type: 'gallery', x: 24, y: 12 }]);
+  assert.ok(s.run.nest.bpPending[0].res, 'its reservation travels with it');
   s.era.activeBlueprint = -1;
   assert.equal(nest.applyBlueprint(s, d3), 0);
 });

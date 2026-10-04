@@ -1196,3 +1196,48 @@ p.planned-wait { margin: 2px 0 4px; }
   .manual-entry { padding: 8px 10px; }
   .manual-tab { margin-left: 0; }
 }
+
+/* ================================================================== C143–C149 (UI player requests) */
+/* C144 research: available-node count on each branch button */
+.seg-count { margin-left: 4px; padding: 0 5px; border-radius: 8px; background: var(--good-bg); color: var(--good); font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.seg-count:empty { display: none; }
+/* C145 achievements: recently earned list */
+.ach-recent { display: grid; gap: 4px; }
+.ach-recent-row { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: var(--r-md); background: var(--surface-2);
+  border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent); }
+.ach-recent-row .ach-mark { color: var(--gold); }
+.ach-when { font-size: var(--fs-xs); white-space: nowrap; }
+.goal-row .row-title { font-size: var(--fs-sm); }
+/* C146 prestige: what increases flight alates */
+.flight-factors { display: grid; gap: 4px; }
+.ff-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 8px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line-soft); }
+.ff-main { display: grid; gap: 1px; min-width: 0; }
+.ff-label { font-weight: 700; font-size: var(--fs-sm); }
+.ff-how { font-size: var(--fs-xs); color: var(--text-3); }
+.ff-side { display: grid; justify-items: end; gap: 1px; text-align: right; }
+.ff-val { font-size: var(--fs-xs); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.ff-mult { font-weight: 700; color: var(--c-alates); font-variant-numeric: tabular-nums; }
+/* C149 cosmetics: Settings previews, Royal Amber palette, winged cursor, amber nest frame */
+.cos-slot { display: grid; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.cos-slot:last-child { border-bottom: 0; }
+.cos-preview-row { display: flex; align-items: center; gap: 10px; }
+.cos-preview { flex: none; width: 72px; height: 44px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-2); }
+.cos-slot.equipped .cos-preview { border-color: var(--gold); box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 40%, transparent); }
+.cos-desc { font-size: var(--fs-xs); color: var(--text-2); }
+#app[data-palette='royal_amber'] {
+  --surface: #2e1b0c; --surface-2: #3a2310; --surface-3: #4d2e12; --surface-hi: #5c3714; --line: #7a4a17; --line-soft: #4a2c10;
+  --accent: #ff9f1c; --accent-2: #ffd27a; --text-2: #e9c48f; --gold: #ffcf4a;
+}
+#app[data-palette='royal_amber'] #panels { background: linear-gradient(180deg, #3a2210, #1e120a); }
+#app[data-cursor='winged'] :is(#canvas-above, #canvas-below) {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M9 9 C2 4 1 13 7 15 C3 18 6 23 10 17 Z' fill='%23dceaff' stroke='%236c86a8'/%3E%3Cpath d='M9 9 C14 1 22 4 17 11 C22 13 18 19 12 15 Z' fill='%23eef5ff' stroke='%236c86a8'/%3E%3Cpath d='M2 2 L2 20 L7 15 L10 22 L13 21 L10 14 L17 14 Z' fill='%232a1806' stroke='%23f2c76c' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 2 2, auto;
+}
+#app[data-frame='amber'] #view-below { outline: 3px solid #d89a2b; outline-offset: -3px; box-shadow: 0 0 14px rgba(255, 170, 60, 0.35); }
+/* Field Guide further reading (C149) */
+.fg-more { padding: 0 12px 10px; }
+.fg-sources { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin: 0; font-size: var(--fs-xs); color: var(--text-3); }
+.fg-sources-label { font-weight: 650; }
+.fg-source { color: var(--accent-2); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.fg-source:hover { color: var(--accent); }
+.fg-source:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 2px; }

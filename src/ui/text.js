@@ -6,6 +6,7 @@
 import { CHAMBERS, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
 import { RESEARCH, BRANCHES } from '../data/research.js';
 import { ADAPTATIONS } from '../data/adaptations.js';
+import { COSMETICS, COSMETIC_SLOT_NAMES } from '../data/cosmetics.js';
 import { JOBS } from '../data/jobs.js';
 import { CASTES } from '../data/castes.js';
 import { SOURCES } from '../data/sources.js';
@@ -51,7 +52,7 @@ export function humanize(id) {
 /** Fallback display names (used only when the data table has no entry yet). */
 const FALLBACK_NAMES = {
   chamber: { royal_chamber: 'Royal Chamber', gallery: 'Gallery', nursery: 'Nursery', granary: 'Granary', scent_library: 'Scent Library',
-    midden: 'Midden', barracks: 'Barracks', root_aphid_pen: 'Root Aphid Pen', fungus_garden: 'Fungus Garden', repletion_hall: 'Repletion Hall',
+    midden: 'Midden', barracks: 'Barracks', war_hall: 'War Hall', root_aphid_pen: 'Root Aphid Pen', fungus_garden: 'Fungus Garden', repletion_hall: 'Repletion Hall',
     hibernaculum: 'Hibernaculum', thermal_chimney: 'Thermal Chimney', gate: 'Gate', water_well: 'Water Well', nuptial_chamber: 'Nuptial Chamber',
     deep_vault: 'Deep Vault' },
   job: { forager: 'Forager', digger: 'Digger', nurse: 'Nurse', scout: 'Scout', herder: 'Herder', leafcutter: 'Leafcutter', gardener: 'Gardener',
@@ -198,6 +199,15 @@ export const REASON_DETAILS = Object.freeze({
   'blocked:layer': 'That layer is closed: ' + nameOr(RESEARCH, 'acid_excavation', 'Acid Excavation') + ' opens bedrock, '
     + nameOr(FEDERATION, 'aquifer_access', 'Aquifer Access') + ' the aquifer.',
   'blocked:royalRoom': 'Would wall in the Royal Chamber — level it to L' + ROYAL_LEVEL + ' first, or relocate.',
+  // C137: full-size reservations (the faint outline around each chamber)
+  'blocked:reserved': 'Reserved: another chamber will grow into this space.',
+  'resv:chamber': 'Its full-size room would overlap another chamber. Press F to try another corner.',
+  'resv:reserved': 'Its full-size room would overlap another chamber\'s reserved space. Press F to try another corner.',
+  'resv:bounds': 'Its full-size room does not fit inside the nest here. Press F to try another corner.',
+  'resv:row': 'Its full-size room would break its depth rule. Press F to try another corner.',
+  'resv:hardship': 'Its full-size room would go deeper than this Hardship allows.',
+  'resv:shaft': 'Its full-size room would cover a shaft entrance. Press F to try another corner.',
+  'invalid:anchor': 'Pick one of the four corners.',
   'invalid:row': 'Not allowed at this depth.',
   'invalid:bounds': 'That does not fit inside the nest.',
   'invalid:root': 'It must touch a root.',
@@ -262,7 +272,7 @@ export const REASON_DETAILS = Object.freeze({
   'locked:research': 'Needs research first.',
   'noSlot:trail': 'No free trail slot. Research or Mound levels add more.',
   'noSlot:housing': 'Not enough housing. Build or level Galleries.',
-  'noSlot:berth': 'No free berth. Build Barracks.',
+  'noSlot:berth': 'No free berth. Barracks house soldiers, War Halls supermajors.',
   'noSlot:instance': 'Instance limit reached for that chamber.',
   'cantAfford:pheromone': 'Not enough pheromone.',
   'cantAfford:honeydew': 'Not enough honeydew.',
@@ -349,7 +359,9 @@ export const WAIT_TEXT = Object.freeze({
   'blocked:route': 'no tunnel route reaches it yet',
   'invalid:water': 'needs a revealed water pocket that no other Well uses',
   'wait:water': 'a revealed water pocket with room (dig near water to reveal one)',
-  'wait:path': 'the planned tunnels or chambers before it come first',
+  'wait:path': 'no access tunnel can reach it yet (stone, water or a reserved space in the way)',
+  'wait:access': 'digging access tunnel',
+  'blocked:reserved': 'another chamber will grow into that space',
   'wait:next': 'queues on the next check',
   hardship: 'not allowed in this Hardship',
   queueFull: 'the dig queue is full',
@@ -386,13 +398,14 @@ export function plannedWaitText(w) {
 
 /** Tab labels. */
 export const TAB_NAMES = Object.freeze({
-  colony: 'Colony', build: 'Build', map: 'Map', research: 'Research', prestige: 'Prestige', achievements: 'Achievements', guide: 'Field Guide',
-  stats: 'Stats', settings: 'Settings',
+  colony: 'Colony', build: 'Build', map: 'Map', adaptations: 'Adaptations', research: 'Research', prestige: 'Prestige', achievements: 'Achievements',
+  guide: 'Field Guide', stats: 'Stats', settings: 'Settings',
 });
 
 /** Tab tooltips (≤ 12 words; the key number is appended by the shell). */
 export const TAB_TIPS = Object.freeze({
-  colony: 'Brood, jobs and Adaptations.', build: 'Chambers, the dig queue and the Mound.', map: 'Trails, territory and rivals.',
+  colony: 'Brood, castes and jobs.', build: 'Chambers, the dig queue and the Mound.', map: 'Trails, territory and rivals.',
+  adaptations: 'Repeatable upgrades bought with food.',
   research: 'Spend insight on new abilities.', prestige: 'Nuptial Flight and the layers beyond.', achievements: 'Goals, rewards and cosmetics.',
   guide: 'What your colony has learned about the world.', stats: 'Records for this run and all time.', settings: 'Save, export, display and names.',
 });
@@ -482,7 +495,7 @@ export const JOB_TIPS = Object.freeze({
 export const CASTE_TIPS = Object.freeze({
   minor: 'Workers that take jobs. Housed in Galleries.',
   soldier: 'Garrison, escorts and war parties. Housed in Barracks.',
-  supermajor: 'Giant defenders that shrug off home bonuses.',
+  supermajor: 'Giant defenders that shrug off home bonuses. Housed in War Halls.',
   replete: 'Living honey pots: +2% food cap each.',
   alate: 'Winged princesses; each adds +2% flight alates.',
 });
@@ -495,7 +508,8 @@ export const CHAMBER_TIPS = Object.freeze({
   granary: 'Stores food. Shallow hauls faster; deep is safer.',
   scent_library: 'Produces insight. Deeper and royal-adjacent is better.',
   midden: 'Fewer diseases, +2% output. Keep away from nurseries.',
-  barracks: '+8 berths for soldiers. Near an entrance: instant deploy.',
+  barracks: '+8 soldier berths. Near an entrance: instant deploy.',
+  war_hall: '+4 supermajor berths per level. Deep: row 30 or lower.',
   root_aphid_pen: 'Passive honeydew. Must touch a root.',
   fungus_garden: 'Gardener slots and fungus storage. Best in clay.',
   repletion_hall: '+5 berths for repletes.',
@@ -505,6 +519,28 @@ export const CHAMBER_TIPS = Object.freeze({
   water_well: 'Drought immunity; boosts adjacent Fungus Gardens.',
   nuptial_chamber: 'Rears alates and opens a second entrance.',
   deep_vault: '+1 h offline cap and +5% flight alates per level.',
+});
+
+/** C141: what each chamber does, in one or two sentences, for the top of the inspect panel (numbers from the data). */
+const FXN = (id, k, fb) => num0(CHAMBERS[id] && CHAMBERS[id].fx && CHAMBERS[id].fx[k], fb);
+export const CHAMBER_ABOUT = Object.freeze({
+  royal_chamber: 'The queen lives and lays here. Each level raises her lay rate; level ' + ROYAL_LEVEL + ' is needed for the Nuptial Flight.',
+  gallery: 'Housing for your workers: each level makes room for ' + FXN('gallery', 'housing', 11) + ' more ants. Galleries in loam hold 10% more.',
+  nursery: 'Brood slots where eggs develop: +' + FXN('nursery', 'slots', 3) + ' per level. Next to the Royal Chamber its brood grows 15% faster.',
+  granary: 'Raises your food store. Shallow granaries shorten the haul; deep ones hold more and are safer from raids.',
+  scent_library: 'Produces insight for research. It works better deep (gravel or lower) and next to the Royal Chamber.',
+  midden: 'The colony\'s refuse heap: fewer diseases, a little more output and some chitin. Keep it away from nurseries and gardens.',
+  barracks: 'Berths for soldiers: +' + FXN('barracks', 'berths', 8) + ' per level, and more soldier attack. Near an entrance the garrison deploys at once.',
+  war_hall: 'Berths for supermajors: +' + FXN('war_hall', 'berths', 4) + ' per level. Every supermajor egg needs a free War Hall berth; it is dug deep.',
+  root_aphid_pen: 'Root aphids give honeydew without herders and boost your herders. It must touch a root.',
+  fungus_garden: 'Holds leaves and fungus and gives gardener slots. Clay suits it best, and a Water Well next to it helps.',
+  repletion_hall: 'Berths for repletes, the living honey pots that raise your food cap.',
+  hibernaculum: 'Shelters brood from frost and cuts winter upkeep.',
+  thermal_chimney: 'Warm air from below softens the winter forage penalty. It must touch the surface.',
+  gate: 'Guards an entrance: defenders fight harder there and raiders steal less food.',
+  water_well: 'Taps a water pocket: drought immunity, and nearby Fungus Gardens grow faster.',
+  nuptial_chamber: 'Rears the alates for the Nuptial Flight and opens a second entrance to the surface.',
+  deep_vault: 'A safe store deep in bedrock: longer offline time and more alates per Flight.',
 });
 
 /** Special placement rules (DESIGN §7.6 "Placement rule" column; data `rule`), as player text (C99). */
@@ -550,7 +586,7 @@ export function placementRuleLines(id, rows = null) {
 /** Stat labels for nest.levelGain lines. */
 export const GAIN_LABELS = Object.freeze({
   housing: 'housing', broodSlots: 'brood slots', granaryCap: 'Granary capacity', insight: 'insight', disease: 'Disease chance',
-  output: 'All output', berths: 'soldier berths', atk: 'Soldier ATK', honeydew: 'honeydew', gardeners: 'gardener slots',
+  output: 'All output', berths: 'soldier berths', warBerths: 'supermajor berths', atk: 'Soldier ATK', honeydew: 'honeydew', gardeners: 'gardener slots',
   leafCap: 'Leaf cap', fungusCap: 'Fungus cap', repleteBerths: 'replete berths', shelter: 'brood sheltered from frost',
   upkeep: 'Winter upkeep', winterForage: 'Winter forage penalty', gateHp: 'Defender HP at the gate', theft: 'Food stolen by raids',
   alateCells: 'alate cells', offline: 'offline cap', alates: 'Flight alates', lay: 'Lay rate',
@@ -662,7 +698,7 @@ export const RESEARCH_TIPS = Object.freeze({
   sun_compass: 'Map radius 12 and +2 trail slots.',
   mass_recruitment: 'Longer reach, 60 s Rally and +2 trail slots.',
   frenzy_signal: 'Unlocks Frenzy.',
-  trunk_trails: 'Long trails ×1.5 and count as territory.',
+  trunk_trails: 'Long trails ×1.5; trail hexes are territory; shared stretches up to +' + Math.round(100 * ((RESEARCH.trunk_trails && RESEARCH.trunk_trails.fx.overlap) || 0)) + '%.',
   odometer_navigation: 'Much longer reach; distant sources richer.',
   coordinated_digging: 'Dig ×1.5.',
   load_chains: 'Tunnels cost half the work; +2 queue slots.',
@@ -896,6 +932,7 @@ export const UNLOCK_HINTS = Object.freeze({
   chamber_deep_vault: 'Research Acid Excavation.',
   chamber_water_well: 'Reveal a water pocket underground.',
   caste_supermajor: 'Research Supermajors.',
+  chamber_war_hall: 'Research Supermajors.',
   adapt_long_legs: 'Research Tandem Running.',
   ability_frenzy: 'Research Frenzy Signal.',
   panel_map: 'Draw a second trail or claim a hex.',
@@ -1041,9 +1078,13 @@ export function importErrorText(code) {
   return IMPORT_ERRORS[code] || 'The save could not be read.';
 }
 
-/** Cosmetic slot from a cosmetic id (ARCH-R: slot names are not pinned by the contract). */
+/**
+ * Cosmetic slot from a cosmetic id: the data/cosmetics.js slot (C149), else a guess from the id (ARCH-R: slot names are
+ * not pinned by the contract).
+ */
 export function cosmeticSlot(id) {
   const k = String(id || '');
+  if (Object.prototype.hasOwnProperty.call(COSMETICS, k)) return COSMETICS[k].slot;
   if (k.includes('palette')) return 'palette';
   if (k.includes('mound')) return 'mound';
   if (k.includes('flag')) return 'flag';
@@ -1055,9 +1096,52 @@ export function cosmeticSlot(id) {
 }
 
 /** Cosmetic slot labels. */
-export const COSMETIC_SLOTS = Object.freeze({
-  palette: 'Palette', mound: 'Mound skin', flag: 'Flag', trail: 'Trail colour', crown: 'Crown', pet: 'Pet', cursor: 'Cursor', misc: 'Other',
-});
+export const COSMETIC_SLOTS = Object.freeze({ ...COSMETIC_SLOT_NAMES, misc: 'Other' });
+
+/** Display name of a cosmetic (data name, else humanized id). */
+export function cosmeticName(id) {
+  const k = String(id || '');
+  return Object.prototype.hasOwnProperty.call(COSMETICS, k) ? COSMETICS[k].name : humanize(k.replace(/^cos(metic)?_/, ''));
+}
+
+/**
+ * The equipped cosmetic id of a slot (C149), or null: equipped[slot] when it holds an owned cosmetic of that slot, else
+ * any equipped owned cosmetic whose slot matches (older saves kept some under 'misc').
+ * @param {Object} s
+ * @param {string} slot
+ * @returns {string|null}
+ */
+export function equippedCosmeticId(s, slot) {
+  const c = s && s.meta && s.meta.cosmetics;
+  const eq = c && c.equipped && typeof c.equipped === 'object' ? c.equipped : null;
+  if (!eq) return null;
+  const owned = c.owned && typeof c.owned === 'object' ? c.owned : null;
+  const ok = (id) => typeof id === 'string' && cosmeticSlot(id) === slot && (!owned || owned[id] === true);
+  if (ok(eq[slot])) return eq[slot];
+  for (const k of Object.keys(eq)) if (ok(eq[k])) return eq[k];
+  return null;
+}
+
+/**
+ * Colony name with the equipped title cosmetic (C149): "Redhill the Underdog"; without a title the colony name, or
+ * `fallback` when the colony is unnamed and has no title.
+ * @param {Object} s
+ * @param {string} [fallback]
+ * @returns {string}
+ */
+export function colonyTitle(s, fallback = 'Six Legs Deep') {
+  const name = (s && s.meta && s.meta.settings && s.meta.settings.colonyName) || '';
+  const id = equippedCosmeticId(s, 'title');
+  const title = id && COSMETICS[id] ? COSMETICS[id].title : '';
+  if (title) return (name || 'Your colony') + ' ' + title;
+  return name || fallback;
+}
+
+/** Render variant of the equipped cosmetic of a slot ('' when none). */
+export function cosmeticVariant(s, slot) {
+  const id = equippedCosmeticId(s, slot);
+  return id && COSMETICS[id] ? COSMETICS[id].variant : '';
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Event → toast copy (ARCHITECTURE §10)
@@ -1115,6 +1199,9 @@ export function eventToast(e, s = null) {
     case 'pupaSpawned': return { text: 'A golden pupa glows in the nest! Click it.', kind: 'gold', priority: 'low' };
     case 'hardshipTier': return { text: nameOf('hardship', e.id) + ': tier ' + e.tier + ' reached!', kind: 'achievement', priority: 'high' };
     case 'entranceOpened': return { text: 'A new entrance opens to the surface.', kind: 'good', priority: 'low' };
+    case 'trailRehomed': return e.ok
+      ? { text: 'A forked trail now starts at the nearest entrance (trails no longer fork).', kind: 'info', priority: 'low' }
+      : { text: 'A forked trail could not reach any entrance and was removed.', kind: 'bad', priority: 'high' };
     case 'rivalSighted': return { text: rivalName(e.uid, e.rivalType) + ' spotted!', kind: 'danger', priority: 'low' };
     case 'adultsDied':
       if (e.cause === 'battle') return null;

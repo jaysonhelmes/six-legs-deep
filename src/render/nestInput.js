@@ -196,6 +196,24 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     call(bridge, 'hover', ghostTool ? null : target, e.clientX, e.clientY);
   }
 
+  /**
+   * C137: flip which corner of its full-size reserved room the chamber being placed (or relocated) starts in: the next
+   * distinct anchor after the current one (F key, right-click or long-press while placing). Returns true if flipped.
+   */
+  function flipAnchor() {
+    const tool = getUI(ui).tool;
+    if (!tool || (tool.kind !== 'placeChamber' && tool.kind !== 'relocate')) return false;
+    const cell = inp.hoverCell >= 0 ? inp.hoverCell : 0;
+    const g = renderer.ghostAt ? renderer.ghostAt(cell, tool) : null;
+    const list = g && g.res && Array.isArray(g.res.anchors) ? g.res.anchors.map((a) => a.anchor) : [];
+    if (!list.length) return false; // no reservation (it never grows): right-click cancels as before
+    if (list.length < 2) return true; // a single possible corner: nothing to flip
+    const cur = tool.anchor || (g.res && g.res.anchor) || list[0];
+    const k = list.indexOf(cur);
+    setUI(ui, { tool: { ...tool, anchor: list[(k + 1) % list.length] } });
+    return true;
+  }
+
   function tunnelPreview(from, to) {
     const s = game && game.s;
     const d = game && game.d;
@@ -313,6 +331,7 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
           const t = down.target;
           down = null;
           clearPreviews();
+          if (flipAnchor()) return; // C137: long-press while placing flips the start corner
           if (getUI(ui).tool) setUI(ui, { tool: null });
           else call(bridge, 'contextMenu', t, e.clientX, e.clientY);
         }
@@ -426,9 +445,11 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
         const g = renderer.ghostAt ? renderer.ghostAt(dn.cell.i, tool) : null;
         if (!g) return;
         const route = g.res && Array.isArray(g.res.route) && g.res.route.length ? { route: g.res.route.slice() } : {};
+        // C137: the corner shown by the ghost (F / right-click) is the one reserved
+        const anc = g.res && g.res.anchor ? { anchor: g.res.anchor } : {};
         const res = tool.kind === 'placeChamber'
-          ? act('placeChamber', { chamber: tool.chamber, x: g.x, y: g.y, ...route }, cx, cy)
-          : act('relocateChamber', { uid: tool.uid, x: g.x, y: g.y, ...route }, cx, cy);
+          ? act('placeChamber', { chamber: tool.chamber, x: g.x, y: g.y, ...route, ...anc }, cx, cy)
+          : act('relocateChamber', { uid: tool.uid, x: g.x, y: g.y, ...route, ...anc }, cx, cy);
         if (res.ok) setUI(ui, { tool: null });
         return;
       }
@@ -514,6 +535,8 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
   function onContext(e) {
     if (e.preventDefault) e.preventDefault();
     const p = local(e);
+    // C137: right-click while placing or relocating a chamber flips the corner it starts in (Esc cancels)
+    if (flipAnchor()) return;
     if (getUI(ui).tool) {
       setUI(ui, { tool: null });
       clearPreviews();
@@ -569,6 +592,21 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       focused = typeof document !== 'undefined' && document.activeElement === canvas;
     } catch {
       focused = false;
+    }
+    // C137: F flips the start corner of the chamber being placed (any focus but a text field)
+    if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      let typing = false;
+      try {
+        const a = typeof document !== 'undefined' ? document.activeElement : null;
+        const tag = a && typeof a.tagName === 'string' ? a.tagName.toLowerCase() : '';
+        typing = tag === 'input' || tag === 'textarea' || tag === 'select' || (a && a.isContentEditable === true);
+      } catch {
+        typing = false;
+      }
+      if (!typing && flipAnchor()) {
+        if (e.preventDefault) e.preventDefault();
+        return;
+      }
     }
     if (focused && (e.key === 'b' || e.key === 'B') && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const t = getUI(ui).tool;

@@ -9,7 +9,7 @@ import {
   nameOf, reasonText, WAR_TIPS, TACTIC_TIPS, PARTY_NAMES, BATTLE_NAMES, RAID_PHASES, RES_NAMES,
 } from '../text.js';
 import { isShown, hasResearch, fedLevel, num, arr, obj } from '../reveal.js';
-import { previewTrail, bestOrigin } from '../../systems/trails.js';
+import { previewTrail, bestOrigin, trailOverlap } from '../../systems/trails.js';
 import { claimCost, canClaim, sourceAt } from '../../systems/surface.js';
 import { previewAction, garrison as garrisonOf } from '../../systems/rivals.js';
 import { ringOf } from '../../core/hex.js';
@@ -598,8 +598,16 @@ export function createPanel(root, { game, ui, bridge }) {
     const src = sourceBy(s, t.src);
     const dt = dmap.get(t.uid) || {};
     setText(r.name, src ? nameOf('source', src.type) : 'Trail');
-    setText(r.meta, fmtCount(num(t.len)) + ' hex' + (num(t.len) === 1 ? '' : 'es') + (dt.priority ? ' · chitin priority' : ''));
-    r.meta.title = dt.priority ? 'Chitin is short for soldier eggs: free foragers fill this trail first.' : '';
+    // C132: Trunk Trails pays shared stretches (hexes another trail also covers)
+    let ov = null;
+    if (hasResearch(s, 'trunk_trails') && t.job !== 'lycaenid') {
+      try { ov = trailOverlap(s, d, t); } catch { ov = null; }
+      if (ov && !(ov.shared > 0)) ov = null;
+    }
+    setText(r.meta, fmtCount(num(t.len)) + ' hex' + (num(t.len) === 1 ? '' : 'es') + (ov ? ' · shared ' + Math.round(100 * ov.frac) + '% ×' + ov.mult.toFixed(2) : '')
+      + (dt.priority ? ' · chitin priority' : ''));
+    r.meta.title = [ov ? 'Trunk Trails: ' + ov.shared + ' of its ' + ov.total + ' hexes are shared with another trail, so it yields ×' + ov.mult.toFixed(2) + '.' : '',
+      dt.priority ? 'Chitin is short for soldier eggs: free foragers fill this trail first.' : ''].filter(Boolean).join(' ');
     const res = trailRes(t.job);
     const out = num(dt.out);
     setText(r.yieldEl, '+' + fmtRate(out).replace('/s', ' ' + (RES_NAMES[res] || res).toLowerCase() + '/s'));

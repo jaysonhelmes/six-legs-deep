@@ -1,19 +1,16 @@
 // Colony panel: brood pipeline (eggs / larvae / pupae, lay rate, housing, egg reserve slider, Fungal Brood), caste
 // slider and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets (a target slider per chip; +/− and drags edit targets in auto mode, C94) and
-// presets, Adaptations (alate rearing moved to the Prestige tab's Flight view, C116). Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
-// Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, adaptations.cost / isAvailable, stats.eggCost.
+// presets (Adaptations have their own tab since C143, panels/adaptations.js; alate rearing lives on the Prestige tab's Flight view, C116). Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
+// Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, stats.eggCost.
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
-import { nameOf, JOB_TIPS, CASTE_TIPS, ADAPT_TIPS } from '../text.js';
+import { nameOf, JOB_TIPS, CASTE_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { broodSummary, housingBrood, chitinReserve } from '../../systems/population.js';
-import { canAfford } from '../../core/wallet.js';
 import { idleMinors, jobCap, withTarget, effectiveTargets } from '../../systems/jobs.js';
-import { cost as adaptCost, isAvailable as adaptAvailable } from '../../systems/adaptations.js';
 import { eggCost } from '../../systems/stats.js';
 import { JOB_ORDER, JOBS, TARGET_UI } from '../../data/jobs.js';
-import { ADAPTATION_ORDER, ADAPTATIONS } from '../../data/adaptations.js';
 import { CASTES } from '../../data/castes.js';
 import { SLIDERS } from '../../data/economy.js';
 import { makeAct, sliderRow, note, progressBar } from './common.js';
@@ -23,13 +20,8 @@ export const JOB_FALLBACK = Object.freeze(['forager', 'digger', 'nurse', 'scout'
 /** Job unlock keys when data/jobs.js is still empty (ARCHITECTURE §6.2). */
 export const JOB_UNLOCK_FALLBACK = Object.freeze({ forager: null, digger: 'job_digger', nurse: 'panel_colony', scout: 'job_scout',
   herder: 'job_herder', leafcutter: 'job_leafcutter', gardener: 'job_gardener' });
-/** Adaptation ids when data/adaptations.js is still empty. */
-export const ADAPT_FALLBACK = Object.freeze(['quick_dispatch', 'strong_mandibles', 'royal_feeding', 'digging_claws', 'potent_trails',
-  'serrated_mandibles', 'thick_cuticle', 'sweet_tooth', 'queens_feast', 'long_legs']);
-/** Adaptation unlock keys when data/adaptations.js is still empty (ARCHITECTURE §6.2). */
-export const ADAPT_UNLOCK_FALLBACK = Object.freeze({ quick_dispatch: 'adapt_basic', strong_mandibles: 'adapt_basic', royal_feeding: 'adapt_basic',
-  digging_claws: 'adapt_digging_claws', potent_trails: 'adapt_potent_trails', serrated_mandibles: 'adapt_military', thick_cuticle: 'adapt_military',
-  sweet_tooth: 'adapt_honeydew', queens_feast: 'adapt_honeydew', long_legs: 'adapt_long_legs' });
+/** C143: the Adaptation helpers moved to panels/adaptations.js; re-exported for older importers. */
+export { ADAPT_FALLBACK, ADAPT_UNLOCK_FALLBACK, adaptBulk } from './adaptations.js';
 /** Caste unlock keys (slider castes). */
 const CASTE_KEYS = Object.freeze({ soldier: 'caste_soldier', supermajor: 'caste_supermajor', replete: 'caste_replete' });
 const STEPS = [1, 10, 100, 'max'];
@@ -49,35 +41,6 @@ export function chitinStepIndex(amount) {
   let k = 0;
   for (let i = 0; i < CHITIN_STEPS.length; i++) if (CHITIN_STEPS[i] <= num(amount) + 1e-9) k = i;
   return k;
-}
-
-/**
- * C105 bulk Adaptation buying: the cost of the next 10 levels (null when past MAX / the cap) and whether it is
- * affordable now, and the most levels affordable now (n, with their total cost; n = 0 when not even one is).
- * @param {Object} s
- * @param {string} id
- * @param {(s: Object, id: string, n: number) => Object|null} [costFn] adaptations.cost
- * @returns {{ c10: Object|null, ok10: boolean, n: number, cMax: Object|null }}
- */
-export function adaptBulk(s, id, costFn = adaptCost) {
-  const c = (n) => q(() => costFn(s, id, n), null);
-  const fits = (n) => {
-    const x = c(n);
-    return !!x && canAfford(s, x);
-  };
-  const c10 = c(10);
-  let n = 0;
-  if (fits(1)) {
-    let lo = 1;
-    let hi = 2;
-    while (hi <= 4096 && fits(hi)) { lo = hi; hi *= 2; }
-    while (hi - lo > 1) {                         // lo fits, hi does not (or is past the search bound)
-      const mid = Math.floor((lo + hi) / 2);
-      if (fits(mid)) lo = mid; else hi = mid;
-    }
-    n = lo;
-  }
-  return { c10, ok10: !!c10 && canAfford(s, c10), n, cMax: n > 0 ? c(n) : null };
 }
 
 /** Ratio-target step of one +/− click or chip drag in auto mode (C94). */
@@ -119,23 +82,36 @@ export function jobKey(id) {
   return JOB_UNLOCK_FALLBACK[id] ?? null;
 }
 
-/** Adaptation ids in display order. */
-function adaptIds() {
-  return ADAPTATION_ORDER.length ? ADAPTATION_ORDER : ADAPT_FALLBACK;
-}
-
-/** Unlock key of an Adaptation. */
-function adaptKey(id) {
-  const a = ADAPTATIONS[id];
-  if (a && a.unlock) return a.unlock;
-  return ADAPT_UNLOCK_FALLBACK[id] || null;
-}
-
 /** Unlock key of a caste (data `unlock`, else the documented key). */
 function casteKey(c) {
   const x = CASTES[c];
   if (x && x.unlock) return x.unlock;
   return CASTE_KEYS[c] || null;
+}
+
+/**
+ * C143 berth lines of the Castes section. With the War Hall (d.stats.warBerths present, B's nest work) soldiers live in
+ * Barracks berths and supermajors in War Hall berths; without that field the Barracks berths hold both. Each line only
+ * shows once its caste / chamber is revealed or the capacity exists.
+ * @param {Object} s
+ * @param {Object} st d.stats
+ * @param {Object} adults run.colony.adults
+ * @returns {string[]}
+ */
+export function berthLines(s, st, adults) {
+  const out = [];
+  const a = obj(adults);
+  const x = obj(st);
+  const hasWar = typeof x.warBerths === 'number' && Number.isFinite(x.warBerths);
+  if (isShown(s, 'chamber_barracks') || num(x.berths) > 0) {
+    const used = hasWar ? num(a.soldier) : num(a.soldier) + num(a.supermajor);
+    out.push('Barracks berths ' + fmtCount(used) + '/' + fmtCount(num(x.berths)) + (hasWar ? ' (soldiers)' : ' (soldiers and supermajors)'));
+  }
+  if (hasWar && (num(x.warBerths) > 0 || num(a.supermajor) > 0 || isShown(s, casteKey('supermajor')) || isShown(s, 'chamber_war_hall'))) {
+    out.push('War Hall berths ' + fmtCount(num(a.supermajor)) + '/' + fmtCount(num(x.warBerths)) + ' (supermajors)');
+  }
+  if (isShown(s, 'caste_replete')) out.push('Replete berths ' + fmtCount(num(a.replete)) + '/' + fmtCount(num(x.repleteBerths)));
+  return out;
 }
 
 /** Safe query call. */
@@ -265,12 +241,8 @@ export function createPanel(root, { game, ui, bridge }) {
   }
   const jobsSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title' }, 'Jobs ', idleEl), stepRow, h('div', { class: 'toggles' }, autoRow, thrRow), jobList, targetNote, presetRow);
 
-  // --- adaptations ---
-  const adaptList = h('div', { class: 'list adapt-list' });
-  const adaptSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Adaptations' }), adaptList);
-
   const empty = note('Your first worker is on the way. The queen tends her first egg.');
-  el.append(empty, broodSec, casteSec, jobsSec, adaptSec);   // alate rearing: Prestige → Flight (C116)
+  el.append(empty, broodSec, casteSec, jobsSec);   // Adaptations: own tab (C143); alate rearing: Prestige → Flight (C116)
 
   function setCaste(c, pct) {
     const t = { ...obj(game.s.run.colony.casteTargets) };
@@ -409,64 +381,6 @@ export function createPanel(root, { game, ui, bridge }) {
     toggleClass(chip, 'glow', ui.getUI().glow === 'job:' + id);
   }
 
-  // --- adaptation rows ---
-  function createAdaptRow(id) {
-    const lvl = h('span', { class: 'lvl' });
-    const costEl = h('span', { class: 'cost' });
-    const buy = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Buy',
-      on: { click: (ev) => act('buyAdaptation', { id, n: 1 }, ev, buy) } });
-    const buy10 = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: '×10',
-      on: { click: (ev) => act('buyAdaptation', { id, n: 10 }, ev, buy10) } });
-    const cost10 = h('span', { class: 'cost cost-bulk' });
-    const buyMax = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Max',
-      on: { click: (ev) => {
-        const n = adaptBulk(game.s, id).n;
-        if (n > 0) act('buyAdaptation', { id, n }, ev, buyMax);
-      } } });
-    const bulkRow = h('span', { class: 'btn-row' }, cost10, buy10, buyMax);
-    const lockHint = h('span', { class: 'locked-hint' });
-    const row = h('div', { class: 'buy-row', dataset: { id } }, // the description is on the row: no duplicate tooltip
-      h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('adaptation', id) }), lvl,
-        h('span', { class: 'buy-desc', text: ADAPT_TIPS[id] || '' }), lockHint),
-      h('div', { class: 'buy-side' }, costEl, h('span', { class: 'btn-row' }, buy), bulkRow));
-    row.__r = { lvl, costEl, buy, buy10, lockHint, cost10, buyMax, bulkRow };
-    return row;
-  }
-
-  function updateAdaptRow(row, id, s) {
-    const r = row.__r;
-    const L = num(obj(s.run.adaptations)[id]);
-    setText(r.lvl, 'L' + fmtCount(L));
-    const avail = q(() => adaptAvailable(s, id), false);
-    const c = q(() => adaptCost(s, id, 1), null);
-    const ok = setCost(r.costEl, c, s);
-    toggleClass(row, 'cant', !ok && c !== null);
-    toggleClass(row, 'maxed', c === null);
-    toggleClass(row, 'blocked', !avail);
-    setProp(r.buy, 'disabled', !avail || c === null);
-    setText(r.buy, c === null ? 'Max' : 'Buy');
-    setText(r.lockHint, avail ? '' : s.run.hardship === 'claustral_founding' && id === 'royal_feeding' ? 'Not allowed in this Hardship.' : '');
-    // C105 bulk buying: ×10 with its total cost (green affordable, red not) and Max (n) = every level affordable now.
-    const bulk = adaptBulk(s, id);
-    const c10 = bulk.c10;
-    const showBulk = avail && c !== null && (L > 0 || bulk.n >= 2);
-    show(r.bulkRow, showBulk);
-    show(r.buy10, c10 !== null);
-    show(r.cost10, c10 !== null);
-    if (showBulk && c10 !== null) {
-      setCost(r.cost10, c10, s);
-      const col = bulk.ok10 ? 'var(--good)' : 'var(--danger)';
-      for (const part of Array.from(r.cost10.children)) part.style.color = col;
-      r.cost10.title = (bulk.ok10 ? 'Affordable: ' : 'Not affordable yet: ') + 'total for 10 levels';
-    }
-    setProp(r.buy10, 'disabled', !bulk.ok10);
-    r.buy10.title = c10 ? 'Buy 10 levels' : '';
-    setText(r.buyMax, 'Max (' + fmtCount(bulk.n) + ')');
-    setProp(r.buyMax, 'disabled', !(bulk.n > 0));
-    r.buyMax.title = bulk.n > 0 ? 'Buy ' + fmtCount(bulk.n) + ' level' + (bulk.n === 1 ? '' : 's') + ': everything you can afford now' : 'Not even one level is affordable';
-    toggleClass(row, 'glow', ui.getUI().glow === 'adapt:' + id);
-  }
-
   return {
     update(s, d) {
       if (!s || !s.run) return;
@@ -521,10 +435,7 @@ export function createPanel(root, { game, ui, bridge }) {
           setText(casteEls[k].n, fmtCount(num(adults[k])));
           show(casteEls[k].chip, k === 'minor' || num(adults[k]) > 0 || isShown(s, casteKey(k)));
         }
-        const parts = [];
-        if (isShown(s, 'chamber_barracks') || num(st.berths) > 0) parts.push('Berths ' + fmtCount(num(adults.soldier) + num(adults.supermajor)) + ' / ' + fmtCount(num(st.berths)));
-        if (isShown(s, 'caste_replete')) parts.push('Replete berths ' + fmtCount(num(adults.replete)) + ' / ' + fmtCount(num(st.repleteBerths)));
-        setText(berthsEl, parts.join(' · '));
+        setText(berthsEl, berthLines(s, st, adults).join(' · '));
         const t = obj(c.casteTargets);
         for (const k of Object.keys(casteSliders)) {
           const vis = isShown(s, casteKey(k));
@@ -590,11 +501,6 @@ export function createPanel(root, { game, ui, bridge }) {
           b.save.title = 'Save the current targets in slot ' + (slot + 1);
         });
       }
-
-      // adaptations
-      const aIds = adaptIds().filter((id) => isShown(s, adaptKey(id)) || num(obj(s.run.adaptations)[id]) > 0);
-      show(adaptSec, aIds.length > 0);
-      syncList(adaptList, aIds, (id) => id, createAdaptRow, (row, id) => updateAdaptRow(row, id, s));
 
     },
     destroy() {

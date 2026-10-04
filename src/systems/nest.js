@@ -499,7 +499,9 @@ function pocketBusy(s, p) {
 /**
  * Reason a pocket rectangle cannot move to `rect`, or null: inside the grid, top row ≥ 1 and within DRAINAGE.moveRows
  * rows of the pocket, every cell plain undug SOIL (no stone, water, tunnel, chamber, shaft, queued or backfilling cell,
- * no buried cache), Shallow Soil's depth limit.
+ * no buried cache), Shallow Soil's depth limit, and no chamber's reserved room (C137). The pocket's own water cells
+ * count as free (player report: moving a pocket one tile over was refused because it overlapped its old cells; they
+ * turn to soil before the pocket refills its new spot).
  */
 function pocketSpotBlock(s, geo, rect, p) {
   if (!rect || !isInt(rect.x) || !isInt(rect.y)) return 'invalid';
@@ -511,8 +513,10 @@ function pocketSpotBlock(s, geo, rect, p) {
   for (const k of s.run.nest.features.caches || []) if (k && !k.found) cache.add(k.i);
   for (const c of G.rectCells(rect.x, rect.y, rect.w, rect.h)) {
     const code = cells[c];
+    if (code === CELL.WATER && p && G.inRect(p, c)) continue; // its own cells
     if (code === CELL.WATER) return 'blocked:water';
     if (geo.chamberAt[c] >= 0) return 'blocked:chamber';
+    if (geo._resv && geo._resv[c] >= 0) return 'blocked:reserved';
     if (code === CELL.STONE) return 'blocked:stone';
     if (code !== CELL.SOIL) return 'blocked:open';
     if (geo._queued[c]) return 'blocked:queued';
@@ -539,11 +543,15 @@ function planPocket(s, d, k, to = null) {
   const geo = G.getGeom(s, d);
   if (to) {
     const rect = { x: to.x, y: to.y, w: p.w, h: p.h };
+    if (rect.x === p.x && rect.y === p.y) return { reason: 'invalid' };
     const why = pocketSpotBlock(s, geo, rect, p);
     if (why) return { reason: why };
     if (blocksRoyalGrowth(s, rect, 0, { d })) return { reason: 'blocked:royalRoom' };
   }
-  const r = G.routeTo(s, d, wetList);
+  // The access tunnel never runs through the target spot (it would leave open cells there and the move would fail), and
+  // may cross reserved soil (C137: draining or moving a pocket out of a reserved room is how that room is cleared).
+  const avoid = to ? G.rectCells(to.x, to.y, p.w, p.h).filter((c) => !G.inRect(p, c)) : null;
+  const r = G.routeTo(s, d, wetList, { blocked: avoid, allowRes: true });
   if (!r) return { reason: 'blocked:route' };
   if (s.run.nest.queue.length + 1 > queueLimit(s)) return { reason: 'queueFull' };
   const wet = orderCells(geo, wetList, r.cells);
@@ -855,7 +863,7 @@ export function derive(s, d) {
   const agg = {
     housingBase: royalFx.housing,
     broodGroups: [],
-    berthsBase: 0, repleteBerthsBase: 0,
+    berthsBase: 0, warBerthsBase: 0, repleteBerthsBase: 0,
     alateCells: 0,
     granaryCap: 0,
     clayFoodShare: 0,
@@ -956,6 +964,10 @@ export function derive(s, d) {
         agg.berthsBase += fx.berths * L * eff;
         if (info.minEntPath >= 0 && info.minEntPath <= GEOM.barracksPath) agg.barracksNear = true;
         break;
+      case 'war_hall':
+        // C136: supermajor-only berths (DESIGN §5.4)
+        agg.warBerthsBase += fx.berths * L * eff;
+        break;
       case 'root_aphid_pen':
         agg.rootPenL += L * eff;
         agg.rootPenCount++;
@@ -1032,6 +1044,11 @@ export function tick(s, d, dt, env) {
   const nest = s.run.nest;
   const geo = ensureGeom(s, d);
   const step = dt > 0 && Number.isFinite(dt) ? dt : 0;
+  // C137: older saves: give their chambers reservations once (dt > 0 only: a derive pass never changes state).
+  if (step > 0) {
+    const r1 = nest.chambers.find((c) => c && c.uid === 1);
+    if (r1 && !r1.res && !r1.noRes) assignReservations(s, d);
+  }
   if (nest.backfill.length && step > 0) {
     const keep = [];
     for (const b of nest.backfill) {
@@ -1066,6 +1083,8 @@ function cellBlock(s, geo, c, relIdx) {
   const code = cells[c];
   if (code === CELL.WATER) return 'blocked:water';
   if (geo.chamberAt[c] >= 0) return 'blocked:chamber';
+  // C137: another chamber's reserved full-size room is off limits (its own growth may use it).
+  if (geo._resv && geo._resv[c] >= 0 && geo._resv[c] !== relIdx) return 'blocked:reserved';
   // C125: only a shaft's top SHAFT_KEEP_ROWS rows block a footprint; a chamber over deeper shaft cells lets it pass.
   if (geo._shaft[c] && c < G.SHAFT_KEEP_ROWS * COLS) return 'blocked:shaft';
   if (geo._backfill[c]) return 'blocked:backfill';
@@ -1158,6 +1177,7 @@ function checkRoute(s, geo, route, rect) {
     if (k > 0 && !adj4(route[k - 1], c)) return 'invalid:route';
     if (geo.open[c]) continue;
     if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || geo._backfill[c] || !G.isDiggable(s, c)) return 'blocked:route';
+    if (geo._resv && geo._resv[c] >= 0) return 'blocked:reserved'; // C137: no new tunnels through a reserved room
   }
   const first = route[0];
   const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
@@ -1189,6 +1209,7 @@ function shaftPath(s, geo, rect, col) {
       continue;
     }
     if (geo.chamberAt[c] >= 0 || geo._backfill[c] || geo._queued[c]) return null;
+    if (geo._resv && geo._resv[c] >= 0) return null; // C137: not through a reserved room
     if (!G.isDiggable(s, c)) return null;
     dig.push(c);
   }
@@ -1234,15 +1255,148 @@ function shaftCells(rect, col) {
   return out;
 }
 
+// ------------------------------------------------------------------------------------------------------------------
+// C137 full-size footprint reservations
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * C137: the level whose footprint a chamber type reserves when placed (0 = none: it never grows). The level where its
+ * footprint stops growing: min(effective max level, GEOM.footprintMaxL); the Royal Chamber reserves its Flight-level
+ * (FLIGHT.royalLevel) room and grows past it the legacy way (a chosen side).
+ */
+function resLevel(s, type) {
+  const def = CHAMBERS[type];
+  if (!def || !def.grows) return 0;
+  let L;
+  if (type === 'royal_chamber') L = num(FLIGHT.royalLevel) || 5;
+  else {
+    const maxL = effMaxL(s, def);
+    L = maxL > 0 ? Math.min(maxL, GEOM.footprintMaxL) : GEOM.footprintMaxL;
+  }
+  const a = G.footprint(type, 1);
+  const b = G.footprint(type, L);
+  return b.w > a.w || b.h > a.h ? L : 0;
+}
+
+/** C137: reservation size for a room of type `type` (null when the type reserves nothing). */
+function resDims(s, type, room) {
+  const L = resLevel(s, type);
+  if (!L) return null;
+  const fp = G.footprint(type, L);
+  return { w: Math.max(fp.w, room.w), h: Math.max(fp.h, room.h) };
+}
+
+/**
+ * C137: why reservation rectangle R cannot be used by chamber index relIdx (−1 = a new chamber), or null. R must be
+ * inside the grid, meet the type's row rule (and Shallow Soil's depth limit), and hold no other chamber, no other
+ * chamber's reservation and no shaft top row (C125). Stone, water and locked layers inside are allowed: they only
+ * hold growth back until cleared.
+ */
+function resBlock(s, d, geo, type, R, relIdx) {
+  const def = CHAMBERS[type];
+  if (R.x < 0 || R.y < 0 || R.x + R.w > COLS || R.y + R.h > ROWS) return 'resv:bounds';
+  if (R.y < effRowMin(s, d, type) || R.y + R.h - 1 > def.rowMax) return 'resv:row';
+  if (s.run.hardship === 'shallow_soil' && R.y + R.h - 1 > DIG.shallowSoilRow) return 'resv:hardship';
+  for (const c of G.rectCells(R.x, R.y, R.w, R.h)) {
+    const j = geo.chamberAt[c];
+    if (j >= 0 && j !== relIdx) return 'resv:chamber';
+    const r = geo._resv ? geo._resv[c] : -1;
+    if (r >= 0 && r !== relIdx) return 'resv:reserved';
+    if (geo._shaft[c] && c < G.SHAFT_KEEP_ROWS * COLS) return 'resv:shaft';
+  }
+  return null;
+}
+
+/** C137: cells of R outside `room` that hold growth back right now (water, stone without acid, a locked layer). */
+function resObstacles(s, geo, R, room) {
+  const cells = s.run.nest.cells;
+  let n = 0;
+  for (const c of G.rectCells(R.x, R.y, R.w, R.h)) {
+    if (room && G.inRect(room, c)) continue;
+    const code = cells[c];
+    if (code === CELL.WATER) n++;
+    else if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) n++;
+    else if ((code === CELL.SOIL || code === CELL.STONE) && !G.layerOpen(s, Math.floor(c / COLS))) n++;
+  }
+  return n;
+}
+
+/**
+ * C137: the reservation choices for a room `room` of type `type` (chamber index relIdx, −1 = new): one entry per
+ * distinct anchor (ANCHORS order; anchors giving the same rectangle are merged) with its rectangle, refusal reason and
+ * obstacle count, plus the pick: the explicit `anchor` (refused if it is not valid), else the valid one with the fewest
+ * obstacles (ties: ANCHORS order). dims: the reservation size (default resDims).
+ * @returns {null | { res: Object|null, anchor: string|null, reason: string|null, anchors: Array<Object> }} null = the
+ *   type reserves nothing
+ */
+function planRes(s, d, geo, type, room, relIdx, anchor = null, dims = null) {
+  const D = dims || resDims(s, type, room);
+  if (!D) return null;
+  const list = [];
+  const seen = new Set();
+  for (const a of G.ANCHORS) {
+    const R = G.anchorRect(room, a, D.w, D.h);
+    const key = R.x + ',' + R.y;
+    if (seen.has(key)) {
+      const e = list.find((x) => x.res.x === R.x && x.res.y === R.y);
+      if (e && anchor === a) e.alias = a;
+      continue;
+    }
+    seen.add(key);
+    const reason = resBlock(s, d, geo, type, R, relIdx);
+    list.push({ anchor: a, res: R, reason, obst: reason ? 0 : resObstacles(s, geo, R, room) });
+  }
+  let pick = null;
+  if (anchor && G.ANCHORS.includes(anchor)) {
+    pick = list.find((e) => e.anchor === anchor || e.alias === anchor) || null;
+  } else {
+    for (const e of list) if (!e.reason && (!pick || e.obst < pick.obst)) pick = e;
+    if (!pick) pick = list[0];
+  }
+  return { res: pick && !pick.reason ? { ...pick.res } : null, anchor: pick ? pick.anchor : null, reason: pick ? pick.reason : 'resv:bounds',
+    anchors: list.map((e) => ({ anchor: e.anchor, res: { ...e.res }, ok: !e.reason, reason: e.reason, obst: e.obst })) };
+}
+
+/**
+ * C137: give chambers placed before reservations existed (older saves) one when possible: in uid order, each growing
+ * chamber without one gets the free corner-anchored full-size rectangle around its current room with the fewest
+ * obstacles (the original Royal Chamber only an obstacle-free one, so its Flight-level room stays guaranteed, C66).
+ * Chambers with no free rectangle are marked noRes and keep the legacy grow-a-side behaviour. Runs once per nest: when
+ * the original Royal Chamber has neither res nor noRes (fresh runs and new games create it with its reservation).
+ */
+function assignReservations(s, d) {
+  const nest = s.run.nest;
+  const royal = nest.chambers.find((c) => c && c.uid === 1);
+  if (!royal || royal.res || royal.noRes) return;
+  const order = nest.chambers.slice().sort((a, b) => a.uid - b.uid);
+  for (const ch of order) {
+    if (!ch || ch.res || ch.noRes) continue;
+    if (!resLevel(s, ch.type)) continue;
+    const geo = ensureGeom(s, d);
+    const j = nest.chambers.indexOf(ch);
+    const pr = planRes(s, d, geo, ch.type, ch, j, null);
+    const pickable = pr ? pr.anchors.filter((e) => e.ok && (ch.uid !== 1 || e.obst === 0)) : [];
+    // the original Royal Chamber prefers growing left, as in a new game (state.royalRes)
+    const pref = (e) => (ch.uid === 1 && e.anchor === 'tr' ? 0 : 1);
+    pickable.sort((a, b) => a.obst - b.obst || pref(a) - pref(b));
+    if (pickable.length) {
+      ch.res = { ...pickable[0].res };
+      nest.rev++;
+    } else ch.noRes = true;
+  }
+  if (!royal.res && !royal.noRes) royal.noRes = true;
+  rebuild(s, d);
+}
+
 /**
  * Full placement plan used by validatePlacement, the handlers, blueprints and the advisor.
  * @returns {Object} { reason, rect, layer, direct, routeCells, footSoil, footOpen, shaft, cost, work, rel }
  */
 function planPlacement(s, d, type, x, y, opts = {}) {
   const { route = null, relocateUid = 0, shaftCol = null, blueprint = false, ignoreQueue = false, ignoreCost = false,
-    assumeConnected = false, seedCells = null } = opts;
+    assumeConnected = false, seedCells = null, anchor = null, legacyOk = false } = opts;
   const P = { reason: null, rect: null, layer: null, direct: false, routeCells: null, footSoil: [], footOpen: [], shaft: null,
-    cost: null, work: 0, rel: null };
+    cost: null, work: 0, rel: null, res: null, anchor: null, anchors: [] };
   const def = CHAMBERS[type];
   if (!def) return fail(P, 'invalid');
   const geo = G.getGeom(s, d);
@@ -1276,6 +1430,27 @@ function planPlacement(s, d, type, x, y, opts = {}) {
   }
   const rr = ruleCheck(s, geo, def, rect, rel ? rel.ch.uid : 0);
   if (rr) return fail(P, rr);
+  // C137: the full-size room this chamber will grow into is reserved now. A relocated chamber keeps its reservation
+  // size and anchor (unless another anchor is asked for); a chamber without one (older saves) gets one when it fits.
+  {
+    let dims = null;
+    let want = anchor;
+    let soft = legacyOk;
+    if (rel) {
+      const old = rel.ch.res;
+      if (old && isInt(old.w) && isInt(old.h)) {
+        dims = { w: Math.max(old.w, rect.w), h: Math.max(old.h, rect.h) };
+        if (!want) want = G.anchorOf(rel.ch, old);
+      } else soft = true;
+    }
+    const pr = planRes(s, d, geo, type, rect, relIdx, want, dims);
+    if (pr) {
+      P.anchors = pr.anchors;
+      P.anchor = pr.anchor;
+      if (pr.res) P.res = pr.res;
+      else if (!soft) return fail(P, pr.reason || 'resv:bounds');
+    }
+  }
   const cells = s.run.nest.cells;
   const soil = [];
   for (const c of rc) {
@@ -1364,6 +1539,8 @@ function executePlacement(s, d, type, P, env, blueprint = false) {
   const uid = nest.nextUid++;
   const ch = { uid, type, k: countType(s, type), x: r.x, y: r.y, w: r.w, h: r.h, level: 0, target: 1, status: 'digging',
     blueprint: !!blueprint, bornAt: s.run.time };
+  if (P.res) ch.res = { x: P.res.x, y: P.res.y, w: P.res.w, h: P.res.h }; // C137
+  else if (resLevel(s, type)) ch.noRes = true;
   markShaftPass(s, d, r);
   nest.chambers.push(ch);
   for (const c of P.footOpen) nest.cells[c] = CELL.CHAMBER;
@@ -1395,6 +1572,9 @@ function executeRelocation(s, d, P, env) {
   }
   ch.x = nr.x;
   ch.y = nr.y;
+  // C137: the reservation moves with the chamber (a legacy chamber gains one when the new spot has room).
+  if (P.res) { ch.res = { x: P.res.x, y: P.res.y, w: P.res.w, h: P.res.h }; delete ch.noRes; }
+  else if (ch.res) { delete ch.res; ch.noRes = true; }
   ch.status = 'relocating';
   for (const c of G.rectCells(nr.x, nr.y, nr.w, nr.h)) if (G.isOpenCode(nest.cells[c])) nest.cells[c] = CELL.CHAMBER;
   const job = { uid: nest.nextUid++, kind: 'relocate', chamber: ch.uid, cells: [...(P.routeCells || []), ...P.footSoil], cur: 0,
@@ -1457,7 +1637,7 @@ function growthCheck(s, d, geo, ch, j, hd, vd, dw, dh) {
 function planLevel(s, d, ch, dir, { ignoreQueue = false, ignoreCost = false } = {}) {
   const P = { reason: null, cost: null, grows: false, rect: null, growSoil: [], growOpen: [], work: 0,
     dirs: { left: false, right: false, up: false, down: false }, dirRects: { left: null, right: null, up: null, down: null },
-    blocked: false, max: false, royalRoom: false };
+    blocked: false, max: false, royalRoom: false, reserved: false, blockWhy: null };
   const def = CHAMBERS[ch.type];
   if (!def) return fail(P, 'invalid');
   const maxL = effMaxL(s, def);
@@ -1466,7 +1646,48 @@ function planLevel(s, d, ch, dir, { ignoreQueue = false, ignoreCost = false } = 
   P.grows = !!def.grows && ch.level >= 1 && ch.level < GEOM.footprintMaxL && !P.max;
   let choice = null;
   let dirReason = null;
-  if (P.grows) {
+  // C137: a chamber with a reservation grows toward it in a fixed order (the next level's footprint in the same corner
+  // of the reserved rectangle); no side to pick. Growth past the reservation (the Royal Chamber above its Flight
+  // level) falls back to the legacy side choice below.
+  const R = ch.res;
+  if (P.grows && R && isInt(R.x) && isInt(R.y) && isInt(R.w) && isInt(R.h)) {
+    const fp = G.footprint(ch.type, ch.level + 1);
+    const a = G.anchorOf(ch, R);
+    if (a && fp.w <= R.w && fp.h <= R.h) {
+      P.reserved = true;
+      const w2 = Math.max(ch.w, fp.w);
+      const h2 = Math.max(ch.h, fp.h);
+      if (w2 === ch.w && h2 === ch.h) P.grows = false;
+      else {
+        const geo = G.getGeom(s, d);
+        const j = s.run.nest.chambers.indexOf(ch);
+        const nr = G.anchorRect(R, a, w2, h2);
+        const soil = [];
+        const open = [];
+        let why = null;
+        for (const c of G.rectCells(nr.x, nr.y, nr.w, nr.h)) {
+          if (G.inRect(ch, c)) continue;
+          const b = cellBlock(s, geo, c, j);
+          if (b) { why = b; break; }
+          if (G.isOpenCode(s.run.nest.cells[c])) open.push(c);
+          else soil.push(c);
+        }
+        P.rect = { ...nr };
+        if (why) {
+          P.blocked = true;
+          P.blockWhy = why;
+          dirReason = why;
+        } else {
+          choice = { rect: nr, soil, open };
+          P.growOpen = open;
+          P.growSoil = orderCells(geo, soil, null);
+          const ctx = G.workCtx(s);
+          for (const c of P.growSoil) P.work += G.workAt(ctx, c, 'grow');
+        }
+      }
+    }
+  }
+  if (P.grows && !P.reserved) {
     const geo = G.getGeom(s, d);
     const j = s.run.nest.chambers.indexOf(ch);
     const fp = G.footprint(ch.type, ch.level + 1);
@@ -1656,6 +1877,12 @@ function royalRoom(s, d, { relUid = 0, rect = null, level = 0 } = {}) {
   const target = num(FLIGHT.royalLevel) || 5;
   if (!royal || num(royal.level) >= target) return null;
   if (relUid === 1 && !rect) return null;
+  // C137: a Royal Chamber with a reservation holding its Flight-level room has exactly that room: nothing else may
+  // be placed, grow or tunnel into it (water cannot be moved there, boulders are kept out of it), so it stays free.
+  if (!rect && royal.res && isInt(royal.res.w)) {
+    const fpT = G.footprint('royal_chamber', target);
+    if (royal.res.w >= fpT.w && royal.res.h >= fpT.h && G.anchorOf(royal, royal.res)) return { free: [{ ...royal.res }] };
+  }
   const R0 = rect || royal;
   // A growing Royal Chamber already has its next footprint: count the steps from that level.
   const Lc = Math.max(1, Math.floor(level || Math.max(num(royal.level), num(royal.target))));
@@ -1691,6 +1918,9 @@ function royalRoom(s, d, { relUid = 0, rect = null, level = 0 } = {}) {
       const o = chs[j];
       if (o && o.uid !== 1 && o.uid !== relUid) return true;
     }
+    // C137: another chamber's reserved room becomes that chamber.
+    const rj = geo._resv ? geo._resv[c] : -1;
+    if (rj >= 0 && chs[rj] && chs[rj].uid !== 1 && chs[rj].uid !== relUid) return true;
     // C125: shafts pass through chambers, so only their top rows (which the Royal row rule never reaches) are permanent.
     if ((geo._shaft[c] || shaftJob[c]) && c < G.SHAFT_KEEP_ROWS * COLS) return true;
     const code = cells[c];
@@ -1801,7 +2031,7 @@ function placementMods(s, d, type, P, relUid) {
     const now = royalRoom(s, d);
     const there = royalRoom(s, d, { relUid: 1, rect: r });
     if (now && now.free.length && there && !there.free.length) mods.push({ key: 'royalRoom', value: true });
-  } else if (blocksRoyalGrowth(s, r, relUid, { d, cells: P.shaft ? shaftCells(r, P.shaft.col) : null })) {
+  } else if (blocksRoyalGrowth(s, P.res || r, relUid, { d, cells: P.shaft ? shaftCells(r, P.shaft.col) : null })) {
     mods.push({ key: 'royalRoom', value: true });
   }
   if (!def.frostImmune && G.exposedTo(r, hardFrostRow(s, d))) mods.push({ key: 'frostExposed', value: CHAMBER_RULES.frostMult });
@@ -1870,8 +2100,20 @@ function minOver(arr, r) {
  * @param {{ route?: number[]|null, relocateUid?: number, shaftCol?: number|null }} [opts]
  * @returns {Object} PlacementResult
  */
-export function validatePlacement(s, d, type, x, y, { route = null, relocateUid = 0, shaftCol = null } = {}) {
-  const P = planPlacement(s, d, type, x, y, { route, relocateUid, shaftCol });
+export function validatePlacement(s, d, type, x, y, { route = null, relocateUid = 0, shaftCol = null, anchor = null } = {}) {
+  const P = planPlacement(s, d, type, x, y, { route, relocateUid, shaftCol, anchor });
+  // C137: the full-size outline is shown even when the room itself is refused earlier (no anchors computed yet).
+  let anchors = P.anchors;
+  let resRect = P.res;
+  let anc = P.anchor;
+  if (!anchors.length && P.rect && isInt(x) && isInt(y) && CHAMBERS[type]) {
+    const rel = relocateUid ? findChamber(s, relocateUid) : null;
+    const old = rel && rel.ch.res;
+    const dims = old ? { w: Math.max(old.w, P.rect.w), h: Math.max(old.h, P.rect.h) } : null;
+    const pr = planRes(s, d, G.getGeom(s, d), type, P.rect, rel ? rel.j : -1, anchor || (old ? G.anchorOf(rel.ch, old) : null), dims);
+    if (pr) { anchors = pr.anchors; anc = pr.anchor; const e = pr.anchors.find((a) => a.anchor === pr.anchor); resRect = e ? e.res : null; }
+  }
+  const picked = anchors.find((a) => a.anchor === anc) || null;
   const mods = P.rect ? placementMods(s, d, type, P, relocateUid || 0) : [];
   // C109: which chambers the ghost would link to (and, when relocating, the links it would lose).
   const r = P.rect;
@@ -1896,6 +2138,13 @@ export function validatePlacement(s, d, type, x, y, { route = null, relocateUid 
     rect: P.rect ? { ...P.rect } : null,
     links,
     lost,
+    // C137: the reserved full-size room (res; also shown when refused), the anchor in use, every distinct anchor
+    // [{ anchor, res, ok, reason, obst }] for the F key, and how many stone / water / locked cells inside will hold
+    // growth back until cleared (obstacles).
+    res: resRect ? { ...resRect } : picked ? { ...picked.res } : null,
+    anchor: anc,
+    anchors: anchors.map((a) => ({ ...a, res: { ...a.res } })),
+    obstacles: picked ? picked.obst : 0,
   };
 }
 
@@ -1938,6 +2187,9 @@ export function placementCost(s, type) {
  * (extra, C66): some otherwise valid direction is withheld because it would take the Royal Chamber's last room to
  * reach the Flight level (with blocked, that is the only reason left: level the Royal Chamber to L5 first, or relocate).
  * Extras (C97): dirRects = the rectangle each offered direction grows to (null when not offered), rect = the auto choice.
+ * C137: reserved = the chamber grows into its reserved full-size room in a fixed order (dirs all false, rect = the next
+ * footprint); blockWhy = why that growth waits ('blocked:stone', 'blocked:water', 'blocked:layer', 'blocked:queued' …);
+ * res = the reservation rectangle (null for a legacy chamber).
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number} uid
@@ -1948,13 +2200,17 @@ export function levelInfo(s, d, uid) {
   const f = findChamber(s, uid);
   if (!f) {
     return { cost: null, grows: false, dirs: { left: false, right: false, up: false, down: false },
-      dirRects: { left: null, right: null, up: null, down: null }, rect: null, work: 0, blocked: true, max: true, royalRoom: false };
+      dirRects: { left: null, right: null, up: null, down: null }, rect: null, work: 0, blocked: true, max: true, royalRoom: false,
+      reserved: false, blockWhy: null, res: null };
   }
   const P = planLevel(s, d, f.ch, null, { ignoreQueue: true, ignoreCost: true });
   const dirRects = {};
   for (const k of Object.keys(P.dirRects)) dirRects[k] = P.dirRects[k] ? { ...P.dirRects[k] } : null;
+  const R = f.ch.res;
   return { cost: P.cost, grows: P.grows, dirs: { ...P.dirs }, dirRects, rect: P.rect ? { ...P.rect } : null, work: P.work,
-    blocked: P.grows && P.blocked, max: P.max, royalRoom: P.grows && !P.max && P.royalRoom };
+    blocked: P.grows && P.blocked, max: P.max, royalRoom: P.grows && !P.max && P.royalRoom,
+    // C137: grows into its reservation (no side to pick); blockWhy = the cell reason holding that growth back
+    reserved: !!P.reserved, blockWhy: P.grows && P.blocked ? P.blockWhy : null, res: R ? { x: R.x, y: R.y, w: R.w, h: R.h } : null };
 }
 
 /** Contributing chamber of a type among the adjacency partners (≤ adjPathMax path cells) of chamber index j, or null. */
@@ -2050,6 +2306,11 @@ export function levelGain(s, d, uid) {
       const m = impliedMult(d, 'berths', num(agg.berthsBase));
       line('berths', (L) => fx.berths * pos(L) * eff * m, 'count');
       line('atk', (L) => fx.atk * pos(L) * eff, 'pct', { cap: fx.atkMax });
+      break;
+    }
+    case 'war_hall': {
+      const m = impliedMult(d, 'warBerths', num(agg.warBerthsBase));
+      line('warBerths', (L) => fx.berths * pos(L) * eff * m, 'count');
       break;
     }
     case 'root_aphid_pen':
@@ -2274,7 +2535,7 @@ export function findPlacement(s, d, type) {
   };
   const reserve = [];
   chs.forEach((ch, j) => {
-    if (!ch || !CHAMBERS[ch.type] || ch.level >= GEOM.footprintMaxL) return;
+    if (!ch || !CHAMBERS[ch.type] || ch.level >= GEOM.footprintMaxL || ch.res) return; // C137: a reservation is already hard
     const envs = envelopes(ch.type, ch.x, ch.y, ch.w, ch.h, ch.type === 'royal_chamber');
     const free = envs && envs.find((e) => envFree(e.x, e.y, e.w, e.h, j, ch.type, reserve));
     if (free) reserve.push(free);
@@ -2289,6 +2550,7 @@ export function findPlacement(s, d, type) {
     return !envs || envs.some((e) => envFree(e.x, e.y, e.w, e.h, -1, type, reserve));
   };
   const cands = [];
+  const needRes = resLevel(s, type) > 0;
   const rowMin = effRowMin(s, d, type);
   for (let y = rowMin; y + fp.h - 1 <= def.rowMax && y + fp.h <= ROWS; y++) {
     if (s.run.hardship === 'shallow_soil' && y + fp.h - 1 > DIG.shallowSoilRow) break;
@@ -2303,6 +2565,14 @@ export function findPlacement(s, d, type) {
         if (G.isOpenCode(cells[c])) { if (geo.entDist[c] >= 0) direct = true; } else footWork += G.workAt(ctx, c, 'chamber');
       }
       if (bad || ruleCheck(s, geo, def, rect, 0)) continue;
+      // C137: a spot needs room for its full-size reservation (some anchor); obstacles inside it cost a little.
+      let resObst = 0;
+      if (needRes) {
+        const pr = planRes(s, d, geo, type, rect, -1, null);
+        if (!pr || !pr.res) continue;
+        const e = pr.anchors.find((a) => a.anchor === pr.anchor);
+        resObst = e ? e.obst : 0;
+      }
       let connect = Infinity;
       for (const p of G.perimeter(rect)) {
         if (geo.open[p] && geo.entDist[p] >= 0 && !geo._backfill[p]) { direct = true; break; }
@@ -2327,6 +2597,7 @@ export function findPlacement(s, d, type) {
       if (y <= DIG.floodRows[1]) score += BIG / 20;
       if (inReserve(x, y, fp.w, fp.h)) score += BIG / 15;
       if (boxesRoyal(rect)) score += 3 * BIG;
+      if (resObst > 0) score += BIG / 30 + resObst * 100;
       cands.push({ x, y, score });
     }
   }
@@ -2358,14 +2629,16 @@ export function chamberAtCell(s, d, i) {
 
 /**
  * [q] Cell tooltip data: layer id, cell code, tunnel work, visible cache-hint kind (null unless shown as a hint),
- * water (a revealed pocket cell), root (on a root line), rootOwn (a cultivated root, C118).
+ * water (a revealed pocket cell), root (on a root line), rootOwn (a cultivated root, C118), reserved (C137: the type
+ * of the chamber whose reserved full-size room covers this cell, outside its current footprint; null = none).
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number} i
- * @returns {{ layer: string, code: number, work: number, cache: string|null, water: boolean, root: boolean, rootOwn: boolean }}
+ * @returns {{ layer: string, code: number, work: number, cache: string|null, water: boolean, root: boolean, rootOwn: boolean,
+ *   reserved: string|null }}
  */
 export function cellInfo(s, d, i) {
-  if (!isCell(i)) return { layer: G.layerOf(0), code: CELL.SOIL, work: 0, cache: null, water: false, root: false, rootOwn: false };
+  if (!isCell(i)) return { layer: G.layerOf(0), code: CELL.SOIL, work: 0, cache: null, water: false, root: false, rootOwn: false, reserved: null };
   const geo = G.getGeom(s, d);
   const y = Math.floor(i / COLS);
   const hints = geo === (d && d.nest) && Array.isArray(geo.hints) ? geo.hints : computeHints(s, geo);
@@ -2378,7 +2651,10 @@ export function cellInfo(s, d, i) {
   const water = p >= 0 && !!(s.run.nest.features.water[p] && s.run.nest.features.water[p].revealed) && s.run.nest.cells[i] === CELL.WATER;
   const x = i % COLS;
   const rootOwn = geo._root[i] === 1 && (s.run.nest.features.roots || []).some((r) => r && r.own && r.col === x && y >= r.y0 && y <= r.y1);
-  return { layer: G.layerOf(y), code: s.run.nest.cells[i], work: G.cellWork(s, i, 'tunnel'), cache, water, root: geo._root[i] === 1, rootOwn };
+  const rj = geo._resv ? geo._resv[i] : -1;
+  const rch = rj >= 0 && geo.chamberAt[i] < 0 ? s.run.nest.chambers[rj] : null;
+  return { layer: G.layerOf(y), code: s.run.nest.cells[i], work: G.cellWork(s, i, 'tunnel'), cache, water, root: geo._root[i] === 1, rootOwn,
+    reserved: rch ? rch.type : null };
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -2436,6 +2712,7 @@ function planShaftCells(s, geo, col) {
   const cells = nest.cells;
   const top = G.idx(col, 0);
   if (cells[top] !== CELL.SOIL || geo.chamberAt[top] >= 0 || geo._backfill[top] || !G.isDiggable(s, top)) return null;
+  if (geo._resv && geo._resv[top] >= 0) return null; // C137
   const list = [];
   let connected = false;
   const reach = (c) => geo.open[c] && geo.entDist[c] >= 0;
@@ -2446,6 +2723,7 @@ function planShaftCells(s, geo, col) {
       continue;
     }
     if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || geo._backfill[c] || !G.isDiggable(s, c)) break;
+    if (geo._resv && geo._resv[c] >= 0) break; // C137: a shaft stops above a reserved room (a route joins the nest)
     list.push(c);
     if ((col > 0 && reach(c - 1)) || (col < COLS - 1 && reach(c + 1))) { connected = true; break; }
     if (y >= nest.deepestRow) break;
@@ -2475,7 +2753,7 @@ function planShaftCells(s, geo, col) {
  * waits.
  */
 const BP_PERMANENT = new Set(['invalid', 'invalid:bounds', 'invalid:row', 'invalid:row0', 'invalid:shaft', 'invalid:root',
-  'blocked:water', 'blocked:chamber', 'hardship']);
+  'blocked:water', 'blocked:chamber', 'hardship', 'blocked:reserved', 'resv:bounds', 'resv:row', 'resv:hardship', 'resv:shaft']);
 
 function bpPermanent(s, type, reason) {
   if (BP_PERMANENT.has(reason)) return true;
@@ -2490,9 +2768,39 @@ function bpPermanent(s, type, reason) {
   return false;
 }
 
-/** Try to place one blueprint chamber (half price, fast dig, no queue limit; C66 Royal room kept). Reason or null. */
+/** C138: a pending blueprint spec's access tunnel is queued and not dug out yet. */
+function accessPending(s, sp) {
+  if (!sp || !isInt(sp.access) || !(sp.access > 0)) return false;
+  const job = s.run.nest.queue.find((j) => j && j.uid === sp.access);
+  return !!job && job.cells.some((c) => isCell(c) && !G.isOpenCode(s.run.nest.cells[c]));
+}
+
+/** C137: the anchor a blueprint spec's L1 room has in its saved reservation (null: none saved). */
+function specAnchor(sp) {
+  if (!sp || !sp.res || !CHAMBERS[sp.type]) return null;
+  const fp = G.footprint(sp.type, 1);
+  return G.anchorOf({ x: sp.x, y: sp.y, w: fp.w, h: fp.h }, sp.res);
+}
+
+/** A pending blueprint spec as saved in bpPending: { type, x, y, res?, access?, auto? / float? }. */
+function specOut(sp, extra = null) {
+  const o = { type: sp.type, x: sp.x, y: sp.y };
+  if (sp.res && isInt(sp.res.x)) o.res = { x: sp.res.x, y: sp.res.y, w: sp.res.w, h: sp.res.h };
+  if (isInt(sp.access) && sp.access > 0) o.access = sp.access;
+  return extra ? Object.assign(o, extra) : o;
+}
+
+/**
+ * Try to place one blueprint chamber (half price, fast dig, no queue limit; C66 Royal room kept). Reason or null.
+ * C137: it reserves the saved full-size room (same anchor) when that is free, else the best free anchor, else (an
+ * older layout that does not fit the reservation rules) it goes in without a reservation.
+ */
 function bpPlace(s, d, sp, opts) {
-  const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, ...opts });
+  const anchor = specAnchor(sp);
+  let P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, anchor, legacyOk: true, ...opts });
+  if (!P.reason && anchor && !P.res && resLevel(s, sp.type)) {
+    P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, legacyOk: true, ...opts });
+  }
   if (P.reason) return P.reason;
   // C66: a blueprint never boxes the queen in (a saved layout may have been boxed in before Royal L5).
   if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) return 'blocked:royalRoom';
@@ -2574,6 +2882,7 @@ function bpPass(s, d, specList, tunnelList) {
   const later = [];
   for (const c of tunnelList) {
     if (!isCell(c) || geo.chamberAt[c] >= 0 || geo._queued[c]) continue;
+    if (geo._resv && geo._resv[c] >= 0) continue; // C137: no blueprint tunnel through a reserved room
     const code = nest.cells[c];
     if (code !== CELL.SOIL && code !== CELL.STONE) continue;
     if (G.isDiggable(s, c) && code === CELL.SOIL) tunnel[c] = 1;
@@ -2606,7 +2915,8 @@ function bpPass(s, d, specList, tunnelList) {
     if (rc.some((c) => specAt[c] >= 0)) continue;
     const k = specs.length;
     for (const c of rc) { specAt[c] = k; tunnel[c] = 0; }
-    specs.push({ type: sp.type, x: sp.x, y: sp.y, cells: rc, state: 0, reason: null, auto });
+    specs.push({ type: sp.type, x: sp.x, y: sp.y, cells: rc, state: 0, reason: null, auto, res: sp.res || null,
+      access: isInt(sp.access) ? sp.access : 0 });
   }
   const visited = new Uint8Array(N);
   const q = [];
@@ -2638,6 +2948,14 @@ function bpPass(s, d, specList, tunnelList) {
       } else if (specAt[n] >= 0 && specs[specAt[n]].state === 0) {
         const sp = specs[specAt[n]];
         flush();
+        // C138: a chamber behind its own access tunnel waits until that tunnel is dug.
+        if (accessPending(s, sp)) {
+          sp.state = 2;
+          sp.reason = 'wait:access';
+          for (const k of sp.cells) visited[k] = 1;
+          continue;
+        }
+        sp.access = 0;
         sp.reason = bpPlace(s, d, sp, { assumeConnected: true, seedCells: [c] });
         if (!sp.reason) {
           placed(sp);
@@ -2653,14 +2971,40 @@ function bpPass(s, d, specList, tunnelList) {
     }
   }
   flush();
-  // Unreached spots that nothing in the layout leads to: one auto-routed try (DESIGN §7.2 A* route).
+  // C138: unreached spots. Floating Water Wells get one auto-routed try (DESIGN §7.2 A* route). Any other spot that only
+  // lacks a connection (placeable with the connection assumed, affordable at blueprint price, Royal room kept) gets an
+  // access tunnel queued: the shortest diggable route from the open nest (never through stone, water or a reserved
+  // room), dug at blueprint speed; the chamber waits ('wait:access') and queues once that tunnel is dug.
   for (const sp of specs) {
     if (sp.state !== 0) continue;
-    const fp = G.footprint(sp.type, 1);
-    const linked = !sp.auto && G.perimeter({ x: sp.x, y: sp.y, w: fp.w, h: fp.h }).some((p) => tunnel[p] || (specAt[p] >= 0 && specs[specAt[p]] !== sp));
-    if (linked) continue;
-    sp.reason = bpPlace(s, d, sp, {});
-    if (!sp.reason) placed(sp);
+    if (sp.auto) {
+      sp.reason = bpPlace(s, d, sp, {});
+      if (!sp.reason) placed(sp);
+      continue;
+    }
+    if (accessPending(s, sp)) { sp.reason = 'wait:access'; continue; }
+    sp.access = 0;
+    const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
+      anchor: specAnchor(sp), legacyOk: true });
+    if (P.reason) { sp.reason = P.reason; continue; }
+    if (blocksRoyalGrowth(s, P.res || P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
+      sp.reason = 'blocked:royalRoom';
+      continue;
+    }
+    const r = G.routeTo(s, d, sp.cells);
+    if (!r) { sp.reason = 'wait:path'; continue; }
+    if (!r.cells.length) {
+      sp.reason = bpPlace(s, d, sp, {});
+      if (!sp.reason) placed(sp);
+      continue;
+    }
+    const uid = nest.nextUid++;
+    nest.queue.push({ uid, kind: 'tunnel', chamber: 0, cells: r.cells.slice(), cur: 0, prog: 0, paidFood: 0, blueprint: true, bpAccess: true });
+    nest.rev++;
+    jobs++;
+    geo = ensureGeom(s, d);
+    sp.access = uid;
+    sp.reason = 'wait:access';
   }
   const pending = [];
   for (const sp of specs) {
@@ -2671,7 +3015,7 @@ function bpPass(s, d, specList, tunnelList) {
       continue;
     }
     if (sp.reason && bpPermanent(s, sp.type, sp.reason)) dropped.push({ type: sp.type, x: sp.x, y: sp.y, reason: sp.reason });
-    else pending.push(sp.auto ? { type: sp.type, x: sp.x, y: sp.y, auto: true } : { type: sp.type, x: sp.x, y: sp.y });
+    else pending.push(sp.auto ? specOut(sp, { auto: true }) : specOut(sp));
   }
   for (const f of floats) pending.push(f);
   const tunnels = later.slice();
@@ -2688,23 +3032,43 @@ function bpPass(s, d, specList, tunnelList) {
  * C106: chambers that are locked, unaffordable or otherwise not placeable yet are kept as pending blueprint chambers
  * (s.run.nest.bpPending, with the tunnels behind them in bpTunnels) and queue themselves later (see bpTick); spots that
  * can never be used this run (water, out of bounds, a seeded rule) are dropped. Chambers go in at their L1 footprint
- * at the saved top-left corner.
+ * at the saved top-left corner (C137: at the saved L1 corner of their saved reservation, which they reserve again).
+ * C139 (`now`): "Use" pressed during a run applies the blueprint at once: the Royal Chamber stays where it is, spots an
+ * existing chamber of the same type already covers are skipped quietly, Water Wells already built count against the
+ * blueprint's, and this pass replaces the pending list.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
+ * @param {{ now?: boolean }} [opts]
  * @returns {number} jobs queued
  */
-export function applyBlueprint(s, d) {
+export function applyBlueprint(s, d, { now = false } = {}) {
   const era = s.era;
   const bi = era.activeBlueprint;
   if (!isInt(bi) || bi < 0 || !Array.isArray(era.blueprints) || !era.blueprints[bi]) return 0;
   const bp = era.blueprints[bi];
   const nest = s.run.nest;
   // C119: the Royal Chamber first (blueprint chambers may sit where the default one is), then the Water Wells.
-  if (bp.royal && typeof bp.royal === 'object') placeRoyal(s, d, bp.royal);
-  const specs = wellSpecs(s, d, Array.isArray(bp.chambers) ? bp.chambers : []);
+  if (!now && bp.royal && typeof bp.royal === 'object') placeRoyal(s, d, bp.royal);
+  let list = Array.isArray(bp.chambers) ? bp.chambers : [];
+  if (now) {
+    const geo = ensureGeom(s, d);
+    let wells = countType(s, 'water_well');
+    list = list.filter((sp) => {
+      if (!sp || !CHAMBERS[sp.type] || !isInt(sp.x) || !isInt(sp.y)) return false;
+      if (sp.type === 'water_well') return wells-- <= 0;
+      const fp = G.footprint(sp.type, 1);
+      for (const c of G.rectCells(sp.x, sp.y, fp.w, fp.h)) {
+        const j = geo.chamberAt[c];
+        if (j >= 0 && nest.chambers[j].type === sp.type) return false; // already built
+      }
+      return true;
+    });
+  }
+  const specs = wellSpecs(s, d, list);
   const r = bpPass(s, d, specs, Array.isArray(bp.tunnels) ? bp.tunnels : []);
   nest.bpPending = r.pending;
   nest.bpTunnels = r.pending.length ? r.tunnels : [];
+  if (now) for (const x of r.dropped) bpNote(s, x.type, x.x, x.y, x.reason);
   return r.jobs;
 }
 
@@ -2770,7 +3134,9 @@ function placeRoyal(s, d, spot) {
     return;
   }
   const bak = nest.cells.slice();
-  const old = { x: ch.x, y: ch.y };
+  const old = { x: ch.x, y: ch.y, res: ch.res ? { ...ch.res } : null, noRes: !!ch.noRes };
+  delete ch.res;
+  delete ch.noRes;
   const keepOpen = nest.chambers.some((c) => c.uid !== 1 && c.type === 'royal_chamber');
   for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) nest.cells[c] = keepOpen ? CELL.TUNNEL : CELL.SOIL;
   ch.x = spot.x;
@@ -2793,6 +3159,14 @@ function placeRoyal(s, d, spot) {
     }
   }
   if (!fail) {
+    // C137: reserve its Flight-level room again (the saved reservation when it fits, else any obstacle-free corner).
+    const g2 = ensureGeom(s, d);
+    const j = nest.chambers.indexOf(ch);
+    const want = spot.res ? G.anchorOf({ x: ch.x, y: ch.y, w: ch.w, h: ch.h }, spot.res) : null;
+    const pr = planRes(s, d, g2, 'royal_chamber', ch, j, null);
+    const ok = pr ? pr.anchors.filter((e) => e.ok && e.obst === 0) : [];
+    const pick = ok.find((e) => e.anchor === want) || ok[0];
+    if (pick) { ch.res = { ...pick.res }; nest.rev++; rebuild(s, d); } else ch.noRes = true;
     const room = royalRoom(s, d);
     if (room && !room.free.length) fail = 'blocked:royalRoom';
   }
@@ -2800,6 +3174,10 @@ function placeRoyal(s, d, spot) {
     for (let i = 0; i < N; i++) nest.cells[i] = bak[i];
     ch.x = old.x;
     ch.y = old.y;
+    delete ch.res;
+    delete ch.noRes;
+    if (old.res) ch.res = old.res;
+    if (old.noRes) ch.noRes = true;
     nest.rev++;
     rebuild(s, d);
     bpNote(s, 'royal_chamber', spot.x, spot.y, 'royal:kept:' + fail);
@@ -2905,7 +3283,9 @@ export function plannedChambers(s) {
   for (const sp of Array.isArray(s.run.nest.bpPending) ? s.run.nest.bpPending : []) {
     if (!sp || !CHAMBERS[sp.type] || !isInt(sp.x) || !isInt(sp.y) || sp.float || (sp.type === 'water_well' && !sp.auto)) continue; // C119: floating Wells have no spot yet
     const fp = G.footprint(sp.type, 1);
-    out.push({ type: sp.type, x: sp.x, y: sp.y, w: fp.w, h: fp.h });
+    const o = { type: sp.type, x: sp.x, y: sp.y, w: fp.w, h: fp.h };
+    if (sp.res && isInt(sp.res.x)) o.res = { x: sp.res.x, y: sp.res.y, w: sp.res.w, h: sp.res.h }; // C137 planned full-size room
+    out.push(o);
   }
   return out;
 }
@@ -2933,17 +3313,22 @@ function waitOf(s, d, sp) {
     at = wellTarget(s, d, sp, []);
     if (!at) return { ...base, code: 'wait:water', detail: null };
   }
-  const P = planPlacement(s, d, sp.type, at.x, at.y, { blueprint: true, ignoreQueue: true, assumeConnected: true });
+  const P = planPlacement(s, d, sp.type, at.x, at.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
+    anchor: specAnchor(sp), legacyOk: true });
   if (P.reason === 'cantAfford') return { ...base, code: 'cantAfford', detail: { cost: P.cost } };
   if (P.reason) return { ...base, code: P.reason, detail: null };
   if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
     return { ...base, code: 'blocked:royalRoom', detail: null };
   }
+  // C138: its access tunnel is queued and still being dug.
+  if (accessPending(s, sp)) return { ...base, code: 'wait:access', detail: null };
   const geo = G.getGeom(s, d);
   const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
   const r = P.rect;
   const near = G.rectCells(r.x, r.y, r.w, r.h).some(reach) || G.perimeter(r).some(reach);
-  return { ...base, code: near ? 'wait:next' : 'wait:path', detail: null };
+  if (near || sp.float || sp.auto) return { ...base, code: near ? 'wait:next' : 'wait:path', detail: null };
+  // Not connected yet: the next re-check queues an access tunnel when one can be dug (wait:next), else wait:path.
+  return { ...base, code: G.routeTo(s, d, G.rectCells(r.x, r.y, r.w, r.h)) ? 'wait:next' : 'wait:path', detail: null };
 }
 
 /**
@@ -3110,6 +3495,8 @@ function planTunnel(s, d, list) {
     if (code === CELL.WATER) return { reason: 'blocked:water' };
     if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return { reason: 'blocked:stone' };
     if (geo.chamberAt[c] >= 0) return { reason: 'blocked:chamber' };
+    // C137: no new tunnels through a chamber's reserved room (tunnels dug before it was reserved stay).
+    if (geo._resv && geo._resv[c] >= 0) return { reason: 'blocked:reserved' };
     if (s.run.hardship === 'shallow_soil' && Math.floor(c / COLS) > DIG.shallowSoilRow) return { reason: 'hardship' };
     if (!G.isDiggable(s, c)) return { reason: 'blocked:layer' };
     soil.push(c);
@@ -3127,6 +3514,7 @@ function planDigTo(s, d, cell) {
   const cells = s.run.nest.cells;
   if (geo.open[cell]) return { reason: 'invalid' };
   if (cells[cell] !== CELL.SOIL || geo.chamberAt[cell] >= 0 || geo._backfill[cell]) return { reason: 'blocked' };
+  if (geo._resv && geo._resv[cell] >= 0) return { reason: 'blocked:reserved' }; // C137
   if (s.run.hardship === 'shallow_soil' && Math.floor(cell / COLS) > DIG.shallowSoilRow) return { reason: 'hardship' };
   if (!G.isDiggable(s, cell)) return { reason: 'blocked:layer' };
   const r = G.routeTo(s, d, [cell]);
@@ -3356,12 +3744,23 @@ function removePlanned(s, cell, all) {
 function snapshotBlueprint(s, d, name) {
   const geo = ensureGeom(s, d);
   const nest = s.run.nest;
-  const chambers = nest.chambers.filter((ch) => ch.uid !== 1)
-    .map((ch) => ({ type: ch.type, x: ch.x, y: ch.y, w: ch.w, h: ch.h, level: ch.level }));
+  // C137: a chamber with a reservation is saved by its L1 room (the corner of the reservation it started in) and the
+  // reservation itself, so the next run reserves the same full-size room and grows the same way.
+  const chambers = nest.chambers.filter((ch) => ch.uid !== 1).map((ch) => {
+    const a = ch.res ? G.anchorOf(ch, ch.res) : null;
+    if (!a) return { type: ch.type, x: ch.x, y: ch.y, w: ch.w, h: ch.h, level: ch.level };
+    const fp = G.footprint(ch.type, 1);
+    const room = G.anchorRect(ch.res, a, fp.w, fp.h);
+    return { type: ch.type, x: room.x, y: room.y, w: ch.w, h: ch.h, level: ch.level, res: { ...ch.res } };
+  });
   const tunnels = [];
   for (let i = 0; i < N; i++) if (nest.cells[i] === CELL.TUNNEL && geo.chamberAt[i] < 0 && geo._shaft[i] !== 1) tunnels.push(i);
   const r = nest.chambers.find((ch) => ch.uid === 1 && ch.type === 'royal_chamber');
-  return r ? { name, chambers, tunnels, royal: { x: r.x, y: r.y } } : { name, chambers, tunnels };
+  if (!r) return { name, chambers, tunnels };
+  const ra = r.res ? G.anchorOf(r, r.res) : null;
+  if (!ra) return { name, chambers, tunnels, royal: { x: r.x, y: r.y } };
+  const room = G.anchorRect(r.res, ra, CHAMBERS.royal_chamber.w0, CHAMBERS.royal_chamber.h0);
+  return { name, chambers, tunnels, royal: { x: room.x, y: room.y, res: { ...r.res } } };
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -3374,17 +3773,18 @@ function validSlot(s, slot) {
 
 /** Nest command handlers (validate is pure; apply mutates). */
 export const handlers = {
-  /** placeChamber { chamber, x, y, route?, shaftCol? } */
+  /** placeChamber { chamber, x, y, route?, shaftCol?, anchor? } (C137 anchor 'tl'|'tr'|'bl'|'br'; omitted = auto) */
   placeChamber: {
     validate(s, d, cmd) {
       if (typeof cmd.chamber !== 'string' || !CHAMBERS[cmd.chamber]) return 'invalid';
       if (!isInt(cmd.x) || !isInt(cmd.y)) return 'invalid';
       if (cmd.route !== undefined && cmd.route !== null && !Array.isArray(cmd.route)) return 'invalid:route';
       if (cmd.shaftCol !== undefined && cmd.shaftCol !== null && !isInt(cmd.shaftCol)) return 'invalid:shaftCol';
-      return planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null }).reason;
+      if (cmd.anchor !== undefined && cmd.anchor !== null && !G.ANCHORS.includes(cmd.anchor)) return 'invalid:anchor';
+      return planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null, anchor: cmd.anchor ?? null }).reason;
     },
     apply(s, d, cmd, env) {
-      const P = planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null });
+      const P = planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null, anchor: cmd.anchor ?? null });
       if (P.reason) return;
       executePlacement(s, d, cmd.chamber, P, env, false);
     },
@@ -3408,19 +3808,20 @@ export const handlers = {
     },
   },
 
-  /** relocateChamber { uid, x, y, route? } */
+  /** relocateChamber { uid, x, y, route?, anchor? } (C137: the reservation moves along; anchor omitted = keep) */
   relocateChamber: {
     validate(s, d, cmd) {
       if (!isInt(cmd.uid) || !isInt(cmd.x) || !isInt(cmd.y)) return 'invalid';
       if (cmd.route !== undefined && cmd.route !== null && !Array.isArray(cmd.route)) return 'invalid:route';
+      if (cmd.anchor !== undefined && cmd.anchor !== null && !G.ANCHORS.includes(cmd.anchor)) return 'invalid:anchor';
       const f = findChamber(s, cmd.uid);
       if (!f) return 'notFound';
-      return planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid }).reason;
+      return planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid, anchor: cmd.anchor ?? null }).reason;
     },
     apply(s, d, cmd, env) {
       const f = findChamber(s, cmd.uid);
       if (!f) return;
-      const P = planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid });
+      const P = planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid, anchor: cmd.anchor ?? null });
       if (P.reason) return;
       executeRelocation(s, d, P, env);
     },
@@ -3635,7 +4036,11 @@ export const handlers = {
     },
   },
 
-  /** loadBlueprint { slot }: make it the active blueprint (queued at the next run start). */
+  /**
+   * loadBlueprint { slot }: make it the active blueprint (queued at every run start) and, C139, apply it now as well
+   * (a player who forgot to pick it before the Flight presses Use during the run: what can be queued is, the rest waits
+   * as planned chambers).
+   */
   loadBlueprint: {
     validate(s, d, cmd) {
       if (!blueprintsAllowed(s)) return 'locked';
@@ -3645,6 +4050,9 @@ export const handlers = {
     },
     apply(s, d, cmd) {
       s.era.activeBlueprint = cmd.slot;
+      applyBlueprint(s, d, { now: true });
+      s.run.nest.rev++;
+      rebuild(s, d);
     },
   },
 

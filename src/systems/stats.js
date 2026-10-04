@@ -245,7 +245,8 @@ export function recompute(s, d, env) {
   let slots = 0;
   if (Array.isArray(agg.broodGroups)) for (const g of agg.broodGroups) if (g) slots += Math.max(0, num(g.cap));
   st.broodSlots = clampNum(slots * cs);
-  st.berths = clampNum(num(agg.berthsBase) * cs);
+  st.berths = clampNum(num(agg.berthsBase) * cs); // C136: Barracks berths, soldiers only
+  st.warBerths = clampNum(num(agg.warBerthsBase) * cs); // C136: War Hall berths, supermajors only
   st.repleteBerths = clampNum(num(agg.repleteBerthsBase) * cs);
   st.alateCells = clampNum(num(agg.alateCells));
   st.gardenerSlots = clampNum(num(agg.gardenerSlots) * cs);

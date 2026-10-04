@@ -5,7 +5,7 @@
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtMult, fmtRate } from '../format.js';
-import { nameOf, CHAMBER_TIPS, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText,
+import { nameOf, CHAMBER_TIPS, CHAMBER_ABOUT, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText,
   plannedWaitText } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks, unneededTunnels, pocketAction, pocketAt,
@@ -27,14 +27,20 @@ const GRID_COLS = (GRID && GRID.cols) || 40;
 
 /** Chamber ids when data/chambers.js is still empty (DESIGN §7.6 order). */
 export const CHAMBER_FALLBACK = Object.freeze(['royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks',
-  'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber', 'deep_vault']);
+  'war_hall', 'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber', 'deep_vault']);
 /** Default instance limits when data is missing (DESIGN §7.6). */
 const MAX_INST_FALLBACK = Object.freeze({ royal_chamber: 1, gallery: 4, nursery: 3, granary: 3, scent_library: 2, midden: 2, barracks: 2,
-  root_aphid_pen: 2, fungus_garden: 3, repletion_hall: 2, hibernaculum: 2, thermal_chimney: 1, gate: 1, water_well: 'perPocket',
+  war_hall: 2, root_aphid_pen: 2, fungus_garden: 3, repletion_hall: 2, hibernaculum: 2, thermal_chimney: 1, gate: 1, water_well: 'perPocket',
   nuptial_chamber: 1, deep_vault: 1 });
 const DIRS = ['left', 'right', 'up', 'down'];
 const DIR_LABELS = { left: '← Left', right: 'Right →', up: '↑ Up', down: '↓ Down' };
 const STATUS_NAMES = { digging: 'Digging', active: 'Active', growing: 'Enlarging', relocating: 'Relocating' };
+
+/** C137: does this chamber type reserve a full-size room (it grows)? */
+function resGrows(type) {
+  const c = CHAMBERS[type];
+  return !!(c && c.grows);
+}
 
 /** Chamber ids in display order. */
 function chamberIds() {
@@ -53,10 +59,31 @@ export function levelMessage(info, ch) {
   if (!info) return '';
   if (info.max) return 'Maximum level.';
   if (info.blocked && info.royalRoom) return reasonText('blocked:royalRoom', 'levelChamber');
+  // C137: growth into the reserved room waits for whatever sits in the next row or column
+  if (info.blocked && info.reserved) return reservedBlockText(info.blockWhy);
   if (info.blocked) return 'No room to grow: relocate it or clear space around it.';
   if (ch && ch.status !== 'active') return 'Finish digging before the next level.';
   if (info.royalRoom) return 'Some directions are held back so the Royal Chamber keeps room to reach L' + num(FLIGHT && FLIGHT.royalLevel, 5) + '.';
   return '';
+}
+
+/**
+ * C137: why growth into a chamber's reserved room waits (the next row or column holds stone, water, a closed layer,
+ * cells still queued or being backfilled).
+ * @param {string|null} why levelInfo.blockWhy
+ * @returns {string}
+ */
+export function reservedBlockText(why) {
+  const what = {
+    'blocked:stone': 'stone (Acid Excavation digs it)',
+    'blocked:water': 'a water pocket (drain or move it)',
+    'blocked:layer': 'a closed layer',
+    'blocked:queued': 'cells still queued for digging',
+    'blocked:backfill': 'cells being backfilled',
+    'blocked:shaft': 'a shaft entrance',
+    hardship: 'the Hardship depth limit',
+  }[why];
+  return 'Growth waits: its reserved space holds ' + (what || 'something in the way') + ' where the next level goes.';
 }
 
 /**
@@ -83,6 +110,15 @@ export function overCapHint(cost, d) {
 export function growthText(ch, info) {
   if (!ch || !info || info.max) return '';
   if (!info.grows) return 'The footprint stays the same: the new level works at once.';
+  if (info.reserved && info.rect) {
+    // C137: the next row or column inside its reserved full-size room (a fixed order, no side to pick)
+    const r = info.rect;
+    const side = r.x < ch.x ? 'left' : r.x + r.w > ch.x + ch.w ? 'right' : r.y < ch.y ? 'up' : 'down';
+    const what = r.w > ch.w ? 'one column' : 'one row';
+    const cells = r.w * r.h - ch.w * ch.h;
+    return 'Grows ' + what + ' ' + (side === 'up' || side === 'down' ? side + 'ward' : 'to the ' + side) + ' into its reserved space (+'
+      + fmtCount(cells) + ' cells to dig). The level counts once they are dug.';
+  }
   if (info.blocked || !info.rect) return 'Needs one more row or column, but every side is blocked.';
   const r = info.rect;
   const side = r.x < ch.x ? 'left' : r.x + r.w > ch.x + ch.w ? 'right' : r.y < ch.y ? 'up' : 'down';
@@ -155,16 +191,18 @@ export function cheapestButton(s, d, type, { selectedUid = 0, compact = false } 
   const g = q(() => levelGain(s, d, c.uid), null);
   const lines = g && !g.max ? g.lines.map(levelGainText).filter(Boolean) : [];
   const head = many ? (self ? 'This one is the cheapest to level. ' : 'Levels the cheapest ' + nameOf('chamber', type) + ': ') : '';
+  // C142: L levels the cheapest of the type, Shift+L the selected one
   const tip = head + 'L' + fmtCount(num(c.level)) + ' → L' + fmtCount(num(c.level) + 1) + ': ' + (lines.join('; ') || 'next level')
-    + '. Cost ' + costText(c.cost) + '.' + (many ? ' Key: Shift+L with a ' + nameOf('chamber', type) + ' selected.' : ' Key: L with it selected.');
-  const label = compact ? (many ? 'Lvl cheapest' : 'Lvl up') + (short ? ' · ' + short : '') : 'Level cheapest (Shift+L)';
+    + '. Cost ' + costText(c.cost) + '.' + (many ? ' Key: L with a ' + nameOf('chamber', type) + ' selected.' : ' Key: L with it selected.');
+  const label = compact ? (many ? 'Lvl cheapest' : 'Lvl up') + (short ? ' · ' + short : '') : 'Level cheapest (L)';
   return { show: compact ? true : many, uid: c.uid, label, tip, ok: q(() => canPay(s, c.cost), true), self };
 }
 
 /**
- * Chamber hotkeys (C108; DESIGN §25.4): with a chamber selected in the nest, L levels it, Shift+L levels the cheapest
- * chamber of its type, G picks the growth side (levelDir tool), R relocates it. R stays Rally when a trail is selected
- * (the caller checks the trail first). null = not a chamber hotkey.
+ * Chamber hotkeys (C108; DESIGN §25.4; C142 swap): with a chamber selected in the nest, L levels the cheapest chamber of
+ * its type, Shift+L levels the selected one, G picks the growth side (levelDir tool; legacy chambers without a
+ * reservation only, C137), R relocates it. R stays Rally when a trail is selected (the caller checks the trail first).
+ * null = not a chamber hotkey.
  * @param {string} key KeyboardEvent.key
  * @param {boolean} shift
  * @param {Object|null} sel uistate selection
@@ -175,7 +213,7 @@ export function chamberHotkey(key, shift, sel) {
   const uid = num(sel.id, 0);
   if (!(uid > 0)) return null;
   const k = String(key || '').toLowerCase();
-  if (k === 'l') return { kind: shift ? 'levelCheapest' : 'level', uid };
+  if (k === 'l') return { kind: shift ? 'level' : 'levelCheapest', uid };
   if (k === 'g' && !shift) return { kind: 'levelDir', uid };
   if (k === 'r' && !shift) return { kind: 'relocate', uid };
   return null;
@@ -201,11 +239,35 @@ export function chamberHotkeyAction(s, d, hk) {
   if (hk.kind === 'levelDir') {
     const info = q(() => levelInfo(s, d, ch.uid), null);
     if (!info || info.max) return { reject: 'Maximum level.' };
-    if (!info.grows) return { reject: 'Its footprint does not grow: press L to level it.' };
+    if (info.reserved) return { reject: 'It grows into its reserved space: no side to pick. Shift+L levels it.' };
+    if (!info.grows) return { reject: 'Its footprint does not grow: press Shift+L to level it.' };
     return { tool: { kind: 'levelDir', uid: ch.uid } };
   }
   if (hk.kind === 'relocate') return { tool: { kind: 'relocate', uid: ch.uid } };
   return null;
+}
+
+/**
+ * C142 (Q key): the chamber under the cursor (or the selected one) picks its type in the Build tool, to place another.
+ * Refused with a reason when that type is locked or at its instance limit. null = not a chamber reference.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {Object|null} ref uistate hover or selection ({ view: 'nest', kind: 'chamber'|'nursery'|'queen', id: uid })
+ * @returns {null | { tool?: { kind: 'placeChamber', chamber: string }, reject?: string }}
+ */
+export function placeAnotherAction(s, d, ref) {
+  if (!ref || ref.view !== 'nest' || !(ref.kind === 'chamber' || ref.kind === 'nursery' || ref.kind === 'queen') || !s || !s.run) return null;
+  const uid = num(ref.id, 0);
+  const ch = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === uid);
+  if (!ch) return null;
+  const name = nameOf('chamber', ch.type);
+  const key = chamberKey(ch.type);
+  if (key && !(s.run.unlocked && s.run.unlocked[key])) return { reject: name + ' is not unlocked yet: ' + unlockHint(key) };
+  const have = arr(s.run.nest.chambers).filter((c) => c && c.type === ch.type).length;
+  const max = maxInstances(s, ch.type);
+  if (have >= max) return { reject: name + ' limit reached (' + fmtCount(have) + '/' + fmtCount(max) + ').' };
+  void d;
+  return { tool: { kind: 'placeChamber', chamber: ch.type } };
 }
 
 /** Unlock key of a chamber type (data `unlock`, else 'chamber_<id>'; the Royal Chamber has none). */
@@ -383,7 +445,7 @@ export function createPanel(root, { game, ui, bridge }) {
   const plannedBox = h('div', { class: 'planned-box' }, h('div', { class: 'row-between' }, h('span', { class: 'sub-title', text: 'Planned (waiting)' }), plannedAll),
     plannedList);
   const bpSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Blueprints' }),
-    h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster.' }), plannedBox, bpList);
+    h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster. Use applies one now as well.' }), plannedBox, bpList);
 
   // camera help for the nest view (render/nestInput.js; the full list is in Settings → Keyboard and view controls)
   const viewHelp = note('Nest view: wheel scrolls, Ctrl + wheel or pinch zooms, the crown button (top-right) frames the queen.');
@@ -419,7 +481,7 @@ export function createPanel(root, { game, ui, bridge }) {
     dirRow.appendChild(b);
   }
   // C122: the chamber hotkeys (C108) are named on the buttons.
-  const levelBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Level up (L)',
+  const levelBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Level up (Shift+L)',
     on: { click: (ev) => { const uid = selectedUid(); if (uid) act('levelChamber', { uid }, ev, levelBtn); } } });
   const pickDirBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Grow direction… (G)',
     dataset: { tip: 'Pick the side to grow on the map: click the edge (key G).' },
@@ -432,7 +494,9 @@ export function createPanel(root, { game, ui, bridge }) {
     on: { click: (ev) => { const ch = selectedChamber(); const c = ch ? q(() => cheapestLevel(game.s, game.d, ch.type), null) : null; if (c) act('levelChamber', { uid: c.uid }, ev, cheapInspBtn); } } });
   const demolishBtn = armedButton('Demolish', (ev, b) => { const uid = selectedUid(); if (uid) { const r = act('demolishChamber', { uid }, ev, b); if (r.ok) bridge.select(null); } });
   const inspEmpty = note('Click a chamber in the nest to inspect it.');
-  const inspSec = h('section', { class: 'sec inspect' }, h('div', { class: 'row-between' }, inspTitle, inspStatus), inspProgress.el, inspKv,
+  // C141: what this chamber does, at the top
+  const inspAbout = h('p', { class: 'note insp-about' });
+  const inspSec = h('section', { class: 'sec inspect' }, h('div', { class: 'row-between' }, inspTitle, inspStatus), inspAbout, inspProgress.el, inspKv,
     adjRules, groomNote, h('h4', { class: 'sub-title', text: 'Next level' }), gainList, h('div', { class: 'row-between' }, lvlCost, lvlWork), growNote, lvlMsg, dirRow,
     h('div', { class: 'btn-row' }, levelBtn, pickDirBtn, groomBtn, relocateBtn, cheapInspBtn, demolishBtn));
   // C117 / C120: inspect a water pocket or a planned blueprint chamber
@@ -611,7 +675,9 @@ export function createPanel(root, { game, ui, bridge }) {
     const input = h('input', { type: 'text', class: 'input input-small', placeholder: 'Layout ' + (slot + 1), maxLength: 24, attrs: { 'aria-label': 'Blueprint name' } });
     const save = h('button', { type: 'button', class: 'btn btn-small', text: 'Save current',
       on: { click: (ev) => act('saveBlueprint', { slot, name: (input.value || 'Layout ' + (slot + 1)).slice(0, 24) }, ev, save) } });
+    // C139: Use applies the layout now as well (queues what it can; the rest waits as planned chambers) and after every flight
     const load = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Use',
+      dataset: { tip: 'Apply now: queue what fits, plan the rest. Also after every flight.' },
       on: { click: (ev) => act('loadBlueprint', { slot }, ev, load) } });
     const del = armedButton('Delete', (ev, b) => act('deleteBlueprint', { slot }, ev, b));
     const row = h('div', { class: 'bp-row card' }, h('div', { class: 'row-head' }, name, meta), h('div', { class: 'btn-row' }, input, save, load, del));
@@ -707,6 +773,7 @@ export function createPanel(root, { game, ui, bridge }) {
     const dc = obj(arr(d && d.nest && d.nest.chambers)[idx]);
     setText(inspTitle, nameOf('chamber', ch.type) + ' · L' + fmtCount(num(ch.level)) + (num(ch.target) > num(ch.level) ? ' → L' + fmtCount(ch.target) : ''));
     setText(inspStatus, STATUS_NAMES[ch.status] || ch.status || '');
+    setText(inspAbout, CHAMBER_ABOUT[ch.type] || CHAMBER_TIPS[ch.type] || '');
     toggleClass(inspStatus, 'badge-good', ch.status === 'active');
     toggleClass(inspStatus, 'badge-warn', ch.status !== 'active');
     const digging = ch.status !== 'active';
@@ -769,7 +836,8 @@ export function createPanel(root, { game, ui, bridge }) {
     const capMsg = info.max ? '' : overCapHint(info.cost, d);
     setText(lvlMsg, levelMessage(info, ch) || capMsg);
     toggleClass(lvlMsg, 'warn', !info.max && !!(info.blocked || info.royalRoom || capMsg));
-    const growable = !!info.grows && !info.max;
+    // C137: a chamber with a reservation grows in a fixed order: no side buttons, just Level up
+    const growable = !!info.grows && !info.max && !info.reserved;
     const dirs = obj(info.dirs);
     show(dirRow, growable);
     for (const dir of DIRS) {
@@ -805,6 +873,10 @@ export function createPanel(root, { game, ui, bridge }) {
         if (tool.kind === 'placeChamber') {
           const rules = chamberRuleText(s, d, tool.chamber);
           if (rules) setText(toolText, 'Placing ' + nameOf('chamber', tool.chamber) + ': ' + rules + ' Click in the nest.');
+        }
+        // C137: the faint outline is the full-size room it reserves; F (or right-click) picks the corner it starts in
+        if ((tool.kind === 'placeChamber' && resGrows(tool.chamber)) || tool.kind === 'relocate') {
+          setText(toolText, toolText.textContent + ' The outline is its full-size room: F or right-click picks the corner it starts in.');
         }
       }
       // queue

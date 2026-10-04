@@ -13,8 +13,57 @@ const f = (o) => {
   return Object.freeze(o);
 };
 
+// Further reading (C148): 1–2 verified, stable links per entry: { title, url } (https; AntWiki, Wikipedia, university or
+// journal pages). Shown under an unlocked entry's note as "Learn more:"; the allowed domains are pinned in ui.fieldGuideSources.
+const W = (page, title) => ({ title: title || page.replace(/_/g, ' ') + ' (Wikipedia)', url: 'https://en.wikipedia.org/wiki/' + page });
+const A = (page, title) => ({ title: title || page.replace(/_/g, ' ') + ' (AntWiki)', url: 'https://www.antwiki.org/wiki/' + page });
+const PMC = (id, title) => ({ title, url: 'https://pmc.ncbi.nlm.nih.gov/articles/' + id + '/' });
+const SOURCES = {
+  fg_founding_queen: [A('Colony_Foundation'), W('Queen_ant')],
+  fg_nanitics: [W('Ant', 'Ant: life cycle (Wikipedia)'), A('Colony_Foundation')],
+  fg_trail_pheromone: [W('Trail_pheromone')],
+  fg_double_bridge: [W('Ant_colony_optimization_algorithms', 'Ant colony optimization (Wikipedia)')],
+  fg_tandem_running: [W('Tandem_running')],
+  fg_polyethism: [W('Polyethism')],
+  fg_polymorphism: [W('Ant#Polymorphism', 'Ant: polymorphism (Wikipedia)')],
+  fg_trophic_eggs: [W('Trophic_egg')],
+  fg_repletes: [W('Honeypot_ant'), A('Repletes')],
+  fg_supermajors: [W('Pheidole'), PMC('PMC3014660', 'Multi-phase defense by the big-headed ant Pheidole obtusospinosa (J. Insect Science)')],
+  fg_alates: [W('Alate'), W('Nuptial_flight')],
+  fg_nuptial_flight: [W('Nuptial_flight')],
+  fg_trophobiosis: [W('Trophobiosis')],
+  fg_root_aphids: [W('Yellow_meadow_ant', 'Yellow meadow ant, Lasius flavus (Wikipedia)')],
+  fg_lycaenid: [W('Lycaenidae'), W('Myrmecophily')],
+  fg_fungus_gardens: [W('Fungus-growing_ants'), W('Leafcutter_ant')],
+  fg_weeder_ants: [W('Leafcutter_ant'), W('Pseudonocardia')],
+  fg_midden: [W('Necrophoresis'), W('Leafcutter_ant')],
+  fg_mound_heat: [PMC('PMC3962001', 'Thermoregulation strategies in ants, with a focus on red wood ants (F1000Research)'), W('Formica_rufa')],
+  fg_overwintering: [W('Insect_winter_ecology'), W('Diapause')],
+  fg_seed_harvesting: [W('Harvester_ant'), PMC('PMC5125654', 'The Florida harvester ant relies on germination to consume large seeds')],
+  fg_square_law: [W('Lanchester%27s_laws', "Lanchester's laws (Wikipedia)"), PMC('PMC10500280', 'Complex battlefields favor strong soldiers over large armies (PNAS)')],
+  fg_ritual_tournaments: [W('Myrmecocystus'), A('Myrmecocystus')],
+  fg_black_garden_ant: [A('Lasius_niger'), W('Black_garden_ant')],
+  fg_pavement_ant: [A('Tetramorium_immigrans'), W('Tetramorium_immigrans')],
+  fg_red_wood_ant: [A('Formica_rufa'), W('Formica_rufa')],
+  fg_carpenter_ant: [W('Carpenter_ant'), A('Camponotus')],
+  fg_fire_ant: [A('Solenopsis_invicta'), W('Red_imported_fire_ant')],
+  fg_slave_maker: [A('Formica_sanguinea'), W('Formica_sanguinea')],
+  fg_army_ant: [A('Eciton_burchellii'), W('Eciton_burchellii')],
+  fg_argentine_ant: [A('Linepithema_humile'), W('Argentine_ant')],
+  fg_ladybird: [W('Coccinellidae', 'Ladybirds, Coccinellidae (Wikipedia)'),
+    { title: 'Lady beetles (Cornell University, Biological Control)', url: 'https://biocontrol.entomology.cornell.edu/predators/ladybeetles.php' }],
+  fg_antlion: [W('Antlion')],
+  fg_horned_lizard: [W('Horned_lizard'), PMC('PMC8015224', 'Prey capture behaviors of the ant-eating Texas horned lizard (Biology Open)')],
+  fg_ophiocordyceps: [W('Ophiocordyceps_unilateralis')],
+  fg_phengaris: [W('Large_blue', 'Large blue, Phengaris arion (Wikipedia)')],
+  fg_phorid_flies: [W('Pseudacteon', 'Pseudacteon, ant-decapitating flies (Wikipedia)'), W('Phoridae')],
+  fg_myrmecophiles: [W('Myrmecophily')],
+  fg_twenty_quadrillion: [PMC('PMC9546634', 'The abundance, biomass, and distribution of ants on Earth (PNAS, 2022)'), W('Ant')],
+  fg_amber: [W('Ant#Taxonomy_and_evolution', 'Ant: taxonomy and evolution (Wikipedia)'), W('Sphecomyrma')],
+};
+
 /** Entry builder. */
-const G = (id, title, cat, trigger, note) => ({ id, title, cat, trigger, note });
+const G = (id, title, cat, trigger, note) => ({ id, title, cat, trigger, note, sources: SOURCES[id] || [] });
 
 /** One-shot insight paid on unlock: max(min, sec × gross insight/s). */
 export const FG_REWARD = f({ sec: 30, min: 10 });
@@ -68,9 +117,9 @@ export const FIELD_GUIDE = f({
     + 'their crops with liquid food until their abdomens swell to the size of a grape. In lean seasons, nestmates stroke them and '
     + 'receive droplets back, mouth to mouth.'),
   fg_supermajors: G('fg_supermajors', 'Supermajors', 'castes', { caste: 'supermajor' },
-    'A few ant genera, Pheidole among them, can produce supermajors: giant workers many times heavier than ordinary minors, with '
+    'A handful of Pheidole species can produce supermajors: giant workers many times heavier than ordinary minors, with '
     + 'enormous heads packed with muscle. They are costly to raise and rarely seen, but when the nest is attacked they plug the '
-    + 'entrances and crush intruders with their mandibles.'),
+    + 'entrances with their heads and crush intruders with their mandibles.'),
   fg_alates: G('fg_alates', 'Alates', 'founding', { caste: 'alate' },
     'Alates are the winged males and virgin queens a mature colony produces once it can afford them. They take no part in work. Fed '
     + 'and groomed by their sisters, they wait in the nest, sometimes for weeks, until the weather is right for the flight that will '
@@ -100,8 +149,8 @@ export const FIELD_GUIDE = f({
     + 'infected patches and carrying them to waste dumps. Many also carry bacteria on their bodies that produce antibiotics, a living '
     + 'chemical defence that keeps the crop healthy.'),
   fg_midden: G('fg_midden', 'Middens', 'nest', { chamber: 'midden' },
-    'Colonies keep their waste well away from brood and food stores. Workers carry dead nestmates, food scraps and spent fungus to a '
-    + 'refuse pile, a habit called necrophoresis. Midden workers often stay with the waste for life and are kept apart from the '
+    'Colonies keep their waste well away from brood and food stores. Workers carry dead nestmates to a refuse pile, a habit called '
+    + 'necrophoresis, along with food scraps and spent fungus. Midden workers often stay with the waste for life and are kept apart from the '
     + 'nursery, which limits the spread of disease.'),
   fg_mound_heat: G('fg_mound_heat', 'Mound Heating', 'nest', { mound: 5 },
     'The thatched mounds of wood ants work as solar collectors. Their sloped surfaces catch the low morning sun, and workers move brood '
@@ -109,16 +158,16 @@ export const FIELD_GUIDE = f({
     + 'long after sunset.'),
   fg_overwintering: G('fg_overwintering', 'Overwintering', 'nest', { season: 'winter' },
     'Ants cannot keep their bodies warm, so temperate colonies retreat deep below the frost line when autumn ends. They cluster in '
-    + 'still, humid chambers and slip into a cold torpor called diapause, barely moving or eating. Stored fat and full crops carry them '
+    + 'still, humid chambers and enter diapause, a dormant state in which they barely move or eat. Stored fat and full crops carry them '
     + 'through until spring warms the soil again.'),
   fg_seed_harvesting: G('fg_seed_harvesting', 'Seed Harvesting', 'farming', { source: 'seed_patch' },
-    'Harvester ants gather seeds by the thousand and store them in dry underground granaries. Workers husk the seeds and discard the '
-    + 'chaff outside the nest. After rain, damp seeds are carried up to dry in the sun before they can sprout, and a well-stocked '
+    'Harvester ants gather seeds by the thousand and store them in underground granaries. Workers husk the seeds and discard the '
+    + 'chaff outside the nest. In some species, damp seeds are carried up after rain to dry in the sun before they can sprout, and a well-stocked '
     + 'colony can live on its stores for months.'),
   fg_square_law: G('fg_square_law', 'The Square Law', 'behaviour', { any: [{ emitted: 'battleStart' }, { path: 'run.stats.battles', gte: 1 }] },
-    'In open battle, ant armies follow a rule first worked out for human warfare: fighting strength grows with the square of numbers, '
-    + 'because every fighter can engage an enemy at once. Field studies of ant fights have found the same pattern. Doubling a force '
-    + 'roughly quadruples its power, so numbers usually beat individual strength.'),
+    "Lanchester's square law, worked out for human warfare, says that when every fighter can engage at once, fighting strength "
+    + 'grows with the square of numbers: double the force, quadruple the power. Real ant battles usually fall short of that. '
+    + 'Experiments with fire ants found strength rising roughly in step with numbers, and cluttered ground favours stronger fighters.'),
   fg_ritual_tournaments: G('fg_ritual_tournaments', 'Ritual Tournaments', 'behaviour', { custom: 'tournament' },
     'Neighbouring honeypot ant colonies settle many disputes without bloodshed. Workers meet at the border and perform stilt-legged '
     + 'displays, raising their bodies and inflating their abdomens to look as large as possible. The side that shows more and bigger '
@@ -165,16 +214,16 @@ export const FIELD_GUIDE = f({
     + 'delicate, lacewing-like insect.'),
   fg_horned_lizard: G('fg_horned_lizard', 'Horned Lizards', 'hazards', { ev: 'ev_horned_lizard' },
     'Horned lizards of the American deserts live mainly on ants, especially harvester ants. A lizard settles beside a busy foraging '
-    + 'trail and picks off workers one by one, sometimes eating hundreds in a single meal. Mucus in its throat binds the ants, '
+    + 'trail and picks off workers one by one, sometimes eating dozens in a single meal. Mucus in its throat binds the ants, '
     + 'protecting the lizard from their stings.'),
   fg_ophiocordyceps: G('fg_ophiocordyceps', 'Zombie-ant Fungus', 'hazards', { ev: 'ev_ophiocordyceps' },
     'Ophiocordyceps fungi infect carpenter ants and take control of their behaviour. An infected worker leaves the nest, climbs '
     + 'vegetation and clamps its jaws onto a leaf vein before dying. A stalk then grows from its head and rains spores onto the trail '
     + 'below. Healthy colonies remove sick workers quickly.'),
   fg_phengaris: G('fg_phengaris', 'The Large Blue', 'hazards', { ev: 'ev_phengaris_caterpillar' },
-    'The Large Blue butterfly has a caterpillar that smells like an ant larva. Workers carry it into their nest and place it among '
-    + 'their own brood. Depending on the species, it either begs food like a cuckoo or quietly eats the ant larvae, and it emerges as a '
-    + 'butterfly the following summer.'),
+    'The Large Blue and its Phengaris relatives have caterpillars that smell like ant larvae. Workers carry them into their nest and '
+    + 'place them among their own brood. Depending on the species, a caterpillar either begs food like a cuckoo or quietly eats the '
+    + 'ant larvae, and it emerges as a butterfly the following summer.'),
   fg_phorid_flies: G('fg_phorid_flies', 'Phorid Flies', 'hazards', { ev: 'ev_phorid_flies' },
     'Tiny phorid flies hover above ant trails waiting to strike. A female darts down and injects an egg into a worker; the larva later '
     + 'moves into the head, eats its contents and finally decapitates its host. The mere presence of these flies makes whole trails '
@@ -188,7 +237,7 @@ export const FIELD_GUIDE = f({
     + 'person. Together they weigh more than all wild birds and mammals combined. The figure is rough, but it shows how completely '
     + 'ants have spread across the land.'),
   fg_amber: G('fg_amber', 'Ants in Amber', 'world', { counter: 'amber', gte: 1 },
-    'Ants trapped in tree resin tens of millions of years ago survive today in amber, every hair and joint intact. The oldest known '
-    + 'ants come from Cretaceous amber about a hundred million years old, alongside dinosaurs. Some early forms had wasp-like features, '
+    'Ants trapped in tree resin tens of millions of years ago survive today in amber, every hair and joint intact. Some of the oldest known '
+    + 'ants come from Cretaceous amber about a hundred million years old, alongside dinosaurs. Early forms such as Sphecomyrma had wasp-like features, '
     + 'showing how ants evolved from wasp ancestors.'),
 });

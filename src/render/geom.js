@@ -394,19 +394,186 @@ export function trailCurve(path, isBlocked, opts = {}) {
   const hexes = (Array.isArray(path) ? path : []).filter((hx) => hx >= 0 && hx < HEX_COUNT);
   const pts = hexes.map((hx) => hexWorld(hx, size));
   if (pts.length < 2) return pts;
-  const obstacles = [];
-  if (typeof isBlocked === 'function') {
-    const onPath = new Set(hexes);
-    const seen = new Set();
-    for (const hx of hexes) {
-      for (const nb of neighbors(hx)) {
-        if (onPath.has(nb) || seen.has(nb)) continue;
-        seen.add(nb);
-        if (isBlocked(nb)) obstacles.push(hexWorld(nb, size));
+  return avoidSpline(pts, pathObstacles(hexes, isBlocked, size), { ...opts, size });
+}
+
+/**
+ * C128: world centres of the off-path neighbours of a hex path for which isBlocked(hex) is true.
+ * @param {number[]} path
+ * @param {(hex: number) => boolean} [isBlocked]
+ * @param {number} [size=HEX.px]
+ * @returns {{ x: number, y: number }[]}
+ */
+export function pathObstacles(path, isBlocked, size = HEX.px) {
+  const out = [];
+  if (typeof isBlocked !== 'function' || !Array.isArray(path)) return out;
+  const hexes = path.filter((hx) => hx >= 0 && hx < HEX_COUNT);
+  const onPath = new Set(hexes);
+  const seen = new Set();
+  for (const hx of hexes) {
+    for (const nb of neighbors(hx)) {
+      if (onPath.has(nb) || seen.has(nb)) continue;
+      seen.add(nb);
+      if (isBlocked(nb)) out.push(hexWorld(nb, size));
+    }
+  }
+  return out;
+}
+
+/**
+ * C134 multi-lane trails: where several trails use the same hex-to-hex step (an "edge"), each gets its own parallel
+ * lane. Per edge the trails are ordered by uid and spread symmetrically around the centre line, perpendicular to the
+ * travel direction of the lowest-uid trail on that edge (so the order never flips along a shared stretch, and trails
+ * walking it in opposite directions still keep apart). Spacing `spacing` (default 0.24 × size) shrinks so the whole
+ * bundle stays within `spread` (default 0.6 × size).
+ * @param {Array<{ uid: number, path: number[] }>} trails
+ * @param {{ size?: number, spacing?: number, spread?: number }} [opts]
+ * @returns {Map<number, Float64Array>} uid → per path segment k the lane offset (x at 2k, y at 2k + 1), world px
+ */
+export function laneLayout(trails, opts = {}) {
+  const size = opts.size > 0 ? opts.size : HEX.px;
+  const spacing = opts.spacing > 0 ? opts.spacing : 0.24 * size;
+  const spread = opts.spread > 0 ? opts.spread : 0.6 * size;
+  const list = (Array.isArray(trails) ? trails : []).filter((t) => t && Array.isArray(t.path) && Number.isFinite(t.uid));
+  const edges = new Map();   // key → [{ ti, k }]
+  const keyOf = (a, b) => (a < b ? a * HEX_COUNT + b : b * HEX_COUNT + a);
+  const valid = (h) => Number.isInteger(h) && h >= 0 && h < HEX_COUNT;
+  list.forEach((t, ti) => {
+    const p = t.path;
+    for (let k = 0; k + 1 < p.length; k++) {
+      if (!valid(p[k]) || !valid(p[k + 1]) || p[k] === p[k + 1]) continue;
+      const key = keyOf(p[k], p[k + 1]);
+      let g = edges.get(key);
+      if (!g) edges.set(key, (g = []));
+      g.push({ ti, k });
+    }
+  });
+  const out = new Map();
+  for (const t of list) out.set(t.uid, new Float64Array(Math.max(0, 2 * (t.path.length - 1))));
+  for (const g of edges.values()) {
+    const uids = [...new Set(g.map((e) => list[e.ti].uid))].sort((a, b) => a - b);
+    const m = uids.length;
+    if (m < 2) continue;
+    const ref = g.find((e) => list[e.ti].uid === uids[0]);
+    const rp = list[ref.ti].path;
+    const a = hexWorld(rp[ref.k], size);
+    const b = hexWorld(rp[ref.k + 1], size);
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const nx = -(b.y - a.y) / len;
+    const ny = (b.x - a.x) / len;
+    const sp = Math.min(spacing, spread / (m - 1));
+    for (const e of g) {
+      const t = list[e.ti];
+      const off = (uids.indexOf(t.uid) - (m - 1) / 2) * sp;
+      const arr = out.get(t.uid);
+      arr[2 * e.k] = nx * off;
+      arr[2 * e.k + 1] = ny * off;
+    }
+  }
+  return out;
+}
+
+/** Smoothstep 0 → 1 on [0, 1]. */
+function smooth01(u) {
+  const x = u < 0 ? 0 : u > 1 ? 1 : u;
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * C134: a trail's own lane — its centre curve (trailCurve / avoidSpline samples: perSeg per segment, endpoints
+ * included) shifted by the per-segment lane offsets of laneLayout. Each segment holds its full offset at its middle
+ * and blends (smoothstep) to the average of the two neighbouring segments' offsets at each inner hex centre, so lanes
+ * merge and split smoothly where routes join or part; the two ends (entrance and source) sit on the hex centre.
+ * C128 with lanes: wherever a shifted sample would come closer than `margin` (default 0.18 × size) to an obstacle hex
+ * (opts.obstacles, e.g. pathObstacles), the offset there shrinks (factor 1 / ⅔ / ⅓ / 0, then a windowed min + blur
+ * that never exceeds the allowed factor), falling back to the centre curve, which keeps its own clearance.
+ * @param {{ x: number, y: number }[]} base centre curve
+ * @param {number[]} path the hex path the curve was built from
+ * @param {Float64Array|number[]|null|undefined} segOff laneLayout entry for this trail
+ * @param {{ perSeg?: number, size?: number, margin?: number, obstacles?: Array<{x:number,y:number}> }} [opts]
+ * @returns {{ x: number, y: number }[]} a new polyline with base.length points (or `base` itself when no lane applies)
+ */
+export function laneCurve(base, path, segOff, opts = {}) {
+  const n = Array.isArray(path) ? path.length : 0;
+  if (!base || n < 2 || !segOff || segOff.length < 2 * (n - 1)) return base;
+  let any = false;
+  for (let i = 0; i < 2 * (n - 1); i++) if (segOff[i] !== 0) { any = true; break; }
+  if (!any) return base;
+  const per = Math.max(1, Math.floor(opts.perSeg > 0 ? opts.perSeg : 6));
+  if (base.length !== (n - 1) * per + 1) return base;
+  const size = opts.size > 0 ? opts.size : HEX.px;
+  const margin = Number.isFinite(opts.margin) ? opts.margin : 0.18 * size;
+  const obs = Array.isArray(opts.obstacles) ? opts.obstacles : [];
+  const vx = new Float64Array(n);
+  const vy = new Float64Array(n);
+  for (let k = 1; k + 1 < n; k++) {
+    vx[k] = (segOff[2 * (k - 1)] + segOff[2 * k]) / 2;
+    vy[k] = (segOff[2 * (k - 1) + 1] + segOff[2 * k + 1]) / 2;
+  }
+  const N = base.length;
+  const ox = new Float64Array(N);
+  const oy = new Float64Array(N);
+  for (let k = 0; k + 1 < n; k++) {
+    const sx = segOff[2 * k];
+    const sy = segOff[2 * k + 1];
+    for (let j = 1; j <= per; j++) {
+      const u = j / per;
+      const idx = k * per + j;
+      if (u <= 0.5) {
+        const w = smooth01(u * 2);
+        ox[idx] = vx[k] * (1 - w) + sx * w;
+        oy[idx] = vy[k] * (1 - w) + sy * w;
+      } else {
+        const w = smooth01((u - 0.5) * 2);
+        ox[idx] = sx * (1 - w) + vx[k + 1] * w;
+        oy[idx] = sy * (1 - w) + vy[k + 1] * w;
       }
     }
   }
-  return avoidSpline(pts, obstacles, { ...opts, size });
+  ox[0] = 0;
+  oy[0] = 0;
+  // stone clearance: per-sample allowed factor, then a windowed min (r 3) and box blur (r 2) — the blur of values that
+  // are each ≤ allowed[i] (every window around a neighbour within 2 contains i) never exceeds allowed[i]
+  const f = new Float64Array(N).fill(1);
+  if (obs.length) {
+    const reach2 = (2 * size) ** 2;
+    for (let i = 0; i < N; i++) {
+      if (ox[i] === 0 && oy[i] === 0) continue;
+      const bx = base[i].x;
+      const by = base[i].y;
+      const near = [];
+      for (const o of obs) if ((o.x - bx) ** 2 + (o.y - by) ** 2 <= reach2) near.push(o);
+      if (!near.length) continue;
+      let ok = 0;
+      for (const c of [1, 2 / 3, 1 / 3]) {
+        const qx = bx + ox[i] * c;
+        const qy = by + oy[i] * c;
+        if (near.every((o) => hexSdf(qx, qy, o.x, o.y, size) >= margin)) {
+          ok = c;
+          break;
+        }
+      }
+      f[i] = ok;
+    }
+    const mn = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let v = 1;
+      for (let j = Math.max(0, i - 3); j <= Math.min(N - 1, i + 3); j++) if (f[j] < v) v = f[j];
+      mn[i] = v;
+    }
+    for (let i = 0; i < N; i++) {
+      let sum = 0;
+      let cnt = 0;
+      for (let j = Math.max(0, i - 2); j <= Math.min(N - 1, i + 2); j++) {
+        sum += mn[j];
+        cnt++;
+      }
+      f[i] = Math.min(f[i], sum / cnt);
+    }
+  }
+  const out = new Array(N);
+  for (let i = 0; i < N; i++) out[i] = { x: base[i].x + ox[i] * f[i], y: base[i].y + oy[i] * f[i] };
+  return out;
 }
 
 /**

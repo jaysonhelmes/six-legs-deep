@@ -174,6 +174,45 @@ test('trunk_trails: hexes of trails with ≥ 5 hexes become territory (code 4)',
   assert.equal(d.surface.owned[hexIndex(4, 0)], 4);
 });
 
+test('C133 trunk_trails: trail hexes are territory from EVERY entrance, short trails too (outpost, satellite, nuptial exit, main)', { skip: !RESEARCH.trunk_trails && 'needs WP5 research data' }, () => {
+  const { s, d } = world();
+  const S = s.run.surface;
+  S.trails.length = 0;
+  surface.addEntrance(s, d, 'outpost', hexIndex(-5, 0), -1, 1);
+  surface.addEntrance(s, d, 'satellite', hexIndex(0, 5), 4, 0);
+  surface.addEntrance(s, d, 'nuptial', hexIndex(5, -5), 30, -1);
+  // each trail: entrance → 3 hexes straight out (4 hexes in all, below the ×1.5 length); the far end is outside the
+  // auto radius (1) of every entrance
+  const routes = [
+    [hexIndex(-5, 0), hexIndex(-6, 0), hexIndex(-7, 0), hexIndex(-8, 0)],
+    [hexIndex(0, 5), hexIndex(0, 6), hexIndex(0, 7), hexIndex(0, 8)],
+    [hexIndex(5, -5), hexIndex(6, -6), hexIndex(6, -7), hexIndex(7, -8)].filter((h) => h >= 0 && ringOf(h) <= 8),
+    [0, hexIndex(1, -1), hexIndex(2, -2), hexIndex(3, -3)],
+  ];
+  let uid = 500;
+  for (const path of routes) {
+    const end = path[path.length - 1];
+    S.sources.push({ uid: uid, type: 'seed_patch', hex: end, stock: 1, max: 1, level: 1, herdT: 0, age: 0, ttl: -1, cd: 0, data: {} });
+    S.trails.push({ uid: uid + 1, origin: path[0], src: uid, path, len: path.length - 1, job: 'forager', workers: 0, escorts: 0, S: 0, born: 0, reroutes: [] });
+    uid += 2;
+  }
+  S.rev++;
+  surface.derive(s, d);
+  const far = routes.map((p) => p[p.length - 1]);
+  for (const h of far) assert.equal(d.surface.owned[h], 0, 'no trunk_trails: the far end is not owned');
+  s.run.research.trunk_trails = 1;
+  surface.derive(s, d);
+  for (const path of routes) {
+    for (const h of path) assert.ok(d.surface.owned[h] > 0, 'hex ' + h + ' of the trail from ' + path[0] + ' is owned');
+    assert.equal(d.surface.owned[path[path.length - 1]], 4, 'trunk-owned (code 4)');
+  }
+  // the territory follows the trail: delete one and its far hexes are no longer owned
+  S.trails.splice(0, 1);
+  S.rev++;
+  surface.derive(s, d);
+  assert.equal(d.surface.owned[far[0]], 0);
+});
+
 test('frontier = unrevealed hexes within the radius next to revealed ones; tPeak and longestTrail track maxima', () => {
   const { s, d } = world();
   assert.equal(d.surface.frontier.length, 18);

@@ -18,12 +18,13 @@ import * as nestSys from '../systems/nest.js';
 import { hexToPixel, hexQR, hexIndex, ringOf, countInRadius, hexDist, DIRS, HEX_COUNT } from '../core/hex.js';
 import { createLayer, createOffscreen, pageHidden, nowMs, reducedMotion } from './canvas.js';
 import { createSurfaceCamera } from './camera.js';
-import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, arcTable, pointAtArc, distToPolyline, trailCurve, SQRT3 } from './geom.js';
+import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, arcTable, pointAtArc, distToPolyline, trailCurve, pathObstacles, laneLayout, laneCurve, SQRT3 } from './geom.js';
 import {
   terrainColor, SURFACE, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
   rivalPatternKind, seasonBlend, blendWash, blendWeather,
 } from './palette.js';
 import { getAtlas } from './atlas.js';
+import * as cosmetics from './cosmetics.js';
 import { BUDGET, REALLOC_SEC, createPool, reconcile, allocAbove, KIND } from './sprites.js';
 import { createParticles, PK, MAX_PARTICLES } from './particles.js';
 import { drawSurfaceOverlays, drawPing, PING_SEC } from './overlays.js';
@@ -189,6 +190,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   const terrainCaches = new Map();
   /** last terrain build time in ms (perf probe, getPerf) */
   let terrainBuildMs = 0;
+  let laneBuildMs = 0;
   /** C123: pre-warm weather on the next frame (load, import, run start, view shown again, resize, long gap) */
   let weatherFill = true;
   let lastRenderAt = 0;
@@ -199,6 +201,9 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   const trailGeo = new Map();
   /** C128: signature of the impassable-terrain hexes (stone, spring puddles) the trail curves avoid; set per frame */
   let blockKey = '';
+  /** C134: lane layout of the live trails (geom.laneLayout) and the signature of the trail paths it was built for */
+  let lanes = new Map();
+  let laneKey = '';
   const claimMemo = { key: '', res: null };
   const pulses = []; // { kind, uid, hex, t, max }
 
@@ -312,6 +317,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     landCache.key = '';
     terr.key = '';
     trailGeo.clear();
+    laneKey = '';
     trailSig = '';
     pool.n = 0;
     fxWorld.clear();
@@ -507,13 +513,21 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     if (!g) return;
     g.setTransform(gm.scale, 0, 0, gm.scale, gm.wx * gm.scale, gm.wy * gm.scale);
     const n = countInRadius(Math.min(HEX.maxRadius, R + 1));
+    // C135: terrain FEATURES (puddles, garden paths, stones, boulders, logs, roots) exist only inside the map radius;
+    // the extra ring R + 1 (under the map-edge void, hiding seams) is plain ground
+    const nMap = countInRadius(Math.min(HEX.maxRadius, R));
     const ter = surf.terrain || [];
+    const stones = linkSet(ter, nMap, 'stone');
+    const boulder = new Set(stones.hexes.filter((i) => stones.nb.get(i).some((h) => h >= 0)));
     // C111: puddle and garden-path hexes sit on the ground around them (their dominant grass / sand / leaf-litter
-    // neighbour); the pool / path is then drawn once over the union of linked hexes (paintPaths / paintPools)
+    // neighbour); the pool / path is then drawn once over the union of linked hexes (paintPaths / paintPools).
+    // C135: so do linked stone hexes (one boulder over the union, paintBoulders) and every non-ground hex beyond the map
     const under = new Map();
     for (let i = 0; i < n; i++) {
       const id = terrainId(ter[i]);
-      if (id === 'puddle' || id === 'garden_path') under.set(i, groundUnder(ter, i, n));
+      if (id === 'puddle' || id === 'garden_path' || boulder.has(i) || (i >= nMap && !GROUND_IDS.includes(id))) {
+        under.set(i, groundUnder(ter, i, n));
+      }
     }
     // base fill, slightly enlarged to hide seams
     for (let i = 0; i < n; i++) {
@@ -531,8 +545,164 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       const id = under.get(i) || terrainId(ter[i]);
       paintTerrainDetail(g, id, season, i, x, y);
     }
-    paintPaths(g, season, linkSet(ter, n, 'garden_path'));
-    paintPools(g, season, linkSet(ter, n, 'puddle'), under);
+    paintPaths(g, season, linkSet(ter, nMap, 'garden_path'));
+    paintPools(g, season, linkSet(ter, nMap, 'puddle'), under);
+    paintBoulders(g, season, { hexes: stones.hexes.filter((i) => boulder.has(i)), nb: stones.nb });
+  }
+
+  /** C135: clip to the union of a set's hexes (corner radius SIZE: the fog / void hexes, 1.04 x SIZE, cover it). */
+  function clipToHexes(g, hexes) {
+    g.beginPath();
+    for (const i of hexes) {
+      const [x, y] = hexToPixel(i, SIZE);
+      hexPathOn(g, x, y, SIZE);
+    }
+    g.clip();
+  }
+
+  /**
+   * C135: one irregular rock mass over the union of a linked stone set (like the C111 pools): a jagged polygon per hex,
+   * a band to each linked neighbour and the triangle between three mutually linked hexes, one path with uniform
+   * winding so a single fill is the union. k scales it, pad grows it.
+   */
+  function rockPath(g, set, k, pad) {
+    g.beginPath();
+    for (const i of set.hexes) {
+      const [x, y] = hexToPixel(i, SIZE);
+      const row = set.nb.get(i);
+      const poly = [];
+      const m = 9;
+      const rot = hash01(i, 61) * 6.28;
+      for (let v = 0; v < m; v++) {
+        const a = rot + (v / m) * Math.PI * 2;
+        const rr = SIZE * (0.72 + 0.16 * hash01(i * 11 + v, 63)) * k + pad;
+        poly.push(x + Math.cos(a) * rr, y + Math.sin(a) * rr * 0.92);
+      }
+      polyOn(g, poly);
+      for (let dd = 0; dd < 6; dd++) {
+        const h = row[dd];
+        if (h < i) continue;
+        const [hx, hy] = hexToPixel(h, SIZE);
+        const len = Math.hypot(hx - x, hy - y) || 1;
+        const w1 = SIZE * (0.56 + 0.14 * hash01(i * 97 + h, 65)) * k + pad;
+        const w2 = SIZE * (0.56 + 0.14 * hash01(i * 97 + h, 67)) * k + pad;
+        const ux = -(hy - y) / len;
+        const uy = (hx - x) / len;
+        polyOn(g, [x + ux * w1, y + uy * w1, hx + ux * w2, hy + uy * w2, hx - ux * w2, hy - uy * w2, x - ux * w1, y - uy * w1]);
+        const h2 = row[(dd + 1) % 6];
+        if (k >= 0.9 && h2 > i) {
+          const [x2, y2] = hexToPixel(h2, SIZE);
+          polyOn(g, [x, y, hx, hy, x2, y2]);
+        }
+      }
+    }
+  }
+
+  /** C135: boulders - adjacent stone hexes drawn as one shaded, cracked rock mass (single stones keep their own art). */
+  function paintBoulders(g, season, set) {
+    if (!set.hexes.length) return;
+    const [base, detail] = terrainColor(season, 'stone');
+    const mids = linkMids(set);
+    g.save();
+    clipToHexes(g, set.hexes);
+    // cast shadow (down-right), then the rock
+    g.save();
+    g.translate(SIZE * 0.08, SIZE * 0.14);
+    g.fillStyle = 'rgba(0,0,0,0.28)';
+    rockPath(g, set, 1, 0);
+    g.fill();
+    g.restore();
+    g.fillStyle = shade(base, -0.28);
+    rockPath(g, set, 1, 0);
+    g.fill();
+    // lit top face: the same mass nudged up-left leaves a dark rim on the lower-right edge
+    g.save();
+    rockPath(g, set, 1, 0);
+    g.clip();
+    g.save();
+    g.translate(-SIZE * 0.06, -SIZE * 0.1);
+    g.fillStyle = base;
+    rockPath(g, set, 0.97, 0);
+    g.fill();
+    g.restore();
+    // facets: lighter bulges per hex and link, toward the light (up-left)
+    g.fillStyle = rgba(mix(base, '#ffffff', 0.35), 0.35);
+    g.beginPath();
+    const stations = set.hexes.map((i) => {
+      const [x, y] = hexToPixel(i, SIZE);
+      return { x, y, seed: i };
+    }).concat(mids);
+    for (const st of stations) {
+      const r = (q) => hash01(st.seed * 17 + q, q * 5 + 1);
+      const rx = SIZE * (0.26 + 0.12 * r(1));
+      const ry = SIZE * (0.15 + 0.07 * r(2));
+      const cx = st.x - SIZE * (0.14 + 0.08 * r(3));
+      const cy = st.y - SIZE * (0.2 + 0.06 * r(4));
+      const rot = -0.5 + 0.4 * r(5);
+      g.moveTo(cx + rx * Math.cos(rot), cy + rx * Math.sin(rot));
+      g.ellipse(cx, cy, rx, ry, rot, 0, Math.PI * 2);
+    }
+    g.fill();
+    if (season === 'winter') {
+      g.fillStyle = 'rgba(250,252,255,0.7)';
+      g.save();
+      g.translate(-SIZE * 0.08, -SIZE * 0.2);
+      rockPath(g, set, 0.6, 0);
+      g.fill();
+      g.restore();
+    } else if (season !== 'summer') {
+      // moss in the shaded seams
+      g.fillStyle = rgba(mix(detail, '#4f7a2a', 0.6), 0.35);
+      g.beginPath();
+      for (const st of mids) {
+        const r = (q) => hash01(st.seed * 23 + q, q * 3 + 7);
+        if (r(1) < 0.45) continue;
+        const rot = r(2) * 3;
+        g.moveTo(st.x + SIZE * 0.08 + SIZE * 0.14 * Math.cos(rot), st.y + SIZE * 0.16 + SIZE * 0.14 * Math.sin(rot));
+        g.ellipse(st.x + SIZE * 0.08, st.y + SIZE * 0.16, SIZE * 0.14, SIZE * 0.07, rot, 0, Math.PI * 2);
+      }
+      g.fill();
+    }
+    // cracks: a jagged seam across every link (where two stones fused) and a hairline per hex
+    g.strokeStyle = 'rgba(38,38,44,0.5)';
+    g.lineWidth = 1.1;
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    g.beginPath();
+    for (const st of mids) {
+      const r = (q) => hash01(st.seed * 29 + q, q * 7 + 11);
+      const px = -Math.sin(st.ang);
+      const py = Math.cos(st.ang);
+      const L = SIZE * (0.3 + 0.15 * r(1));
+      g.moveTo(st.x - px * L, st.y - py * L);
+      for (let q = 1; q <= 3; q++) {
+        const f = -1 + (2 * q) / 3;
+        const j = q === 3 ? 0 : (r(q + 2) - 0.5) * SIZE * 0.18;
+        g.lineTo(st.x + px * L * f + Math.cos(st.ang) * j, st.y + py * L * f + Math.sin(st.ang) * j);
+      }
+    }
+    for (const i of set.hexes) {
+      const [x, y] = hexToPixel(i, SIZE);
+      const r = (q) => hash01(i * 31 + q, q * 13 + 5);
+      const a = r(1) * 6.28;
+      const L = SIZE * (0.18 + 0.14 * r(2));
+      const sx = x + (r(3) - 0.5) * SIZE * 0.5;
+      const sy = y + (r(4) - 0.5) * SIZE * 0.4;
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a) * L * 0.5 + (r(5) - 0.5) * 3, sy + Math.sin(a) * L * 0.5 + (r(6) - 0.5) * 3);
+      g.lineTo(sx + Math.cos(a) * L, sy + Math.sin(a) * L);
+    }
+    g.stroke();
+    // a lit lip just above each crack
+    g.strokeStyle = 'rgba(255,255,255,0.14)';
+    g.save();
+    g.translate(-0.8, -0.8);
+    g.stroke();
+    g.restore();
+    g.restore();
+    g.restore();
+    g.lineCap = 'butt';
+    g.lineJoin = 'miter';
   }
 
   /**
@@ -621,6 +791,15 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   /** C111: puddles — one pool over the union of linked puddle hexes, shore only on its outer edge, even ripples. */
   function paintPools(g, season, set, under) {
     if (!set.hexes.length) return;
+    // C135: the pool, its shore and ripples stay inside the puddle hexes, so the fog and the map-edge void cover an
+    // unrevealed or out-of-map puddle exactly like any other terrain (the blobs and the shore pad used to spill out)
+    g.save();
+    clipToHexes(g, set.hexes);
+    paintPoolsIn(g, season, set, under);
+    g.restore();
+  }
+
+  function paintPoolsIn(g, season, set, under) {
     const [base] = terrainColor(season, 'puddle');
     const groundOf = (i) => terrainColor(season, under.get(i) || 'grass')[0];
     const ground = groundOf(set.hexes[0]);
@@ -1277,12 +1456,34 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     return trailCurve(path, isBlockedHex, { size: SIZE, perSeg });
   }
 
+  /**
+   * C134: rebuild the lane layout when any trail path changed (a cheap per-frame hash of uids and paths); trail curves
+   * are cached per path + blockKey + laneKey.
+   */
+  function syncLanes(trails) {
+    let h = trails.length | 0;
+    for (const tr of trails) {
+      if (!tr) continue;
+      h = (Math.imul(h, 31) + (tr.uid | 0)) | 0;
+      const p = Array.isArray(tr.path) ? tr.path : [];
+      for (let k = 0; k < p.length; k++) h = (Math.imul(h, 31) + (p[k] | 0) + 1) | 0;
+    }
+    const key = String(h);
+    if (key === laneKey) return;
+    const t0 = nowMs();
+    laneKey = key;
+    lanes = laneLayout(trails.filter(Boolean).map((tr) => ({ uid: tr.uid, path: Array.isArray(tr.path) ? tr.path : [] })), { size: SIZE });
+    laneBuildMs = nowMs() - t0;
+  }
+
   function trailWorld(tr) {
     const path = Array.isArray(tr.path) ? tr.path : [];
-    const sig = path.join(',') + '|' + blockKey;
+    const sig = path.join(',') + '|' + blockKey + '|' + laneKey;
     let g = trailGeo.get(tr.uid);
     if (g && g.sig === sig) return g;
-    const world = pathCurve(path, 6);
+    const centre = pathCurve(path, 6);
+    const off = lanes.get(tr.uid);
+    const world = off ? laneCurve(centre, path, off, { perSeg: 6, size: SIZE, obstacles: pathObstacles(path, isBlockedHex, SIZE) }) : centre;
     g = { sig, world, tab: arcTable(world) };
     trailGeo.set(tr.uid, g);
     return g;
@@ -1324,7 +1525,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       // tweaks: the width scales with √zoom, and the opacity never drops below 0.18 so a fresh trail stays visible.
       const width = clamp(1 + Math.log10(Math.max(1, workers || 0)), wMin, wMax) * zoomK;
       const alpha = clamp((tr.S || 0) / sMax, 0.18, 1);
-      const col = trailColor(tr.job);
+      const col = tr.job && tr.job !== 'forager' ? trailColor(tr.job) : cosmetics.trailColour(s, i, trailColor(tr.job));   // C149 trail cosmetics
       const stroke = () => {
         ctx.beginPath();
         for (let k = 0; k < poly.length; k++) {
@@ -1475,8 +1676,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     const z = curView.zoom;
     const r = SIZE * z * (0.48 + Math.min(0.5, 0.09 * Math.log2(1 + level)));
     const h = SIZE * z * (0.18 + Math.min(0.55, 0.12 * Math.log2(1 + level)));
-    const skin = s.meta && s.meta.cosmetics && s.meta.cosmetics.equipped && s.meta.cosmetics.equipped.mound;
-    const base = skin ? mix(SURFACE.mound, `#${(hashHue(skin)).toString(16).padStart(6, '0')}`, 0.35) : SURFACE.mound;
+    const base = SURFACE.mound;   // C149: mound skins are drawn on top (render/cosmetics.drawMoundCosmetics)
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath();
     ctx.ellipse(p.x + 2, p.y + 3, r * 1.1, r * 0.75, 0, 0, Math.PI * 2);
@@ -1498,21 +1698,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     ctx.beginPath();
     ctx.ellipse(p.x, p.y - h * 0.15, r * 0.24, r * 0.16, 0, 0, Math.PI * 2);
     ctx.fill();
-    const flag = s.meta && s.meta.cosmetics && s.meta.cosmetics.equipped && s.meta.cosmetics.equipped.flag;
-    if (flag) {
-      ctx.strokeStyle = '#3a2a1a';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(p.x + r * 0.5, p.y - r * 0.1);
-      ctx.lineTo(p.x + r * 0.5, p.y - r * 1.1);
-      ctx.stroke();
-      ctx.fillStyle = `#${hashHue(flag).toString(16).padStart(6, '0')}`;
-      ctx.beginPath();
-      ctx.moveTo(p.x + r * 0.5, p.y - r * 1.1);
-      ctx.lineTo(p.x + r * 1.0, p.y - r * 0.92);
-      ctx.lineTo(p.x + r * 0.5, p.y - r * 0.74);
-      ctx.fill();
-    }
+    cosmetics.drawMoundCosmetics(ctx, s, p, r, h);   // C149: snow cap, white flag, ladybug pet (and the ant tint sync)
     // other entrances
     for (const e of surf.entrances || []) {
       if (!e || e.kind === 'main' || !(e.hex >= 0)) continue;
@@ -2447,6 +2633,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     drawFrontier(ctx, s, d, T);
     const trails = s.run.surface.trails || [];
     syncBlockKey(s, d);
+    syncLanes(trails);
     const polys = trails.map((tr) => (tr ? trailScreen(tr) : null));
     drawDaughters(ctx, s);
     drawTrails(ctx, s, d, polys);
@@ -2683,6 +2870,12 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     getWeather() {
       const d = D();
       return { counts: fxScreen.weatherCounts(), blend: seasonBlend(d && d.season), terrainCaches: terrainCaches.size, terrainBuildMs };
+    },
+    /** C134 perf / test probe: lane layout build time (ms), the lanes in use and the cached trail curves. */
+    getLanes() {
+      let shared = 0;
+      for (const off of lanes.values()) if (off.some((v) => v !== 0)) shared++;
+      return { laneBuildMs, trails: lanes.size, sharedTrails: shared, cachedCurves: trailGeo.size };
     },
   };
   registerRenderer(canvas, api);

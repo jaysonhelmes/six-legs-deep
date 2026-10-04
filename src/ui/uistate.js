@@ -2,8 +2,9 @@
 // Owner: WP9. Contract: ARCHITECTURE §14.4. WP8 writes selection (via the bridge), hover and tool completion;
 // WP9 writes everything else. Pure module (no DOM), so Node tests can import it.
 
-/** Tab ids in display order (keyboard 1–9 follows this order). */
-export const TAB_IDS = Object.freeze(['colony', 'build', 'map', 'research', 'prestige', 'achievements', 'guide', 'stats', 'settings']);
+/** Tab ids in display order (keyboard 1–9 follows this order; the 10th tab, Settings, has no number key). C143: the
+ *  Adaptations tab sits after Map. */
+export const TAB_IDS = Object.freeze(['colony', 'build', 'map', 'adaptations', 'research', 'prestige', 'achievements', 'guide', 'stats', 'settings']);
 
 /** Sub-tab ids per tab (ARCHITECTURE §14.4). */
 export const SUB_TABS = Object.freeze({

@@ -49,7 +49,7 @@ export function createDerived() {
       agg: {
         housingBase: 10,
         broodGroups: [{ kind: 'royal', uid: 1, cap: 3, factor: 1, exposed: false, snap: false, inReach: false }],
-        berthsBase: 0, repleteBerthsBase: 0,
+        berthsBase: 0, warBerthsBase: 0, repleteBerthsBase: 0,
         alateCells: 0,
         granaryCap: 0,
         clayFoodShare: 0,
@@ -93,7 +93,7 @@ export function createDerived() {
 
     stats: {
       colonyScale: 1,
-      housing: 10, broodSlots: 3, berths: 0, repleteBerths: 0, alateCells: 0, gardenerSlots: 0,
+      housing: 10, broodSlots: 3, berths: 0, warBerths: 0, repleteBerths: 0, alateCells: 0, gardenerSlots: 0,
       foodCap: 150, honeydewCap: 65, leafCap: 0, fungusCap: 0, pheromoneCap: 50,
       layRate: 0.25,
       eggCost: { minor: 10, soldier: 50, supermajor: 500, replete: 200, alate: 200 },

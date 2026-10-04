@@ -288,7 +288,7 @@ test('[post-integration] data content: documented ORDER arrays, table sizes and 
     const got = (await load(rel))[name].length;
     if (got !== n) problems.push(rel + ': ' + name + ' has ' + got + ' entries, DESIGN has ' + n);
   };
-  await size('data/chambers.js', 'CHAMBER_ORDER', 16);
+  await size('data/chambers.js', 'CHAMBER_ORDER', 17); // C136 War Hall
   await size('data/adaptations.js', 'ADAPTATION_ORDER', 10);
   await size('data/research.js', 'RESEARCH_ORDER', 58);
   await size('data/events.js', 'EVENT_ORDER', 28);

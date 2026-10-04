@@ -99,9 +99,11 @@ test('C106: pending spots wait for food at half price; a spot covered by another
   assert.ok(s.run.nest.bpPending.some((p) => p.type === 'scent_library'), 'unaffordable: still pending');
   // Enough for the half price (not the full price): queued at half price.
   let before = 0;
-  for (let k = 0; k < 25 && !s.run.nest.chambers.some((c) => c.type === 'scent_library'); k++) {
+  for (let k = 0; k < 60 && !s.run.nest.chambers.some((c) => c.type === 'scent_library'); k++) {
     s.run.res.food = half * 1.2;
     before = s.run.res.food;
+    // C138: a spot the open nest does not reach yet first gets an access tunnel; dig it out at once here
+    for (const j of s.run.nest.queue) if (j.bpAccess) { for (const c of j.cells) s.run.nest.cells[c] = CELL.TUNNEL; s.run.nest.rev++; }
     game.tickOnce(0.1);
   }
   const lib = s.run.nest.chambers.find((c) => c.type === 'scent_library');

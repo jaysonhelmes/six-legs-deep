@@ -232,3 +232,122 @@ test('C128: hexSdf is negative inside a hex, ~0 on its corners and edges, positi
   assert.ok(Math.abs(hexSdf(10 + 26 * Math.sqrt(3) / 2, 20, 10, 20, 26)) < 1e-9);
   assert.ok(hexSdf(10 + 40, 20, 10, 20, 26) > 0);
 });
+
+test('C134 laneLayout: trails sharing hex steps get symmetric parallel lanes ordered by uid; unshared steps stay centred', async () => {
+  const { laneLayout, hexWorld } = await import('../src/render/geom.js');
+  const { hexIndex } = await import('../src/core/hex.js');
+  const size = HEX.px;
+  const A = [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(3, 0)];
+  const B = [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(2, 1)];
+  const L = laneLayout([{ uid: 9, path: B }, { uid: 4, path: A }], { size });
+  const a = L.get(4);
+  const b = L.get(9);
+  assert.equal(a.length, 6);
+  const sp = 0.24 * size;
+  for (const k of [0, 1]) {
+    // perpendicular to the step, half a spacing each side, A (lower uid) and B mirrored
+    const p = hexWorld(A[k], size);
+    const q = hexWorld(A[k + 1], size);
+    const dot = (a[2 * k] * (q.x - p.x) + a[2 * k + 1] * (q.y - p.y));
+    assert.ok(Math.abs(dot) < 1e-9, 'perpendicular');
+    assert.ok(Math.abs(Math.hypot(a[2 * k], a[2 * k + 1]) - sp / 2) < 1e-9);
+    assert.ok(Math.abs(a[2 * k] + b[2 * k]) < 1e-9 && Math.abs(a[2 * k + 1] + b[2 * k + 1]) < 1e-9, 'mirrored');
+  }
+  assert.deepEqual([a[4], a[5], b[4], b[5]], [0, 0, 0, 0], 'after the split each trail is alone on its step');
+  // consistent order along a shared stretch: same side on both shared steps (no crossing)
+  const side = (k) => Math.sign(a[2 * k] * -(hexWorld(A[k + 1], size).y - hexWorld(A[k], size).y) * -1 + a[2 * k + 1] * (hexWorld(A[k + 1], size).x - hexWorld(A[k], size).x));
+  assert.equal(side(0), side(1));
+  // a trail walking the same steps the other way still gets its own lane (offsets differ, sum to zero)
+  const C = A.slice().reverse();
+  const L2 = laneLayout([{ uid: 4, path: A }, { uid: 5, path: C }], { size });
+  const c = L2.get(5);
+  const a2 = L2.get(4);
+  // C's step k is A's step 2 − k
+  for (let k = 0; k < 3; k++) {
+    assert.ok(Math.abs(a2[2 * k] + c[2 * (2 - k)]) < 1e-9 && Math.abs(a2[2 * k + 1] + c[2 * (2 - k) + 1]) < 1e-9);
+    assert.ok(Math.hypot(a2[2 * k], a2[2 * k + 1]) > 0);
+  }
+  // many trails on one step: the bundle stays within 0.6 × size, ordered by uid
+  const many = [];
+  for (let u = 1; u <= 8; u++) many.push({ uid: u, path: A });
+  const L3 = laneLayout(many, { size });
+  const xs = many.map((t) => L3.get(t.uid)[1]);   // step 0 runs along +x, so lanes differ in y
+  assert.ok(Math.abs(Math.max(...xs) - Math.min(...xs) - 0.6 * size) < 1e-9);
+  for (let i = 1; i < xs.length; i++) assert.ok(Math.sign(xs[i] - xs[i - 1]) === Math.sign(xs[1] - xs[0]), 'monotone by uid');
+});
+
+test('C134 laneCurve: full lane mid-segment, smooth merge to the shared centre at entrance and source; base when alone', async () => {
+  const { laneLayout, laneCurve, trailCurve, hexWorld } = await import('../src/render/geom.js');
+  const { hexIndex } = await import('../src/core/hex.js');
+  const size = HEX.px;
+  const per = 6;
+  const A = [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(3, 0), hexIndex(4, 0)];
+  const B = [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(2, 1), hexIndex(2, 2)];
+  const L = laneLayout([{ uid: 1, path: A }, { uid: 2, path: B }], { size });
+  const baseA = trailCurve(A, null, { size, perSeg: per });
+  const lane = laneCurve(baseA, A, L.get(1), { size, perSeg: per });
+  assert.equal(lane.length, baseA.length);
+  assert.deepEqual(lane[0], baseA[0], 'starts on the entrance centre');
+  assert.ok(Math.hypot(lane.at(-1).x - baseA.at(-1).x, lane.at(-1).y - baseA.at(-1).y) < 1e-9, 'ends on the source centre');
+  const mid0 = per / 2;   // middle of shared step 0
+  assert.ok(Math.abs(Math.hypot(lane[mid0].x - baseA[mid0].x, lane[mid0].y - baseA[mid0].y) - 0.12 * size) < 1e-9);
+  // smooth: no jump between consecutive samples larger than a plain step plus a little
+  for (let i = 1; i < lane.length; i++) {
+    const dl = Math.hypot(lane[i].x - lane[i - 1].x, lane[i].y - lane[i - 1].y);
+    const db = Math.hypot(baseA[i].x - baseA[i - 1].x, baseA[i].y - baseA[i - 1].y);
+    assert.ok(dl < db + 0.1 * size, 'sample ' + i);
+  }
+  // past the split (step 3, alone) the lane is back on the centre line
+  for (let j = 3 * per + 1; j <= 4 * per; j++) assert.ok(Math.hypot(lane[j].x - baseA[j].x, lane[j].y - baseA[j].y) < 1e-9);
+  // the two lanes really are apart on the shared stretch
+  const laneB = laneCurve(trailCurve(B, null, { size, perSeg: per }), B, L.get(2), { size, perSeg: per });
+  const gap = Math.hypot(lane[mid0].x - laneB[mid0].x, lane[mid0].y - laneB[mid0].y);
+  assert.ok(Math.abs(gap - 0.24 * size) < 1e-6, 'one lane spacing apart on the first shared step: ' + gap);
+  // a trail with nobody beside it is returned untouched
+  const solo = laneLayout([{ uid: 1, path: A }], { size });
+  assert.equal(laneCurve(baseA, A, solo.get(1), { size, perSeg: per }), baseA);
+});
+
+test('C134 + C128: lanes give way near stone, never closer to a stone hex than the margin (or than the centre line)', async () => {
+  const { laneLayout, laneCurve, trailCurve, pathObstacles, hexSdf, hexWorld } = await import('../src/render/geom.js');
+  const { hexIndex, neighbors, DIRS } = await import('../src/core/hex.js');
+  const size = HEX.px;
+  const per = 6;
+  const margin = 0.18 * size;
+  const walk = (dirs) => {
+    let q = 0;
+    let r = 0;
+    const p = [hexIndex(0, 0)];
+    for (const k of dirs) {
+      q += DIRS[k][0];
+      r += DIRS[k][1];
+      p.push(hexIndex(q, r));
+    }
+    return p;
+  };
+  let cases = 0;
+  for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
+    const path = walk([0, a, b]);
+    const on = new Set(path);
+    if (on.size < path.length) continue;
+    const L = laneLayout([{ uid: 1, path }, { uid: 2, path }, { uid: 3, path }], { size });
+    const stones = new Set();
+    for (const hx of path) for (const nb of neighbors(hx)) if (!on.has(nb)) stones.add(nb);
+    for (const stone of stones) {
+      const blocked = (hx) => hx === stone;
+      const base = trailCurve(path, blocked, { size, perSeg: per });
+      const obstacles = pathObstacles(path, blocked, size);
+      const o = hexWorld(stone, size);
+      for (const uid of [1, 3]) {
+        const lane = laneCurve(base, path, L.get(uid), { size, perSeg: per, obstacles });
+        for (let i = 0; i < lane.length; i++) {
+          const sd = hexSdf(lane[i].x, lane[i].y, o.x, o.y, size);
+          const sb = hexSdf(base[i].x, base[i].y, o.x, o.y, size);
+          assert.ok(sd >= Math.min(margin, sb) - 1e-6, `path ${path} stone ${stone} uid ${uid} sample ${i}: ${sd.toFixed(2)}`);
+        }
+        cases++;
+      }
+    }
+  }
+  assert.ok(cases > 50);
+});

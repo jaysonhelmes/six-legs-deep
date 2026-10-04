@@ -1,9 +1,10 @@
 // Achievements panel: Next Goals (the 3 closest, with progress bars), the full list by category with progress, and
-// secret placeholders. Owner: WP9. Contract: ARCHITECTURE §14.5 (Achievements row), §8.5; DESIGN §19, §25.6 rule 9.
+// secret placeholders. C145: every goal and card names its requirement ("Wellspring — Dig down to row 74.") and a
+// "Recently earned" list (the last 8 by earn time, meta.achievements[id] = simTime) heads the panel. Owner: WP9. Contract: ARCHITECTURE §14.5 (Achievements row), §8.5; DESIGN §19, §25.6 rule 9.
 // Queries: achievements.progress / nextGoals (falls back to d.progress.goals).
 
 import { h, setText, show, toggleClass, syncList } from '../dom.js';
-import { fmt, fmtCount, fmtMult } from '../format.js';
+import { fmt, fmtCount, fmtMult, fmtTime } from '../format.js';
 import { nameOf } from '../text.js';
 import { num, arr, obj } from '../reveal.js';
 import { progress as achProgress, nextGoals } from '../../systems/achievements.js';
@@ -23,6 +24,60 @@ function q(fn, fallback) {
   } catch {
     return fallback;
   }
+}
+
+/** Entries in the "Recently earned" list. */
+export const RECENT_MAX = 8;
+
+/**
+ * Requirement text of an achievement (its data desc), or the secret placeholder while a secret one is unearned.
+ * @param {string} id
+ * @param {boolean} [earned]
+ * @returns {string}
+ */
+export function achRequirement(id, earned = true) {
+  if (isSecret(id) && !earned) return 'A secret achievement.';
+  return obj(ACHIEVEMENTS[id]).desc || '';
+}
+
+/**
+ * "Name — requirement" line used by Next Goals and the recent list.
+ * @param {string} id
+ * @returns {string}
+ */
+export function goalLabel(id) {
+  const req = achRequirement(id, false).replace(/.$/, '');
+  return nameOf('achievement', id) + (req ? ' — ' + req : '');
+}
+
+/**
+ * The most recently earned achievements, newest first: [{ id, at, ago }] (at = meta.simTime when earned, ago = seconds
+ * of play since). Ties keep display order.
+ * @param {Object} s
+ * @param {number} [max]
+ * @returns {{ id: string, at: number, ago: number }[]}
+ */
+export function recentAchievements(s, max = RECENT_MAX) {
+  const ach = obj(s && s.meta && s.meta.achievements);
+  const now = num(s && s.meta && s.meta.simTime);
+  const order = ACH_ORDER.length ? ACH_ORDER : Object.keys(ach);
+  const list = Object.keys(ach).filter((id) => Number.isFinite(Number(ach[id])))
+    .map((id) => ({ id, at: Number(ach[id]), i: order.indexOf(id) }));
+  list.sort((a, b) => b.at - a.at || a.i - b.i);
+  return list.slice(0, Math.max(0, max)).map((e) => ({ id: e.id, at: e.at, ago: Math.max(0, now - e.at) }));
+}
+
+/**
+ * Relative time of play since an achievement was earned ("just now", "5 min ago", "2 h 10 min ago").
+ * @param {number} ago seconds
+ * @returns {string}
+ */
+export function agoText(ago) {
+  const a = num(ago);
+  if (a < 60) return 'just now';
+  if (a < 3600) return Math.floor(a / 60) + ' min ago';
+  if (a < 86400) return Math.floor(a / 3600) + ' h ' + Math.floor((a % 3600) / 60) + ' min ago';
+  return fmtTime(a) + ' ago';
 }
 
 /** Is this achievement hidden until earned? */
@@ -45,6 +100,8 @@ export function createPanel(root, { game }) {
   const countEl = h('span', { class: 'big-num' });
   const bonusEl = h('span', { class: 'muted' });
   const goalsList = h('div', { class: 'list goals' });
+  const recentList = h('div', { class: 'list ach-recent' });
+  const recentSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Recently earned' }), recentList);
   const goalsEmpty = note('Keep playing to see your next goals.');
   const filterRow = h('div', { class: 'seg seg-small seg-scroll', role: 'radiogroup', 'aria-label': 'Category' });
   const mk = (id, label) => h('button', { type: 'button', class: 'seg-btn' + (id === cat ? ' selected' : ''), dataset: { c: id }, text: label,
@@ -53,9 +110,26 @@ export function createPanel(root, { game }) {
   for (const c of ACH_CATS) filterRow.appendChild(mk(c, CAT_NAMES[c]));
   const list = h('div', { class: 'list ach-list' });
   const empty = note('Achievement data not loaded yet.');
-  el.append(h('div', { class: 'row-between balance' }, h('span', null, countEl, ' earned'), bonusEl),
+  el.append(h('div', { class: 'row-between balance' }, h('span', null, countEl, ' earned'), bonusEl), recentSec,
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Next goals' }), goalsList, goalsEmpty),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'All achievements' }), filterRow, list, empty));
+
+  function createRecent() {
+    const name = h('span', { class: 'ach-name' });
+    const desc = h('span', { class: 'ach-desc' });
+    const when = h('span', { class: 'muted ach-when' });
+    const row = h('div', { class: 'ach-recent-row' }, h('span', { class: 'ach-mark', text: '★', attrs: { 'aria-hidden': 'true' } }),
+      h('div', { class: 'ach-main' }, h('span', { class: 'row-between' }, name, when), desc));
+    row.__r = { name, desc, when };
+    return row;
+  }
+
+  function updateRecent(row, e) {
+    const r = row.__r;
+    setText(r.name, nameOf('achievement', e.id));
+    setText(r.desc, achRequirement(e.id, true));
+    setText(r.when, agoText(e.ago));
+  }
 
   function createGoal(g) {
     const name = h('span', { class: 'row-title' });
@@ -67,7 +141,7 @@ export function createPanel(root, { game }) {
 
   function updateGoal(row, g) {
     const r = row.__r;
-    setText(r.name, nameOf('achievement', g.id));
+    setText(r.name, goalLabel(g.id));
     const target = num(g.target);
     const cur = num(g.cur);
     r.bar.set(target > 0 ? cur / target : 0, fmt(cur) + ' / ' + fmt(target));
@@ -93,7 +167,8 @@ export function createPanel(root, { game }) {
     toggleClass(row, 'secret', secret);
     setText(r.mark, earned ? '★' : '☆');
     setText(r.name, secret ? '???' : nameOf('achievement', id));
-    setText(r.desc, secret ? 'A secret achievement.' : a.desc || '');
+    setText(r.desc, achRequirement(id, earned));
+    if (earned) r.desc.title = 'Earned ' + agoText(num(s.meta.simTime) - num(s.meta.achievements[id]));
     const rw = a.reward && a.reward.text ? a.reward.text : '';
     setText(r.reward, rw && !secret ? 'Reward: ' + rw : '');
     show(r.reward, !!rw && !secret);
@@ -119,6 +194,9 @@ export function createPanel(root, { game }) {
       goals = goals.filter((g) => g && g.id).slice(0, 3);
       syncList(goalsList, goals, (g) => g.id, createGoal, updateGoal);
       show(goalsEmpty, goals.length === 0);
+      const recent = recentAchievements(s);
+      show(recentSec, recent.length > 0);
+      syncList(recentList, recent, (e) => e.id, createRecent, updateRecent);
       show(empty, total === 0);
       if (tick++ % 4 !== 0) return; // the full list refreshes at 1 Hz
       const ids = ACH_ORDER.filter((id) => cat === 'all' || obj(ACHIEVEMENTS[id]).cat === cat);

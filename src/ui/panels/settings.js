@@ -6,7 +6,8 @@
 
 import { h, setText, setProp, show, clear, doc } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtPct, setNotation } from '../format.js';
-import { cosmeticSlot, COSMETIC_SLOTS, humanize } from '../text.js';
+import { cosmeticSlot, COSMETIC_SLOTS, cosmeticName, equippedCosmeticId } from '../text.js';
+import { COSMETICS, COSMETIC_SLOT_ORDER } from '../../data/cosmetics.js';
 import { num, obj } from '../reveal.js';
 import { adultsTotal } from '../../core/state.js';
 import { makeAct, sliderRow, note } from './common.js';
@@ -18,9 +19,10 @@ const NAME_MAX = 40;
  * Keyboard shortcuts (DESIGN §25.4, ARCHITECTURE §14.2) and the view camera controls (render/nestInput.js,
  * render/surfaceInput.js) for the Settings reference list. View keys act on the view you clicked last.
  */
-export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
+export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab: Colony, Build, Map, Adaptations, Research, Prestige, Achievements, Field Guide, Stats'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
   ['R', 'Rally the selected trail; relocate the selected chamber'],
-  ['L / Shift + L', 'Level the selected chamber / the cheapest of its type'], ['G', 'Pick the growth side of the selected chamber'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
+  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected)'],
+  ['F / right-click', 'While placing: pick the corner the new chamber starts in'], ['G', 'Pick the growth side (older chambers without a reserved space)'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
   ['+ / −', 'Zoom the clicked view in or out'], ['0 / Home', 'Nest view: frame the queen'],
   ['Crown button', 'Frame the queen (nest view, top-right, beside − and +)'], ['Arrows, PgUp / PgDn', 'Pan or scroll the clicked view'],
@@ -230,6 +232,11 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
     h('section', { class: 'sec sec-danger' }, h('h3', { class: 'sec-title', text: 'Danger zone' }),
       h('p', { class: 'note', text: 'Delete everything and start a brand-new colony.' }), resetBtn));
 
+  /** C149: draw a cosmetic preview on a small canvas (render module loaded lazily; no canvas → no preview). */
+  function drawPreview(canvas, id) {
+    import('../../render/cosmetics.js').then((m) => { if (!m.drawCosmeticPreview(canvas, id)) canvas.hidden = true; }).catch(() => { canvas.hidden = true; });
+  }
+
   function renderCosmetics(s) {
     const owned = Object.keys(obj(s.meta.cosmetics && s.meta.cosmetics.owned)).filter((k) => s.meta.cosmetics.owned[k]);
     const equipped = obj(s.meta.cosmetics && s.meta.cosmetics.equipped);
@@ -243,12 +250,27 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
     }
     const bySlot = {};
     for (const id of owned) (bySlot[cosmeticSlot(id)] ||= []).push(id);
-    for (const slot of Object.keys(bySlot)) {
+    const slots = Object.keys(bySlot).sort((a, b) => (COSMETIC_SLOT_ORDER.indexOf(a) + 1 || 99) - (COSMETIC_SLOT_ORDER.indexOf(b) + 1 || 99));
+    for (const slot of slots) {
+      const cur = equippedCosmeticId(s, slot) || '';
       const sel = h('select', { class: 'select', attrs: { 'aria-label': COSMETIC_SLOTS[slot] || slot } },
-        h('option', { value: '', text: 'Default' }), bySlot[slot].map((id) => h('option', { value: id, text: humanize(id.replace(/^cos(metic)?_/, '')) })));
-      sel.value = equipped[slot] || '';
-      sel.addEventListener('change', (ev) => act('equipCosmetic', { slot, id: sel.value || null }, ev, sel));
-      cosBox.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label', text: COSMETIC_SLOTS[slot] || slot }), sel));
+        h('option', { value: '', text: 'Default' }), bySlot[slot].map((id) => h('option', { value: id, text: cosmeticName(id) })));
+      sel.value = cur;
+      sel.addEventListener('change', (ev) => {
+        // older saves kept some cosmetics under another key (e.g. 'misc'): clear those so one slot holds one cosmetic
+        for (const k of Object.keys(obj(game.s.meta.cosmetics.equipped))) {
+          if (k !== slot && cosmeticSlot(game.s.meta.cosmetics.equipped[k]) === slot) act('equipCosmetic', { slot: k, id: null }, null, sel);
+        }
+        act('equipCosmetic', { slot, id: sel.value || null }, ev, sel);
+      });
+      const shownId = cur || bySlot[slot][0];
+      const def = COSMETICS[shownId];
+      const canvas = h('canvas', { class: 'cos-preview', width: 72, height: 44, attrs: { 'aria-hidden': 'true' } });
+      const desc = h('span', { class: 'cos-desc', text: (def ? def.desc : '') + (cur ? '' : ' (not equipped)') });
+      cosBox.appendChild(h('div', { class: 'cos-slot' + (cur ? ' equipped' : ''), dataset: { slot } },
+        h('label', { class: 'field' }, h('span', { class: 'field-label', text: COSMETIC_SLOTS[slot] || slot }), sel),
+        h('div', { class: 'cos-preview-row' }, canvas, desc)));
+      drawPreview(canvas, shownId);
     }
   }
 

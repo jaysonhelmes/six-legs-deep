@@ -23,6 +23,7 @@ import { FLIGHT, SUPER, SPEC, HARDSHIP, HARDSHIPS, EDICTS } from '../../data/pre
 import { YEAR } from '../../data/seasons.js';
 import { makeAct, note, progressBar, subTabStrip, sliderRow } from './common.js';
 import { historyCount } from '../history.js';
+import { flightFactorRows, flightTerms } from '../manualContent.js';
 
 const SUBS = ['flight', 'bloodline', 'hardships', 'supercolony', 'federation', 'edicts', 'speciation', 'genome', 'species'];
 /** Reveal key per sub-tab, and the teaser key that shows it greyed. */
@@ -42,6 +43,18 @@ export const GENOME_BUYABLE = Object.freeze(GENOME_ORDER.filter((id) => !(GENOME
 const HARDSHIP_FALLBACK = ['eternal_winter', 'claustral_founding', 'pacifist', 'barren_ground', 'shallow_soil', 'monomorphic'];
 const SPECIES_FALLBACK = ['garden_ant', 'leafcutter', 'honeypot', 'fire_ant'];
 const SEASONS = ['spring', 'summer', 'autumn', 'winter'];
+
+/**
+ * C146 reared-alate rule in words (DESIGN §13.2: × (1 + 0.02 × reared), additive, capped at 25 or 50 with Royal Court).
+ * @param {number} [max] the cap this run
+ * @returns {string}
+ */
+export function rearedRuleText(max = num(FLIGHT.rearedMax, 25)) {
+  const per = num(FLIGHT.rearedPer, 0.02);
+  const pct = Math.round(per * 100);
+  return 'Each reared alate gives +' + pct + '% more alates on your next flight (+' + pct + '% each, additive: ' + max + ' reared = +'
+    + Math.round(per * max * 100) + '%).';
+}
 
 /** Safe query. */
 function q(fn, fallback) {
@@ -149,8 +162,9 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const rear5 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 5', on: { click: (ev) => act('rearAlate', { n: 5 }, ev, rear5) } });
   const autoRear = h('input', { type: 'checkbox', class: 'check' });
   autoRear.addEventListener('change', (ev) => act('setAutomation', { patch: { autoRear: !!autoRear.checked } }, ev, autoRear));
+  const rearRule = h('p', { class: 'note rear-rule', text: rearedRuleText() });
   const alateSec = h('section', { class: 'sec sec-alates' }, h('h3', { class: 'sec-title', text: 'Alate rearing' }),
-    h('p', { class: 'note', text: 'Each reared alate adds +' + Math.round(num(FLIGHT.rearedPer, 0.02) * 100) + '% to your next Nuptial Flight.' }),
+    rearRule,
     h('dl', { class: 'kv' }, h('dt', { text: 'Reared / cells' }), alateCount, h('dt', { text: 'Next alate egg' }), h('dd', null, alateCost)),
     h('div', { class: 'btn-row' }, rear1, rear5),
     h('label', { class: 'toggle-row', dataset: { tip: 'Rear alates whenever a cell is free.' } }, autoRear, h('span', { text: 'Auto-rear' })));
@@ -160,6 +174,11 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     alateSec,
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Projection' }),
       h('div', { class: 'row-between' }, h('span', null, projEl, ' alates'), perMinEl), meter.el, peakNote, flyKv, flyBtn, flyHint));
+  // C146 "What increases flight alates": every factor of the Flight formula with the current value
+  const factorList = h('div', { class: 'flight-factors' });
+  const factorSec = h('section', { class: 'sec sec-factors' }, h('h3', { class: 'sec-title', text: 'What increases flight alates' }),
+    h('p', { class: 'note', text: 'Your flight multiplies these together. Current values:' }), factorList);
+  views.flight.append(factorSec);
   // Colony History (C130): replaces the Strata fossils once drawn in the nest's bedrock
   const histNote = h('p', { class: 'note' });
   const histBtn = h('button', { type: 'button', class: 'btn', text: 'Open Colony History', on: { click: () => dlg('history') } });
@@ -484,10 +503,27 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
           setText(peakNote, 'Peak reached ' + fmtTime(Math.max(0, num(s.run.time) - num(s.run.prestige.peakAt))) + ' ago'
             + (fly.ok ? ': a good time to fly.' : '.'));
         }
-        const reared = num(s.run.colony && s.run.colony.alatesReared);
+        const ft = q(() => flightTerms(s, d), null);
+        const reared = ft ? ft.reared : num(s.run.colony && s.run.colony.alatesReared);
         setText(kvRear, fmtCount(reared) + ' (' + fmtPct(reared * num(FLIGHT.rearedPer, 0.02)) + ')');
-        const w = num(d && d.season && d.season.mods && d.season.mods.flightW, 1);
+        if (ft) setText(rearRule, rearedRuleText(ft.rearedMax));
+        const w = ft ? ft.W : num(d && d.season && d.season.mods && d.season.mods.flightW, 1);
         setText(kvWeather, fmtMult(w) + (w > 1 ? ' (flight weather!)' : ''));
+        const rows = q(() => flightFactorRows(s, d), []);
+        syncList(factorList, rows, (r) => r.id, (r) => {
+          const label = h('span', { class: 'ff-label' });
+          const how = h('span', { class: 'ff-how' });
+          const val = h('span', { class: 'ff-val' });
+          const mult = h('span', { class: 'ff-mult' });
+          const row = h('div', { class: 'ff-row', dataset: { id: r.id } }, h('div', { class: 'ff-main' }, label, how), h('div', { class: 'ff-side' }, val, mult));
+          row.__r = { label, how, val, mult };
+          return row;
+        }, (row, r) => {
+          setText(row.__r.label, r.label);
+          setText(row.__r.how, r.how);
+          setText(row.__r.val, r.value);
+          setText(row.__r.mult, r.mult);
+        });
         setText(kvLineage, fmtMult(num(meta.lineage, 1)) + ' food');
         setText(kvAlates, fmtCount(num(s.cycle.alates)));
         const shown = isShown(s, 'flight_button') || !!fly.ok;

@@ -87,6 +87,7 @@ export const UNLOCKS = f([
   U('chamber_deep_vault', 'Deep Vault', R('acid_excavation'), false, false),
   U('chamber_water_well', 'Water Well', { custom: 'waterRevealed' }, false, true),
   U('caste_supermajor', 'Supermajors', R('supermajors'), false, false),
+  U('chamber_war_hall', 'War Hall', R('supermajors'), false, false),
   U('adapt_long_legs', 'Long Legs', R('tandem_running'), false, false),
   U('ability_frenzy', 'Frenzy', R('frenzy_signal'), false, false),
   U('panel_map', 'Map', { all: [{ custom: 'secondTrailOrClaim' }, { flag: 'trail_slots' }] }, true, true),

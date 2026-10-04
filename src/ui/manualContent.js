@@ -42,7 +42,7 @@ import { EVENT_ORDER, EVENTS } from '../data/events.js';
 import { FIELD_GUIDE } from '../data/fieldGuide.js';
 import { BRANCH_ORDER, RESEARCH, RESEARCH_ORDER, REFINEMENT, INNATE } from '../data/research.js';
 import { ADAPTATION_ORDER, ADAPTATIONS } from '../data/adaptations.js';
-import { FLIGHT, LINEAGE, SUPER, SPEC, PASSIVE, HARDSHIP, HARDSHIP_ORDER, EDICT_ORDER } from '../data/prestige.js';
+import { FLIGHT, LINEAGE, SUPER, SPEC, PASSIVE, HARDSHIP, HARDSHIP_ORDER, EDICT_ORDER, ACH_META } from '../data/prestige.js';
 import { TRAIT_ORDER, TRAITS } from '../data/bloodline.js';
 import { FED_ORDER, FEDERATION } from '../data/federation.js';
 import { GENOME_ORDER, GENOME, SPECIES_ORDER, SPECIES } from '../data/genome.js';
@@ -404,6 +404,7 @@ const DEF_RESOURCES = RESOURCES.map((R) => ({
 const HOUSE = {
   housing: ['gallery', 'housing (the Royal Chamber and Galleries)'],
   berths: ['barracks', 'Barracks berths'],
+  warBerths: ['war_hall', 'War Hall berths'],
   repleteBerths: ['repletion_hall', 'Repletion Hall berths'],
   alateCells: ['nuptial_chamber', 'alate cells in the Nuptial Chamber'],
 };
@@ -424,7 +425,7 @@ function extraText(extra) {
 const CASTE_HOW = {
   minor: 'Every egg is a minor worker unless the caste sliders ask for something else.',
   soldier: 'Set a soldier share on the caste slider (Colony tab). The queen lays one when a berth is free and chitin is there.',
-  supermajor: 'Set a supermajor share on the caste slider. Each needs a free berth, chitin and fungus.',
+  supermajor: 'Set a supermajor share on the caste slider. Each needs a free War Hall berth, chitin and fungus.',
   replete: 'Set a replete share on the caste slider. Repletes hang from the ceiling and do not work.',
   alate: 'Rear them in Prestige → Flight (Rear 1 / Rear 5, or Auto-rear). Each one boosts your next Flight.',
 };
@@ -580,8 +581,9 @@ const DEF_ADAPT = {
         { p: 'Repeatable upgrades bought with food (some also need chitin or honeydew). Each level costs more than the last. They reset with a Flight.' },
         { table: { head: ['Adaptation', 'Effect', 'Level', 'Next'], rows: ids.map((id) => [nameOf('adaptation', id), tip(s, ADAPT_TIPS, id),
           live((s2) => fmtCount(num(s2.run.adaptations[id]))), live((s2) => costText(q(() => adaptCost(s2, id), null))) ]) } },
+        { note: 'Buy them in the Adaptations tab (key 4): Buy, ×10 or Max (everything you can afford now).' },
       ],
-      tabs: [tabBtn('colony')],
+      tabs: [tabBtn('adaptations')],
     };
   },
 };
@@ -629,8 +631,11 @@ function chamberEffect(s, id) {
       if (isShown(s, 'res_chitin')) out.push('Recycles ' + fx.chitin + ' chitin/s per level.');
       break;
     case 'barracks':
-      out.push('+' + fx.berths + ' berths per level for soldiers' + (casteShown(s, 'supermajor') ? ' and supermajors' : '') + '.');
+      out.push('+' + fx.berths + ' berths per level for soldiers' + (casteShown(s, 'supermajor') ? ' (supermajors live in the War Hall)' : '') + '.');
       out.push('Their ATK ' + pct(fx.atk) + ' per level (at most ' + pct(fx.atkMax) + ' combined).');
+      break;
+    case 'war_hall':
+      out.push('+' + fx.berths + ' supermajor berths per level. A supermajor egg needs a free War Hall berth.');
       break;
     case 'root_aphid_pen':
       out.push('+' + fx.honeydew + ' honeydew/s per level, ×' + fx.winter + ' in winter.');
@@ -717,6 +722,7 @@ function nextLevelText(s, d, id) {
 const CHAMBER_LINKS = {
   royal_chamber: [['caste:queen', 'The queen and brood']], gallery: [['caste:minor', nameOf('caste', 'minor')]], nursery: [['caste:queen', 'The queen and brood']],
   granary: [['res:food', 'Food']], scent_library: [['res:insight', 'Insight']], midden: [['res:chitin', 'Chitin']], barracks: [['caste:soldier', nameOf('caste', 'soldier')]],
+  war_hall: [['caste:supermajor', nameOf('caste', 'supermajor')]],
   root_aphid_pen: [['res:honeydew', 'Honeydew'], ['nest:features', 'Soil features']], fungus_garden: [['res:fungus', 'Fungus'], ['job:gardener', 'Gardener']],
   repletion_hall: [['caste:replete', nameOf('caste', 'replete')]], hibernaculum: [['nest:frost', 'Frost']], thermal_chimney: [['nest:frost', 'Frost']],
   gate: [['war:raids', 'Raids on your nest']], water_well: [['nest:features', 'Soil features']], nuptial_chamber: [['caste:alate', nameOf('caste', 'alate')], ['prestige:flight', 'Nuptial Flight']],
@@ -736,7 +742,8 @@ const DEF_CHAMBERS = CHAMBER_ORDER.map((id) => ({
     const kv = [
       ['You have', live((s2) => ownedText(s2, id))],
       ['Limit', def.maxInst === 'perPocket' ? 'one per revealed water pocket (now ' + fmtCount(maxI) + ')' : fmtCount(maxI) + (maxI === 1 ? ' chamber' : ' chambers')],
-      ['Footprint', def.w0 + '×' + def.h0 + ' cells at L1; ' + (def.grows ? 'grows one row or column per level up to L' + GEOM.footprintMaxL : 'does not grow')],
+      ['Footprint', def.w0 + '×' + def.h0 + ' cells at L1; ' + (def.grows ? 'grows one row or column per level up to L' + GEOM.footprintMaxL
+        + ' into the full-size space it reserves when placed (F picks the corner it starts in)' : 'does not grow')],
     ];
     if (id !== 'royal_chamber' || maxI > 1) {
       kv.push(['Place cost', costText(def.place) + (maxI > 1 ? ' (food ×' + def.placeGrowth + ' for each one you already have)' : '')]);
@@ -970,7 +977,8 @@ const DEF_SURFACE = [
           'Strength: traffic lays pheromone. More ants make a stronger trail (up to ' + TRAIL.sMax + '), and strength adds up to ×' + (1 + TRAIL.sMax / TRAIL.sScale) + ' yield. Unused, it halves every ' + TRAIL.tHalf + ' s.',
           'Shallow food storage shortens every trail from the main entrance.',
           'Slots: ' + SLOTS.base + ' to begin with, more from research' + (isShown(s, 'mound') ? ', Mound levels ' + SLOTS.moundLevels.join(', ') : '') + ' and extra entrances.',
-          ['Trunk Trails: forks can start from any node of an existing trail.', (s2) => hasResearch(s2, 'trunk_trails')],
+          'Every trail starts at an entrance: the main one, or an outpost, satellite or nuptial exit once you have them.',
+          ['Trunk Trails: where trails share hexes, each earns up to +' + Math.round(100 * (RESEARCH.trunk_trails ? RESEARCH.trunk_trails.fx.overlap || 0 : 0)) + '% (by the share of its hexes that another trail also uses).', (s2) => hasResearch(s2, 'trunk_trails')],
           ['Rival land on a trail costs ' + upct(TRAIL.rivalHexPenalty) + ' yield per hex unless escorted (1 soldier per ' + TRAIL.escortPer + ' workers).', (s2) => isShown(s2, 'panel_rivals') && casteShown(s2, 'soldier')],
         ]) },
       ],
@@ -991,6 +999,7 @@ const DEF_SURFACE = [
           ['Claim a revealed hex next to your land for ' + TERRITORY.claimBase + ' × ' + TERRITORY.claimGrowth + '^claims pheromone. A claim over your cap becomes a channel that fills as pheromone regrows.',
             (s2) => isShown(s2, 'hex_claim')],
           ['Conquering a rival gives you all of its land.', (s2) => isShown(s2, 'panel_war')],
+          ['Trunk Trails: every hex of your trails is yours, from any entrance.', (s2) => hasResearch(s2, 'trunk_trails')],
           'Every owned hex adds ' + pct(TERRITORY.yieldPerHex) + ' to surface yields (at most ' + pct(TERRITORY.yieldMax) + '). Sources on owned hexes yield ×' + TERRITORY.ownedSource + '.',
           ['Trails entirely inside your land cannot be raided.', (s2) => isShown(s2, 'raid_warnings')],
           ['Your peak territory this run raises the alates of the next Flight.', (s2) => isShown(s2, 'panel_prestige')],
@@ -1293,25 +1302,77 @@ export function flightTerms(s, d) {
   const vault = 1 + num(CHAMBERS.deep_vault.fx.alates) * vaultL;
   const raw = food * terr * rear * W * mult * vault;
   const proj = num(d && d.meta && d.meta.proj ? d.meta.proj.alates : NaN, NaN);
+  // C146: the lasting multiplier split into its parts (prestige.alatesMult): Wide Wings, kinship, achievement bonuses
+  const wideL = traitLevel(s, 'wide_wings');
+  const wide = num(TRAITS.wide_wings && TRAITS.wide_wings.fx && TRAITS.wide_wings.fx.mult, 1.15) ** wideL;
+  const K = num(s.era && s.era.kinshipLife);
+  const kin = (1 + K) ** num(PASSIVE.kAlates, 0.25);
+  let ach = 1;
+  const achIds = [];
+  for (const id of Object.keys(ACH_META)) {
+    if (!ACH_META[id].alates) continue;
+    achIds.push(id);
+    if (obj(s.meta && s.meta.achievements)[id] !== undefined) ach *= ACH_META[id].alates;
+  }
   return { fRun, food, terr, rear, reared, rearedMax, W, mult, vault, vaultL, raw, softcapped: raw > SOFTCAPS.alates[0][0],
+    tPeak: num(s.run.tPeak), seasonW, eventW: q(() => effectMult(s, 'flight_w'), 1), wideL, wide, K, kin, ach, achIds,
     projected: Number.isFinite(proj) ? proj : q(() => projectAlates(s, d), 0) };
+}
+
+/**
+ * C146 "What increases flight alates": one row per factor of the Flight formula with the player's current value and
+ * multiplier. Rows that would name unrevealed content (Wide Wings before the Bloodline, kinship before the
+ * Supercolony teaser, the Deep Vault before it is shown, achievements before the tab) are left out. Shared by the
+ * Prestige tab (Flight view) and the Manual.
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {{ id: string, label: string, how: string, value: string, mult: string }[]}
+ */
+export function flightFactorRows(s, d) {
+  const t = flightTerms(s, d);
+  const pctPer = Math.round(FLIGHT.rearedPer * 100);
+  const terrPer = Math.round((100 / FLIGHT.tPeakDiv) * 100) / 100;
+  const summerW = num(SEASON_MODS.summer && SEASON_MODS.summer.flightW, 1.25);
+  const dayW = num(EVENTS.ev_flight_day && EVENTS.ev_flight_day.num && EVENTS.ev_flight_day.num.w, 1.5);
+  const rows = [
+    { id: 'food', label: 'Food gathered this run', how: 'square root: 4× the food gives 2× the alates',
+      value: fmt(t.fRun) + ' food', mult: fmt(t.food) + ' base alates' },
+    { id: 'territory', label: 'Peak territory', how: '+' + terrPer + '% per hex at its peak this run',
+      value: fmtCount(t.tPeak) + ' hexes', mult: fmtMult(t.terr) },
+    { id: 'reared', label: 'Reared alates', how: '+' + pctPer + '% each, additive (' + t.rearedMax + ' reared = +' + Math.round(FLIGHT.rearedPer * t.rearedMax * 100) + '%)',
+      value: fmtCount(t.reared) + ' / ' + fmtCount(t.rearedMax), mult: fmtMult(t.rear) },
+    { id: 'weather', label: 'Flight weather', how: 'summer ×' + summerW + ', Flight Day ×' + dayW + ' (the better one counts)',
+      value: t.eventW > 1 ? 'Flight Day' : t.seasonW > 1 ? 'Summer' : 'Calm', mult: fmtMult(t.W) },
+  ];
+  if (isShown(s, 'tab_bloodline')) {
+    rows.push({ id: 'wide_wings', label: nameOf('trait', 'wide_wings'), how: 'Bloodline trait: ×' + num(TRAITS.wide_wings.fx.mult, 1.15) + ' per level',
+      value: 'L' + fmtCount(t.wideL), mult: fmtMult(t.wide) });
+  }
+  if (isShown(s, 'tab_federation_teaser') || t.K > 0) {
+    rows.push({ id: 'kinship', label: 'Kinship', how: '(1 + kinship earned this era)^' + PASSIVE.kAlates, value: fmtCount(t.K) + ' kinship', mult: fmtMult(t.kin) });
+  }
+  if (chamberShown(s, 'deep_vault')) {
+    rows.push({ id: 'deep_vault', label: nameOf('chamber', 'deep_vault'), how: '+' + Math.round(num(CHAMBERS.deep_vault.fx.alates) * 100) + '% per level',
+      value: 'L' + fmtCount(t.vaultL), mult: fmtMult(t.vault) });
+  }
+  if (isShown(s, 'panel_achievements')) {
+    const parts = t.achIds.map((id) => nameOf('achievement', id) + ' +' + Math.round((ACH_META[id].alates - 1) * 100) + '%');
+    const got = t.achIds.filter((id) => obj(s.meta.achievements)[id] !== undefined).length;
+    rows.push({ id: 'achievements', label: 'Achievements', how: parts.join(', '), value: fmtCount(got) + ' / ' + fmtCount(t.achIds.length) + ' earned', mult: fmtMult(t.ach) });
+  }
+  return rows;
 }
 
 const DEF_PRESTIGE = [
   {
     id: 'prestige:flight', section: 'prestige', gate: (s) => isShown(s, 'panel_prestige'),
-    sig: (s) => [chamberShown(s, 'deep_vault'), isShown(s, 'tab_bloodline'), traitLevel(s, 'royal_court') > 0, traitLevel(s, 'brood_bank') > 0].map(Number).join(''),
+    sig: (s) => [chamberShown(s, 'deep_vault'), isShown(s, 'tab_bloodline'), traitLevel(s, 'royal_court') > 0, traitLevel(s, 'brood_bank') > 0,
+      isShown(s, 'tab_federation_teaser'), isShown(s, 'panel_achievements')].map(Number).join(''),
     build: (s) => {
       const T = (fn) => live((s2, d2) => fn(flightTerms(s2, d2)));
-      const box = [
-        ['Food this run', T((t) => fmt(t.fRun))],
-        ['Food term ' + FLIGHT.base + ' × √(food / ' + fmt(FLIGHT.div) + ')', T((t) => fmt(t.food))],
-        ['Territory 1 + peak / ' + FLIGHT.tPeakDiv, T((t) => fmtMult(t.terr))],
-        ['Reared alates (' + 'max ' + (traitLevel(s, 'royal_court') > 0 ? FLIGHT.rearedMaxCourt : FLIGHT.rearedMax) + ')', T((t) => fmtCount(t.reared) + ' → ' + fmtMult(t.rear))],
-        ['Weather', T((t) => fmtMult(t.W))],
-        ['Lasting multipliers', T((t) => fmtMult(t.mult))],
-      ];
-      if (chamberShown(s, 'deep_vault')) box.push(['Deep Vault', T((t) => fmtMult(t.vault))]);
+      // C146: the same factor rows as the Prestige tab's "What increases flight alates" box
+      const box = flightFactorRows(s, null).map((r) => [r.label + ' (' + r.how + ')',
+        live((s2, d2) => { const x = flightFactorRows(s2, d2).find((y) => y.id === r.id); return x ? x.value + ' → ' + x.mult : ''; })]);
       box.push(['Projected alates', T((t) => fmtCount(t.projected) + (t.softcapped ? ' (past the softcap)' : ''))]);
       return {
         title: 'Nuptial Flight', kw: 'flight prestige alates reset nuptial requirements',

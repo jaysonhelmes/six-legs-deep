@@ -236,10 +236,12 @@ function rebuildTerritory(s, d, trunk) {
     if (S.claimed[i]) D.owned[i] = 2;
     else if (S.conquered[i]) D.owned[i] = 3;
   }
+  // C133: with trunk_trails every hex of every trail is territory, whatever its length or entrance (the ×1.5 still needs
+  // ≥ minLen hexes). The old minLen gate here left short trails from outposts / satellites / the nuptial exit unowned,
+  // while short trails from the main entrance looked owned only because they sit inside its auto radius.
   if (trunk) {
-    const minLen = fxOf(RESEARCH, 'trunk_trails', 'minLen', Infinity);
     for (const t of S.trails) {
-      if (!t || !Array.isArray(t.path) || t.path.length < minLen) continue;
+      if (!t || !Array.isArray(t.path)) continue;
       for (const h of t.path) if (isHex(h) && h < nIn && D.owned[h] === 0 && D.rival[h] === 0) D.owned[h] = 4;
     }
   }

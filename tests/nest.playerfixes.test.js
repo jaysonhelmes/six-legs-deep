@@ -72,6 +72,10 @@ test('C97: levelInfo.dirRects shows the exact rectangle of each offered directio
   assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 26, y: 30 }), null);
   stepNest(s, d, 5);
   const ch = s.run.nest.chambers.find((c) => c.type === 'gallery');
+  // C137: a legacy chamber (older save, no reservation) keeps the side choice
+  delete ch.res;
+  ch.noRes = true;
+  s.run.nest.rev++;
   const info = nest.levelInfo(s, d, ch.uid);
   assert.equal(info.dirs.up, false);
   assert.equal(info.dirRects.up, null);

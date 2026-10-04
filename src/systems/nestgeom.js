@@ -186,6 +186,42 @@ export function footprint(type, level) {
 }
 
 /**
+ * C137 reservation anchors: the corner of the full-size (reserved) rectangle that the small L1 room starts in.
+ * 'tl' = top-left (the chamber grows right and down), 'tr', 'bl', 'br'.
+ */
+export const ANCHORS = Object.freeze(['tl', 'tr', 'bl', 'br']);
+
+/**
+ * C137: the W × H rectangle that has `rect` in its `anchor` corner (rect = the chamber's current room).
+ * @param {{ x: number, y: number, w: number, h: number }} rect
+ * @param {string} anchor 'tl' | 'tr' | 'bl' | 'br'
+ * @param {number} W
+ * @param {number} H
+ * @returns {{ x: number, y: number, w: number, h: number }}
+ */
+export function anchorRect(rect, anchor, W, H) {
+  const a = String(anchor || 'tl');
+  return { x: a[1] === 'r' ? rect.x + rect.w - W : rect.x, y: a[0] === 'b' ? rect.y + rect.h - H : rect.y, w: W, h: H };
+}
+
+/**
+ * C137: the anchor of a room inside its reservation ('tl' when it sits on the left and top edges, …), or null when the
+ * room is not in a corner of it.
+ * @param {{ x: number, y: number, w: number, h: number }} room
+ * @param {{ x: number, y: number, w: number, h: number }} res
+ * @returns {string|null}
+ */
+export function anchorOf(room, res) {
+  if (!room || !res) return null;
+  const left = room.x === res.x;
+  const right = room.x + room.w === res.x + res.w;
+  const top = room.y === res.y;
+  const bottom = room.y + room.h === res.y + res.h;
+  if (!(left || right) || !(top || bottom)) return null;
+  return (top ? 't' : 'b') + (left ? 'l' : 'r');
+}
+
+/**
  * In-bounds cell indices of a rectangle, row by row.
  * @param {number} x
  * @param {number} y
@@ -408,6 +444,8 @@ export function buildGeom(s, out = {}) {
   const backfill = reuse('_backfill', Uint8Array, 0);
   const root = reuse('_root', Uint8Array, 0);
   const pocket = reuse('_pocket', Int8Array, -1);
+  // C137: chamber index whose reserved full-size rectangle covers the cell (−1 = none).
+  const resv = reuse('_resv', Int16Array, -1);
 
   for (let i = 0; i < NCELLS; i++) if (isOpenCode(cells[i])) open[i] = 1;
   const chs = nest.chambers;
@@ -415,6 +453,13 @@ export function buildGeom(s, out = {}) {
     const ch = chs[j];
     for (let yy = ch.y; yy < ch.y + ch.h; yy++) {
       for (let xx = ch.x; xx < ch.x + ch.w; xx++) if (inBounds(xx, yy)) chamberAt[idx(xx, yy)] = j;
+    }
+  }
+  for (let j = 0; j < chs.length; j++) {
+    const r = chs[j].res;
+    if (!r || !Number.isInteger(r.x) || !Number.isInteger(r.y)) continue;
+    for (let yy = r.y; yy < r.y + r.h; yy++) {
+      for (let xx = r.x; xx < r.x + r.w; xx++) if (inBounds(xx, yy) && resv[idx(xx, yy)] < 0) resv[idx(xx, yy)] = j;
     }
   }
   const tops = [];
@@ -620,13 +665,14 @@ function heapPop(hc, hi, n) {
 /**
  * Multi-source Dijkstra over the nest: from reachable open cells (or `from`) through open cells (free) and diggable
  * SOIL cells outside every footprint and pending backfill (cost = tunnel work). Stones and water are impassable
- * (DESIGN §7.2). Returns the cost field and predecessor array; stops early when `isGoal(i)` is popped.
+ * (DESIGN §7.2), and so is undug soil reserved by a chamber (C137) unless `allowRes`. Returns the cost field and
+ * predecessor array; stops early when `isGoal(i)` is popped.
  * @param {import('../core/types.js').State} s
  * @param {Object} geo
- * @param {{ from?: number[]|null, isGoal?: ((i: number) => boolean)|null, blocked?: Uint8Array|null }} opts
+ * @param {{ from?: number[]|null, isGoal?: ((i: number) => boolean)|null, blocked?: Uint8Array|null, allowRes?: boolean }} opts
  * @returns {{ cost: Float64Array, prev: Int32Array, goal: number }}
  */
-export function digField(s, geo, { from = null, isGoal = null, blocked = null } = {}) {
+export function digField(s, geo, { from = null, isGoal = null, blocked = null, allowRes = false } = {}) {
   const cost = new Float64Array(NCELLS).fill(Infinity);
   const prev = new Int32Array(NCELLS).fill(-1);
   const ctx = workCtx(s);
@@ -650,6 +696,7 @@ export function digField(s, geo, { from = null, isGoal = null, blocked = null } 
     if (geo._backfill[i]) return -1;
     if (geo.open[i]) return 0;
     if (cells[i] !== CELL.SOIL || geo.chamberAt[i] >= 0) return -1;
+    if (!allowRes && geo._resv && geo._resv[i] >= 0) return -1;
     if (!isDiggable(s, i)) return -1;
     return workAt(ctx, i, 'tunnel');
   };
@@ -700,28 +747,31 @@ export function pathCells(s, prev, end) {
 /**
  * [q] A* / Dijkstra tunnel route from any reachable open cell (or from `from`) to a cell 4-adjacent to any target
  * (DESIGN §7.2 auto-route): weight = cellWork('tunnel'); stone, water, chamber footprints and pending backfill are
- * impassable; target cells themselves are never path cells. Returns the cells to dig (in dig order) and their work;
- * { cells: [], work: 0 } when a start already touches a target; null when unreachable.
+ * impassable, and so is soil another chamber reserved (C137; `allowRes` lifts that, e.g. to drain a pocket inside a
+ * reservation); `blocked` cells are never path cells either; target cells themselves are never path cells. Returns
+ * the cells to dig (in dig order) and their work; { cells: [], work: 0 } when a start already touches a target; null
+ * when unreachable.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number[]} targets
- * @param {{ from?: number[]|null }} [opts]
+ * @param {{ from?: number[]|null, blocked?: number[]|null, allowRes?: boolean }} [opts]
  * @returns {{ cells: number[], work: number } | null}
  */
-export function routeTo(s, d, targets, { from = null } = {}) {
+export function routeTo(s, d, targets, { from = null, blocked = null, allowRes = false } = {}) {
   if (!Array.isArray(targets) || targets.length === 0) return null;
   const geo = getGeom(s, d);
   const tgt = new Uint8Array(NCELLS);
   let any = false;
   for (const t of targets) if (Number.isInteger(t) && t >= 0 && t < NCELLS) { tgt[t] = 1; any = true; }
   if (!any) return null;
+  if (Array.isArray(blocked)) for (const b of blocked) if (Number.isInteger(b) && b >= 0 && b < NCELLS && !tgt[b]) tgt[b] = 2;
   const isGoal = (i) => {
     if (tgt[i]) return false;
     const x = i % COLS;
     return (x > 0 && tgt[i - 1] === 1) || (x < COLS - 1 && tgt[i + 1] === 1)
       || (i >= COLS && tgt[i - COLS] === 1) || (i + COLS < NCELLS && tgt[i + COLS] === 1);
   };
-  const { prev, goal } = digField(s, geo, { from, isGoal, blocked: tgt });
+  const { prev, goal } = digField(s, geo, { from, isGoal, blocked: tgt, allowRes });
   if (goal < 0) return null;
   const cells = pathCells(s, prev, goal);
   const ctx = workCtx(s);

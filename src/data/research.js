@@ -38,7 +38,7 @@ export const RESEARCH = f({
   mass_recruitment: n('mass_recruitment', 'Mass Recruitment', 'foraging', 7, 2500, ['sun_compass', 'persistent_trails'],
     { dNav: 2, rallySec: 60, slots: 2 }),
   frenzy_signal: n('frenzy_signal', 'Frenzy Signal', 'foraging', 8, 4000, ['mass_recruitment']),
-  trunk_trails: n('trunk_trails', 'Trunk Trails', 'foraging', 9, 6000, ['mass_recruitment'], { minLen: 5, mult: 1.5 }),
+  trunk_trails: n('trunk_trails', 'Trunk Trails', 'foraging', 9, 6000, ['mass_recruitment'], { minLen: 5, mult: 1.5, overlap: 0.25 }),
   odometer_navigation: n('odometer_navigation', 'Odometer Navigation', 'foraging', 10, 15000, ['trunk_trails'], { dNav: 3, slope: 0.5 }),
 
   // ---- §11.2 Excavation ----

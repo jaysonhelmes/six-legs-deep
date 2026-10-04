@@ -22,7 +22,7 @@ const FLAGS = {
   res_honeydew: 'nn', chamber_root_aphid_pen: 'nn', adapt_honeydew: 'nn', climate_overlay: 'yy', panel_prestige: 'yy', ability_rally: 'nn',
   raid_warnings: 'yy', frost_line: 'yy', chamber_gate: 'yy', job_leafcutter: 'nn', chamber_hibernaculum: 'nn', chamber_nuptial_chamber: 'nn',
   alate_rearing: 'nn', fungus_widget: 'nn', chamber_fungus_garden: 'nn', job_gardener: 'nn', res_fungus: 'nn', chamber_thermal_chimney: 'nn',
-  chamber_repletion_hall: 'nn', caste_replete: 'nn', chamber_deep_vault: 'nn', chamber_water_well: 'ny', caste_supermajor: 'nn',
+  chamber_repletion_hall: 'nn', caste_replete: 'nn', chamber_deep_vault: 'nn', chamber_water_well: 'ny', caste_supermajor: 'nn', chamber_war_hall: 'nn',
   adapt_long_legs: 'nn', ability_frenzy: 'nn', panel_map: 'yy', flight_button: 'ny', tab_bloodline: 'yy', tab_hardships: 'yy',
   tab_federation_teaser: 'yy', tab_federation: 'yy', tab_edicts: 'yy', tab_genome_teaser: 'yy', tab_genome: 'yy', tab_guide: 'yn',
   tab_stats: 'yn', tab_settings: 'yn',

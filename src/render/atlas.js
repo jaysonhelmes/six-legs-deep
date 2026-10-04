@@ -30,6 +30,9 @@ export const ICON_NAMES = Object.freeze([
 
 let ATLAS = null;
 
+/** Kinds the cosmetic ant tint applies to (the player's own ants; C149). */
+const TINTABLE = new Set(['minor', 'soldier', 'supermajor', 'replete', 'alate', 'queen', 'militia']);
+
 /**
  * The shared atlas (created lazily on first use; safe to call before any canvas exists).
  * @returns {ReturnType<typeof createAtlas>}
@@ -44,6 +47,23 @@ export function resetAtlas() {
   ATLAS = null;
 }
 
+/** C149 worker tint of the equipped palette cosmetic (Royal Amber), or null. Part of every strip key. */
+let antTint = null;
+
+/**
+ * Set the cosmetic ant tint (render/cosmetics.syncAntTint calls it each frame). Player kinds (not rivals, ghosts or the
+ * golden beetle ant) are painted mixed toward it; strips are cached per tint, so switching back costs nothing.
+ * @param {string|null} color
+ */
+export function setAntTint(color) {
+  antTint = typeof color === 'string' && color ? color : null;
+}
+
+/** @returns {string|null} the current cosmetic ant tint */
+export function getAntTint() {
+  return antTint;
+}
+
 function createAtlas() {
   /** @type {Map<string, { canvas: any, cell: number } | null>} */
   const strips = new Map();
@@ -51,7 +71,8 @@ function createAtlas() {
   const icons = new Map();
 
   function strip(kind, carry, color, outline) {
-    const key = `${kind}|${carry}|${color || ''}|${outline || ''}`;
+    const tint = TINTABLE.has(kind) ? antTint : null;
+    const key = `${kind}|${carry}|${color || ''}|${outline || ''}|${tint || ''}`;
     if (strips.has(key)) return strips.get(key);
     const k = KIND_SCALE[kind] || 1;
     const cell = Math.round(UNIT_PX * k);
@@ -77,7 +98,7 @@ function createAtlas() {
           else pg.translate(r * cell + cell / 2, fr * cell + cell / 2);
           pg.rotate((r * Math.PI * 2) / ROTATIONS);
           pg.scale(UNIT_PX, UNIT_PX);
-          paintAnt(pg, kind, carry, fr, color);
+          paintAnt(pg, kind, carry, fr, color, tint);
           pg.restore();
           if (useTmp) {
             const sg = sil.ctx;
@@ -136,13 +157,13 @@ function createAtlas() {
      * @param {number} x
      * @param {number} y
      * @param {number} unit
-     * @param {string} [color] rival tint (kind 'rival')
+     * @param {string} [color] rival tint (kind 'rival'); body colour of the queen (golden queen cosmetic, C149)
      * @param {string} [outline] optional silhouette outline colour (Below view: keeps dark ants readable on dark soil)
      */
     drawAnt(ctx, kind, carry, angle, frame, x, y, unit, color, outline) {
       const kn = typeof kind === 'number' ? KIND_NAMES[kind] || 'minor' : kind || 'minor';
       const cn = typeof carry === 'number' ? CARRY_CODES[carry] || 'none' : carry || 'none';
-      const st = strip(kn, cn, kn === 'rival' ? color || '#7a2a1a' : null, outline || null);
+      const st = strip(kn, cn, kn === 'rival' ? color || '#7a2a1a' : kn === 'queen' && color ? color : null, outline || null);
       const k = KIND_SCALE[kn] || 1;
       const size = unit * k;
       if (!st) {
@@ -200,9 +221,13 @@ function ell(g, x, y, rx, ry, rot = 0) {
  * @param {number} frame
  * @param {string|null} color
  */
-function paintAnt(g, kind, carry, frame, color) {
+function paintAnt(g, kind, carry, frame, color, tint = null) {
   let pal = ANT[kind] || ANT.minor;
   if (kind === 'rival' && color) pal = { body: shade(color, -0.45), head: shade(color, -0.55), leg: shade(color, -0.7) };
+  else if (kind === 'queen' && color) pal = { ...pal, body: shade(color, -0.15), head: shade(color, -0.25), gaster: color, leg: shade(color, -0.5) };
+  if (tint && TINTABLE.has(kind)) {
+    pal = { ...pal, body: mix(pal.body, tint, 0.5), head: mix(pal.head, tint, 0.45), gaster: mix(pal.gaster || pal.body, tint, 0.55) };
+  }
   const k = KIND_SCALE[kind] || 1;
   g.save();
   g.scale(k, k);

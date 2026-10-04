@@ -107,11 +107,13 @@ test('C125: the top SHAFT_KEEP_ROWS rows of a shaft stay shaft; growth may cover
   assert.equal(nest.validatePlacement(s, d, 'gallery', 19, 2).reason, null, 'row 2 may be covered');
   // A Thermal Chimney must touch row 0, so it may not sit on a shaft column at all; beside it is fine.
   assert.equal(nest.validatePlacement(s, d, 'thermal_chimney', 20, 0).reason, 'blocked:shaft');
-  // Growth over the shaft: a gallery right of the shaft grows left across it.
-  assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 12 }), null);
+  // Growth over the shaft: a gallery right of the shaft grows left across it (C137: its reserved room extends left over
+  // the shaft, anchor top-right).
+  assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 12, anchor: 'tr' }), null);
   stepNest(s, d, 1);
   const g = s.run.nest.chambers.find((c) => c.type === 'gallery');
-  assert.equal(run(s, d, { type: 'levelChamber', uid: g.uid, dir: 'left' }), null);
+  assert.deepEqual(g.res, { x: 16, y: 12, w: 8, h: 4 });
+  assert.equal(run(s, d, { type: 'levelChamber', uid: g.uid }), null);
   stepNest(s, d, 1);
   nest.derive(s, d);
   assert.deepEqual([g.x, g.w, g.level], [20, 4, 2]);
@@ -169,13 +171,17 @@ test('C126: plannedWaits names why each pending blueprint chamber waits; the tex
   s.run.unlocked[CHAMBERS.gallery.unlock] = true;
   s.run.unlocked[CHAMBERS.nursery.unlock] = true;
   s.run.unlocked[CHAMBERS.granary.unlock] = true;
+  // C66 case below needs a Royal Chamber without a reservation (a reserved one makes that spot 'blocked:reserved')
+  const r1 = s.run.nest.chambers.find((c) => c.uid === 1);
+  delete r1.res;
+  r1.noRes = true;
   nest.derive(s, d);
   setCells(s, [idx(31, 12)], CELL.STONE);
   pend(s, [
     { type: 'barracks', x: 24, y: 8 },          // locked
     { type: 'gallery', x: 30, y: 12 },          // stone in the footprint
     { type: 'nursery', x: 18, y: 22 },          // right under the queen: walls in the Royal Chamber
-    { type: 'granary', x: 22, y: 15 },          // fine: next to nothing open → waits for the path
+    { type: 'granary', x: 22, y: 15 },          // fine: next to nothing open → C138 access tunnel on the next check
     { type: 'water_well', x: 4, y: 50, float: true },
   ]);
   const w = nest.plannedWaits(s, d);
@@ -187,7 +193,7 @@ test('C126: plannedWaits names why each pending blueprint chamber waits; the tex
   assert.equal(plannedWaitText(by('gallery')), 'Waiting: stone in the way — needs Acid Excavation');
   assert.equal(by('nursery').code, 'blocked:royalRoom');
   assert.equal(plannedWaitText(by('nursery')), 'Waiting: would wall in the Royal Chamber (level it to L5 first)');
-  assert.equal(by('granary').code, 'wait:path');
+  assert.equal(by('granary').code, 'wait:next');
   assert.equal(by('water_well').code, 'locked', 'locked comes first');
   assert.equal(nest.plannedWait(s, d, 12 * 40 + 30).code, 'blocked:stone');
   assert.equal(nest.plannedWait(s, d, 0), null);

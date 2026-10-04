@@ -85,6 +85,19 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     }
   }
 
+  // C137: the first Royal Chamber reserves its Flight-level room (top-right anchor: it grows left, as in a new game;
+  // top-left when an extra pre-dug Royal Chamber sits on the left). With no free side it keeps the legacy grow-a-side rule (noRes).
+  {
+    const fp = footprint('royal_chamber', FLIGHT.royalLevel);
+    const W = Math.max(fp.w, r0.w);
+    const H = Math.max(fp.h, r0.h);
+    const hit = (R) => chambers.some((c) => c.uid !== 1 && c.x < R.x + R.w && R.x < c.x + c.w && c.y < R.y + R.h && R.y < c.y + c.h);
+    const opts = [{ x: r0.x + r0.w - W, y: r0.y, w: W, h: H }, { x: r0.x, y: r0.y, w: W, h: H }];
+    const R = opts.find((o) => o.x >= 0 && o.x + o.w <= COLS && !hit(o));
+    if (R) chambers[0].res = R;
+    else chambers[0].noRes = true;
+  }
+
   // Root lines.
   const cols = [];
   for (const c of Array.isArray(rootCols) ? rootCols : []) {

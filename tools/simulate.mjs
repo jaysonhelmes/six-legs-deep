@@ -80,7 +80,7 @@ const EPS = 1e-6;
 /** Chamber growth envelope level (DESIGN §7.4: footprints grow until L8), placement scan tries, preferred rows. */
 const GROW_L = (GEOM && GEOM.footprintMaxL) || 8;
 const PLACE_TRIES = 30;
-const PLACE_ROW = Object.freeze({ default: 8, granary: 4, scent_library: 26, barracks: 6, midden: 30, nuptial_chamber: 12 });
+const PLACE_ROW = Object.freeze({ default: 8, granary: 4, scent_library: 26, barracks: 6, war_hall: 34, midden: 30, nuptial_chamber: 12 });
 
 const PURCHASE_TYPES = new Set(['buyAdaptation', 'buyResearch', 'buyRefinement', 'placeChamber', 'levelChamber', 'buyMound',
   'claimHex', 'buyTrait', 'buyFederation', 'buyGenome']);
@@ -353,6 +353,8 @@ export class Bot {
    *  chamber's L8 envelope anchored at its corner and growing right / down (the bot always grows that way), united
    *  with its current footprint. Keeping new chambers out of these rects means nothing is ever boxed in. */
   reservedRect(ch) {
+    // C137: the game's own reservation when the chamber has one
+    if (ch.res && Number.isInteger(ch.res.x)) return { x0: ch.res.x, y0: ch.res.y, x1: ch.res.x + ch.res.w - 1, y1: ch.res.y + ch.res.h - 1 };
     const fp = q(nestgeom.footprint, ch.type, GROW_L) || { w: ch.w, h: ch.h };
     if (ch.uid === 1) {
       const side = Math.max(0, fp.w - ch.w);
@@ -438,8 +440,9 @@ export class Bot {
         if (ch.status !== 'active') continue;
         const info = q(nest.levelInfo, s, d, ch.uid);
         if (!info || !info.cost || info.blocked || info.max) continue;
-        const dir = info.grows ? this.dirOrder(ch).find((k) => info.dirs && info.dirs[k]) : undefined;
-        if (info.grows && !dir) continue;
+        // C137: a chamber with a reservation grows into it in a fixed order (no direction)
+        const dir = info.grows && !info.reserved ? this.dirOrder(ch).find((k) => info.dirs && info.dirs[k]) : undefined;
+        if (info.grows && !info.reserved && !dir) continue;
         opts.push({ kind: 'level', cost: info.cost, uid: ch.uid, dir });
       }
     }
@@ -506,9 +509,11 @@ export class Bot {
     if (u.chamber_midden && this.chambersOf('midden').length === 0 && this.growType('midden', { placeOnly: true })) return;
     if (u.chamber_root_aphid_pen && this.chambersOf('root_aphid_pen').length < 2 && this.growType('root_aphid_pen', { placeOnly: true })) return;
     if (u.chamber_fungus_garden && this.chambersOf('fungus_garden').length === 0 && this.growType('fungus_garden', { placeOnly: true })) return;
-    const soldiers = c.adults.soldier + c.adults.supermajor;
-    const needBerths = u.chamber_barracks && c.casteTargets.soldier > 0 && soldiers + 1 >= st.berths;
+    // C136: Barracks berths house soldiers only; supermajors need War Hall berths
+    const needBerths = u.chamber_barracks && c.casteTargets.soldier > 0 && c.adults.soldier + 1 >= st.berths;
     if (needBerths && this.growType('barracks')) return;
+    const needWar = u.chamber_war_hall && c.casteTargets.supermajor > 0 && c.adults.supermajor + 1 >= (st.warBerths || 0);
+    if (needWar && this.growType('war_hall')) return;
     // Libraries before the Royal Chamber: insight is the run-1 research bottleneck, and Royal levels past L5 only raise the lay
     // rate, which matters only while housing is free (a housing-capped colony lays nothing).
     if (agg.libraryInsight > 0 && this.growType('scent_library', { levelOnly: true })) return;
@@ -608,9 +613,7 @@ export class Bot {
       if (want.soldier !== c.casteTargets.soldier || want.supermajor !== c.casteTargets.supermajor) this.act('setCasteTargets', want);
     }
     const g = q(rivals.garrison, s, d) || { soldier: 0, supermajor: 0 };
-    if (u.caste_supermajor && c.adults.soldier + c.adults.supermajor >= d.stats.berths && g.soldier >= 4) {
-      this.act('retireAdults', { caste: 'soldier', n: Math.floor(g.soldier / 4) });
-    }
+    // C136: supermajors no longer share the Barracks, so soldiers are not retired to make room for them.
     if (!u.panel_war || banned || s.run.war.parties.length > 0 || !(g.soldier + g.supermajor > 0)) return;
     const army = { soldier: Math.floor(g.soldier), supermajor: Math.floor(g.supermajor) };
     for (const r of s.run.rivals.list) {

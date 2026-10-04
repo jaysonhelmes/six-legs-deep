@@ -110,7 +110,7 @@ test('work splits across cells within one tick; partial progress carries; eff an
 test('digging deeper updates deepestRow (run and lifetime) and rev', () => {
   const { s, d } = setup({ digW: 1000 });
   const path = [];
-  for (let y = 22; y <= 26; y++) path.push(idx(18, y));
+  for (let y = 21; y <= 26; y++) path.push(idx(22, y)); // C137: x 15–21 below the queen is her reserved room
   const rev = s.run.nest.rev;
   assert.equal(run(s, d, { type: 'digTunnel', cells: path }), null);
   stepNest(s, d, 1);
@@ -119,11 +119,15 @@ test('digging deeper updates deepestRow (run and lifetime) and rev', () => {
   assert.ok(s.run.nest.rev > rev);
 });
 
-test('level-up: growing types queue growth cells in the chosen direction; level applies when dug', () => {
+test('level-up (legacy chamber without a reservation): growing types queue growth cells in the chosen direction; level applies when dug', () => {
   const { s, d } = setup({ digW: 9 });
   run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 12 });
   stepNest(s, d, 100);
   const ch = s.run.nest.chambers[1];
+  // C137: chambers from older saves with no free full-size rectangle keep the grow-a-side rule
+  delete ch.res;
+  ch.noRes = true;
+  s.run.nest.rev++;
   assert.equal(ch.status, 'active');
   const info = nest.levelInfo(s, d, ch.uid);
   assert.equal(info.grows, true);
@@ -266,7 +270,7 @@ test('relocate: old cells become tunnel, chamber inactive until dug, work = 50 %
 test('demolish: refund 50 % of placement food, cells become tunnel; never the Royal Chamber', () => {
   const { s, d } = setup({ digW: 1000 });
   run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 12 });
-  run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 15 });
+  assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 5, y: 12 }), null); // C137: clear of the first one's reservation
   stepNest(s, d, 1);
   const food = s.run.res.food;
   const first = s.run.nest.chambers[1];

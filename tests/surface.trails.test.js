@@ -397,16 +397,107 @@ test('cutTrailsAt deletes crossing trails (rev++, trailDeleted on the next tick)
   assert.equal(trails.cutTrailsAt(s, d, 'nope'), 0);
 });
 
-test('trunk_trails: forks become origins and long trails get ×1.5 (when the research data exists)', { skip: !RESEARCH.trunk_trails && 'needs WP5 research data' }, () => {
+test('trunk_trails: long trails get ×1.5 and their hexes count as territory; trails never fork (C132)', { skip: !RESEARCH.trunk_trails && 'needs WP5 research data' }, () => {
   const { s, d } = world({ nest: { agg: { haulH: 0.5 } } });
+  s.run.surface.trails.length = 0;   // no other trail to share hexes with (C132 overlap)
   const far = addSource(s, 'seed_patch', hexIndex(5, 0));
   const t = addTrail(s, far, [0, 3, 9, 21, 39, hexIndex(5, 0)], 5);
   const before = trails.trailYield(s, d, t, 5).out;
   s.run.research.trunk_trails = 1;
   surface.derive(s, d);
-  assert.ok(trails.trailOrigins(s, d).includes(21));
+  assert.deepEqual(trails.trailOrigins(s, d), [0], 'origins are the entrances only, even with trunk_trails');
+  const near = addSource(s, 'seed_patch', hexIndex(3, -2));
+  assert.equal(trails.handlers.drawTrail.validate(s, d, { origin: 21, target: near.hex }), 'invalid:origin');
   assert.equal(d.surface.owned[far.hex], 4, 'trunk hexes count as territory');
   close(trails.trailYield(s, d, t, 5).out / before, RESEARCH.trunk_trails.fx.mult * TERRITORY.ownedSource, 1e-9);
+});
+
+/** Two trails from the main entrance sharing their first two hexes: A (5 steps) and B (4 steps). */
+function sharedPair() {
+  const { s, d } = world({ nest: { agg: { haulH: 0.5 } } });
+  s.run.surface.trails.length = 0;
+  const sa = addSource(s, 'seed_patch', hexIndex(5, 0));
+  const sb = addSource(s, 'seed_patch', hexIndex(2, 2));
+  const a = addTrail(s, sa, [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(3, 0), hexIndex(4, 0), hexIndex(5, 0)], 5);
+  const b = addTrail(s, sb, [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(2, 1), hexIndex(2, 2)], 4);
+  surface.derive(s, d);
+  return { s, d, a, b };
+}
+
+test('C132 Trunk Trails overlap: each trail ×(1 + overlap × shared-hex fraction), origin hex not counted; none without the research', { skip: !RESEARCH.trunk_trails && 'needs WP5 research data' }, () => {
+  const k = RESEARCH.trunk_trails.fx.overlap;
+  assert.ok(k > 0, 'overlap bonus lives in data');
+  const { s, d, a, b } = sharedPair();
+  // without the research: no bonus, but the shared stretch is still reported
+  const o0 = trails.trailOverlap(s, d, a);
+  assert.deepEqual([o0.shared, o0.total, o0.mult], [2, 5, 1]);
+  s.run.research.trunk_trails = 1;
+  surface.derive(s, d);
+  const oa = trails.trailOverlap(s, d, a);
+  const ob = trails.trailOverlap(s, d, b);
+  close(oa.frac, 2 / 5, 1e-12);
+  close(ob.frac, 2 / 4, 1e-12);
+  close(oa.mult, 1 + k * 0.4, 1e-12);
+  close(ob.mult, 1 + k * 0.5, 1e-12);
+  const withB = trails.trailYield(s, d, a, 5).out;
+  const T = s.run.surface.trails;
+  T.splice(T.indexOf(b), 1);
+  const alone = trails.trailYield(s, d, a, 5).out;
+  close(withB / alone, 1 + k * 0.4, 1e-9);
+  // a hypothetical trail (preview, uid 0) counts every live trail as "another" trail
+  close(trails.trailOverlap(s, d, { uid: 0, path: a.path }).frac, 1, 1e-12);
+});
+
+test('C132 overlap reaches the ledger through tick (allocator and yields agree)', { skip: !RESEARCH.trunk_trails && 'needs WP5 research data' }, () => {
+  const { s, d, a } = sharedPair();
+  s.run.research.trunk_trails = 1;
+  s.run.colony.jobs.forager = 10;
+  a.workers = 5;
+  tickOnce(s, d);
+  const e = d.surface.trails.find((x) => x.uid === a.uid);
+  close(e.out, trails.trailYield(s, d, a, e.workers).out, 1e-9);
+});
+
+test('C132: a forked trail from an old save is re-routed from the best entrance on the next tick, keeping workers / escorts / S', () => {
+  const { s, d } = world({ nest: { agg: { haulH: 0.5 } } });
+  const sat = hexIndex(-4, 0);
+  surface.addEntrance(s, d, 'satellite', sat, 3, 0);
+  const trunkSrc = addSource(s, 'seed_patch', hexIndex(5, 0));
+  addTrail(s, trunkSrc, [0, hexIndex(1, 0), hexIndex(2, 0), hexIndex(3, 0), hexIndex(4, 0), hexIndex(5, 0)], 5);
+  const leaf = addSource(s, 'seed_patch', hexIndex(3, 2));
+  // a fork from (3,0) of the trail above, as the old Trunk Trails allowed
+  const fork = addTrail(s, leaf, [hexIndex(3, 0), hexIndex(3, 1), hexIndex(3, 2)], 2, { workers: 4, escorts: 2, S: 33 });
+  s.run.colony.jobs.forager = 10;
+  s.run.colony.adults.soldier = 5;
+  const ev = tickOnce(s, d);
+  assert.equal(fork.origin, 0, 'nearest entrance by route: the main one');
+  assert.equal(fork.path[0], 0);
+  assert.equal(fork.path[fork.path.length - 1], leaf.hex);
+  assert.equal(fork.workers, 4);
+  assert.equal(fork.escorts, 2);
+  assert.ok(fork.S > 30, 'strength kept');
+  assert.ok(ev.some((e) => e.type === 'trailRehomed' && e.uid === fork.uid && e.ok === true && e.origin === 0));
+  // every trail now starts at an entrance; deleting the parent leaves nothing dangling
+  const ents = new Set(trails.trailOrigins(s, d));
+  assert.ok(s.run.surface.trails.every((t) => ents.has(t.origin) && t.path[0] === t.origin));
+  const parent = s.run.surface.trails.find((t) => t.src === trunkSrc.uid);
+  trails.handlers.deleteTrail.apply(s, d, { uid: parent.uid }, fakeEnv());
+  const ev2 = tickOnce(s, d);
+  assert.ok(!ev2.some((e) => e.type === 'trailRehomed'), 'nothing to re-home after a delete');
+  assert.ok(s.run.surface.trails.some((t) => t.uid === fork.uid));
+});
+
+test('C132: a forked trail no entrance can reach is dropped with trailDeleted + trailRehomed { ok: false }', () => {
+  const { s, d } = world();
+  const hole = hexIndex(5, 0);
+  for (const n of neighbors(hole)) s.run.surface.terrain[n] = TERRAIN.stone.code;
+  const src = addSource(s, 'seed_patch', hole);
+  const fork = addTrail(s, src, [hexIndex(6, 0), hole], 1);
+  surface.derive(s, d);
+  const ev = tickOnce(s, d);
+  assert.ok(!s.run.surface.trails.some((t) => t.uid === fork.uid));
+  assert.ok(ev.some((e) => e.type === 'trailDeleted' && e.uid === fork.uid));
+  assert.ok(ev.some((e) => e.type === 'trailRehomed' && e.uid === fork.uid && e.ok === false));
 });
 
 test('rally / unescorted / source effects multiply the trail; barren_ground halves yields', () => {

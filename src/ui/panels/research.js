@@ -1,6 +1,8 @@
 // Research panel: tier grid by branch (columns = branches, rows = tiers), locked nodes greyed with their
 // prerequisites, Innate helix badges with run counts, and branch refinements. "Hide completed" (C116) drops owned nodes
-// from the grid (remembered per browser) and leaves a "N completed hidden" note per branch. Owner: WP9.
+// from the grid (remembered per browser) and leaves a "N completed hidden" note per branch. C144: one branch at a
+// time (no "All" view); the first visit opens the first branch with something available, later visits the branch last
+// viewed (remembered per browser); each branch button counts its available nodes. Owner: WP9.
 // Contract: ARCHITECTURE §14.5 (Research row), §8.4; DESIGN §11. Queries: research.isAvailable / isOwned / cost /
 // refinementCost / branchComplete.
 
@@ -89,6 +91,54 @@ export function visibleNodes(ids, ownedFn, hideOwned) {
   return { ids: out, hidden: ids.length - out.length };
 }
 
+/** localStorage key of the last research branch viewed (per-browser UI convenience, C144). */
+export const BRANCH_KEY = 'sld.research.branch';
+
+/**
+ * Remembered branch id, or null (nothing stored, storage blocked, or not a branch).
+ * @param {{ getItem: Function }|null} [store]
+ * @returns {string|null}
+ */
+export function loadBranch(store = browserStore()) {
+  try {
+    const v = store ? store.getItem(BRANCH_KEY) : null;
+    return typeof v === 'string' && branchIds().includes(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remember the branch viewed; storage failures keep it for this session only.
+ * @param {string} id
+ * @param {{ setItem: Function }|null} [store]
+ */
+export function saveBranch(id, store = browserStore()) {
+  try {
+    if (store && branchIds().includes(id)) store.setItem(BRANCH_KEY, id);
+  } catch { /* storage blocked: this session only */ }
+}
+
+/** Branch ids the filter row offers (one view per branch; there is no "All" view, C144). */
+export function branchFilters() {
+  return branchIds().slice();
+}
+
+/**
+ * Branch to open: the remembered one when valid, else the first branch with an available (buyable now or later
+ * affordable) node, else the first branch.
+ * @param {Object} s
+ * @param {string|null} remembered
+ * @param {(s: Object, id: string) => boolean} [availFn] research.isAvailable
+ * @returns {string}
+ */
+export function defaultBranch(s, remembered, availFn = isAvailable) {
+  const ids = branchIds();
+  if (remembered && ids.includes(remembered)) return remembered;
+  for (const b of ids) if (nodesOf(b).some((id) => q(() => availFn(s, id), false))) return b;
+  return ids[0];
+}
+
 /** Runs needed for a node to become Innate (3, or 2 with ancestral_memory). */
 function innateRuns(s) {
   const base = num(INNATE && INNATE.runs, 3);
@@ -105,16 +155,24 @@ export function createPanel(root, { game, ui, bridge }) {
   const act = makeAct(game, bridge);
   const el = h('div', { class: 'panel panel-research' });
   root.appendChild(el);
-  let filter = 'all';
+  let filter = null;           // resolved on the first update (defaultBranch)
   let hideOwned = loadHideOwned();
+  let lastGlow = null;
 
   const insightEl = h('span', { class: 'big-num' });
   const rateEl = h('span', { class: 'muted' });
   const filterRow = h('div', { class: 'seg seg-small seg-scroll', role: 'radiogroup', 'aria-label': 'Branch' });
-  const mkFilter = (id, label) => h('button', { type: 'button', class: 'seg-btn' + (id === filter ? ' selected' : ''), dataset: { f: id }, text: label,
-    on: { click: () => { filter = id; for (const b of Array.from(filterRow.children)) toggleClass(b, 'selected', b.dataset.f === id); lastLayout = ''; } } });
-  filterRow.appendChild(mkFilter('all', 'All'));
-  for (const b of branchIds()) filterRow.appendChild(mkFilter(b, nameOf('branch', b)));
+  const filterCount = {};
+  const selectBranch = (id, remember) => {
+    filter = id;
+    for (const b of Array.from(filterRow.children)) toggleClass(b, 'selected', b.dataset.f === id);
+    if (remember) saveBranch(id);
+  };
+  const mkFilter = (id, label) => {
+    filterCount[id] = h('span', { class: 'seg-count' });
+    return h('button', { type: 'button', class: 'seg-btn', dataset: { f: id }, on: { click: () => selectBranch(id, true) } }, label, filterCount[id]);
+  };
+  for (const b of branchFilters()) filterRow.appendChild(mkFilter(b, nameOf('branch', b)));
   const hideBox = h('input', { type: 'checkbox', class: 'check' });
   hideBox.checked = hideOwned;
   hideBox.addEventListener('change', () => { hideOwned = !!hideBox.checked; saveHideOwned(hideOwned); });
@@ -133,8 +191,8 @@ export function createPanel(root, { game, ui, bridge }) {
   function buildColumns() {
     clear(grid);
     for (const k of Object.keys(cols)) delete cols[k];
-    const branches = filter === 'all' ? branchIds() : [filter];
-    toggleClass(grid, 'single', branches.length === 1);
+    const branches = [filter];
+    toggleClass(grid, 'single', true);
     for (const b of branches) {
       const main = BRANCHES[b] && BRANCHES[b].main;
       const list = h('div', { class: 'tech-col-list' });
@@ -213,6 +271,20 @@ export function createPanel(root, { game, ui, bridge }) {
       show(empty, !hasData);
       show(gridWrap, hasData);
       if (!hasData) return;
+      if (!filter) selectBranch(defaultBranch(s, loadBranch()), false);
+      // an onboarding glow on a node of another branch opens that branch (once per glow)
+      const glow = ui.getUI().glow;
+      if (glow !== lastGlow) {
+        lastGlow = glow;
+        const gid = typeof glow === 'string' && glow.startsWith('research:') ? glow.slice(9) : null;
+        const gb = gid && RESEARCH[gid] ? RESEARCH[gid].branch : null;
+        if (gb && gb !== filter && branchIds().includes(gb)) selectBranch(gb, false);
+      }
+      for (const b of branchIds()) {
+        const n = nodesOf(b).filter((id) => q(() => isAvailable(s, id), false)).length;
+        setText(filterCount[b], n > 0 ? ' ' + fmtCount(n) : '');
+        filterCount[b].title = n > 0 ? fmtCount(n) + ' available' : '';
+      }
       const layout = filter;
       if (layout !== lastLayout) {
         lastLayout = layout;

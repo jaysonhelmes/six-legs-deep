@@ -8,7 +8,7 @@ import { TAB_IDS, getUI, setUI, onUI, sameTarget, VIEWS, VIEW_ORDER, VIEW_LABELS
 import { h, show, toggleClass, clear } from './dom.js';
 import { setNotation, fmt, fmtTime } from './format.js';
 import {
-  TAB_NAMES, TAB_TIPS, reasonText, eventToast, EVENT_COPY, nameOf,
+  TAB_NAMES, TAB_TIPS, reasonText, eventToast, EVENT_COPY, nameOf, cosmeticVariant,
 } from './text.js';
 import { isShown, num, arr, obj, fedLevel } from './reveal.js';
 import { createHud, activeThreats, EVENT_THREAT } from './hud.js';
@@ -30,6 +30,7 @@ import { satelliteHexWhy, frontWindows, frontWindowSec, spanText } from './rules
 import * as colonyPanel from './panels/colony.js';
 import * as buildPanel from './panels/build.js';
 import * as mapPanel from './panels/map.js';
+import * as adaptationsPanel from './panels/adaptations.js';
 import * as researchPanel from './panels/research.js';
 import * as prestigePanel from './panels/prestige.js';
 import * as achievementsPanel from './panels/achievements.js';
@@ -43,13 +44,13 @@ import { bestOrigin } from '../systems/trails.js';
 
 /** Reveal key of every tab (ARCHITECTURE §14.5). */
 export const TAB_KEYS = Object.freeze({
-  colony: 'panel_colony', build: 'panel_build', map: 'panel_map', research: 'panel_research', prestige: 'panel_prestige',
+  colony: 'panel_colony', build: 'panel_build', map: 'panel_map', adaptations: 'adapt_basic', research: 'panel_research', prestige: 'panel_prestige',
   achievements: 'panel_achievements', guide: 'tab_guide', stats: 'tab_stats', settings: 'tab_settings',
 });
 
 /** Panel modules per tab. */
 const PANELS = {
-  colony: colonyPanel, build: buildPanel, map: mapPanel, research: researchPanel, prestige: prestigePanel,
+  colony: colonyPanel, build: buildPanel, map: mapPanel, adaptations: adaptationsPanel, research: researchPanel, prestige: prestigePanel,
   achievements: achievementsPanel, guide: guidePanel, stats: statsPanel, settings: settingsPanel,
 };
 
@@ -57,13 +58,13 @@ const PANELS = {
 const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'raidResult', 'conquest', 'battleEnd', 'hungryStart', 'hungryEnd',
   'winterSoon', 'seasonChanged', 'chamberActivated', 'cacheFound', 'softcapHit', 'beetleClaimed', 'beetleSpawned', 'pupaSpawned',
   'hardshipTier', 'entranceOpened', 'rivalSighted', 'adultsDied', 'broodDied', 'giftOpened', 'commandRejected', 'flightComplete',
-  'supercolonyComplete', 'speciationComplete', 'blueprintDropped'];
+  'supercolonyComplete', 'speciationComplete', 'blueprintDropped', 'trailRehomed'];
 /**
  * Panel unlock keys and their tabs. A reveal never steals the open tab (the onboarding glow could otherwise point at
  * one tab while the shell had switched to another): the new tab slides in with a "new" dot. Only while the welcome
  * card holds the panel column (nothing to steal) is the first panel preselected (DESIGN §23).
  */
-const PANEL_UNLOCKS ={ panel_colony: 'colony', panel_build: 'build', panel_map: 'map', panel_research: 'research', panel_prestige: 'prestige',
+const PANEL_UNLOCKS ={ panel_colony: 'colony', panel_build: 'build', panel_map: 'map', adapt_basic: 'adaptations', panel_research: 'research', panel_prestige: 'prestige',
   panel_achievements: 'achievements' };
 const REFRESH_MS = 250;
 const SHEETS = ['peek', 'half', 'full'];
@@ -331,10 +332,12 @@ export function mountUI(root, game, opts = {}) {
     try { if (win && win.localStorage) win.localStorage.setItem(VISITED_KEY, JSON.stringify([...visited])); } catch { /* storage blocked: memory only */ }
   }
   TAB_IDS.forEach((id, i) => {
-    const b = h('button', { type: 'button', class: 'tab', role: 'tab', dataset: { tab: id, tip: (TAB_TIPS[id] || TAB_NAMES[id]) + ' Key ' + (i + 1) + '.' },
-      attrs: { 'aria-selected': 'false', 'aria-keyshortcuts': String(i + 1) },
+    // number keys 1–9 follow TAB_IDS; a tab past the ninth (Settings since C143) has no key
+    const key = i < 9 ? String(i + 1) : null;
+    const b = h('button', { type: 'button', class: 'tab', role: 'tab', dataset: { tab: id, tip: (TAB_TIPS[id] || TAB_NAMES[id]) + (key ? ' Key ' + key + '.' : '') },
+      attrs: key ? { 'aria-selected': 'false', 'aria-keyshortcuts': key } : { 'aria-selected': 'false' },
       on: { click: () => openTab(id) } },
-    h('span', { class: 'tab-num', text: String(i + 1), attrs: { 'aria-hidden': 'true' } }),
+    h('span', { class: 'tab-num', text: key || '', attrs: { 'aria-hidden': 'true' } }),
     // the always-on utility tabs (Field Guide, Stats, Settings) show as icons at the end of the row on wide layouts
     UTILITY_TABS.includes(id) ? h('span', { class: 'tab-ico', attrs: { 'aria-hidden': 'true' } }) : null,
     h('span', { class: 'tab-label', text: TAB_NAMES[id] }));
@@ -893,8 +896,21 @@ export function mountUI(root, game, opts = {}) {
       runAct('rally', { uid: sel.id }, null);
       return;
     }
-    // C108: chamber hotkeys with a nest chamber selected: L level, Shift+L level the cheapest of the type, G growth
-    // side, R relocate.
+    // C142: Q on a chamber (hovered in the nest, else selected) picks its type in the Build tool to place another.
+    if ((ev.key === 'q' || ev.key === 'Q') && !ev.shiftKey) {
+      const hv = getUI().hover;
+      const ref = hv && hv.view === 'nest' && (hv.kind === 'chamber' || hv.kind === 'nursery' || hv.kind === 'queen') ? hv : sel;
+      const a = buildPanel.placeAnotherAction(game.s, game.d, ref);
+      if (a && a.tool) {
+        setUI({ tool: a.tool });
+        const lay = getUI().layout;
+        if ((lay === 'medium' || lay === 'narrow') && getUI().view === 'above') chooseView('below');
+      } else if (a && a.reject) popReject(a.reject);
+      if (a) ev.preventDefault();
+      return;
+    }
+    // C108 / C142: chamber hotkeys with a nest chamber selected: L level the cheapest of the type, Shift+L level it,
+    // G growth side (chambers without a reservation), R relocate.
     const hk = buildPanel.chamberHotkey(ev.key, ev.shiftKey, sel);
     if (hk) {
       const a = buildPanel.chamberHotkeyAction(game.s, game.d, hk);
@@ -945,8 +961,11 @@ export function mountUI(root, game, opts = {}) {
     const st0 = s.meta.settings || {};
     setNotation(st0.notation);
     root.setAttribute('data-reduced-motion', st0.reducedMotion ? 'true' : 'false');
-    const eq = obj(s.meta.cosmetics && s.meta.cosmetics.equipped);
-    if (eq.palette) root.setAttribute('data-palette', eq.palette); else root.removeAttribute('data-palette');
+    // C149 cosmetics the page itself shows: palette (CSS tokens), winged cursor over the canvases, amber nest frame
+    for (const [slot, attr] of [['palette', 'data-palette'], ['cursor', 'data-cursor'], ['frame', 'data-frame']]) {
+      const v = cosmeticVariant(s, slot);
+      if (v) { if (root.getAttribute(attr) !== v) root.setAttribute(attr, v); } else if (root.getAttribute(attr) !== null) root.removeAttribute(attr);
+    }
 
     // tabs: an open tab that is not revealed falls back to the first revealed gameplay tab; while there is none (the
     // opening), the welcome card holds the column instead of an always-on tab such as the Field Guide.

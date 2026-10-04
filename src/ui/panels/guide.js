@@ -1,7 +1,7 @@
-// Field Guide panel: entries grouped by category, each with its 40–60 word biology note once discovered.
+// Field Guide panel: entries grouped by category, each with its 40–60 word biology note and "Learn more:" links (C148) once discovered.
 // Owner: WP9. Contract: ARCHITECTURE §14.5 (Field Guide row: data only), §6.6; DESIGN §20.
 
-import { h, setText, show, toggleClass, syncList } from '../dom.js';
+import { h, setText, show, toggleClass, syncList, clear } from '../dom.js';
 import { fmtCount } from '../format.js';
 import { humanize } from '../text.js';
 import { num, obj } from '../reveal.js';
@@ -14,6 +14,22 @@ const NEW_SEC = 120; // entries unlocked within this many sim seconds show a "ne
  * Field Guide categories in first-appearance order.
  * @returns {string[]}
  */
+/**
+ * "Learn more:" row for an entry's further-reading links (C148); null when it has none.
+ * @param {{ title: string, url: string }[]} sources
+ * @returns {HTMLElement|null}
+ */
+export function sourceLinks(sources) {
+  const list = (Array.isArray(sources) ? sources : []).filter((x) => x && typeof x.url === 'string' && /^https:\/\//.test(x.url));
+  if (!list.length) return null;
+  const row = h('p', { class: 'fg-sources' }, h('span', { class: 'fg-sources-label', text: 'Learn more:' }));
+  list.forEach((x, i) => {
+    if (i) row.appendChild(h('span', { class: 'fg-sources-sep', text: '·' }));
+    row.appendChild(h('a', { class: 'fg-source', href: x.url, target: '_blank', rel: 'noopener noreferrer', text: x.title || x.url }));
+  });
+  return row;
+}
+
 export function guideCategories() {
   const out = [];
   for (const id of FG_ORDER) {
@@ -48,14 +64,15 @@ export function createPanel(root) {
     const title = h('span', { class: 'fg-title' });
     const badge = h('span', { class: 'badge badge-new', text: 'New' });
     const text = h('p', { class: 'fg-note' });
+    const more = h('div', { class: 'fg-more', hidden: true });
     const head = h('button', { type: 'button', class: 'fg-head', attrs: { 'aria-expanded': 'false' } }, title, badge);
-    const row = h('div', { class: 'fg-entry', dataset: { id } }, head, text);
+    const row = h('div', { class: 'fg-entry', dataset: { id } }, head, text, more);
     head.addEventListener('click', () => {
       if (row.classList.contains('locked')) return;
       if (open.has(id)) open.delete(id); else open.add(id);
       row.__sync();
     });
-    row.__r = { title, badge, text, head };
+    row.__r = { title, badge, text, head, more, linked: false };
     return row;
   }
 
@@ -67,10 +84,20 @@ export function createPanel(root) {
     toggleClass(row, 'locked', !found);
     setText(r.title, found ? e.title || humanize(id) : 'Undiscovered entry');
     show(r.badge, found && num(s.meta.simTime) - num(at) < NEW_SEC);
+    // Links exist in the DOM only for discovered entries (built once; removed if the entry is locked again, e.g. a reset).
+    if (found && !r.linked) {
+      const links = sourceLinks(e.sources);
+      if (links) r.more.appendChild(links);
+      r.linked = true;
+    } else if (!found && r.linked) {
+      clear(r.more);
+      r.linked = false;
+    }
     row.__sync = () => {
       const isOpen = found && open.has(id);
       show(r.text, isOpen);
       setText(r.text, isOpen ? e.note || '' : '');
+      show(r.more, isOpen && r.more.firstChild !== null);
       r.head.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
     };
     row.__sync();

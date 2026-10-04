@@ -31,7 +31,7 @@ test('defaults match the documented UIState shape', () => {
   assert.equal(ui.view, 'split');
   assert.deepEqual(Object.keys(ui.overlays), OVERLAY_IDS.slice());
   assert.ok(Object.values(ui.overlays).every((v) => v === false));
-  assert.deepEqual(TAB_IDS, ['colony', 'build', 'map', 'research', 'prestige', 'achievements', 'guide', 'stats', 'settings']);
+  assert.deepEqual(TAB_IDS, ['colony', 'build', 'map', 'adaptations', 'research', 'prestige', 'achievements', 'guide', 'stats', 'settings']);
   assert.deepEqual(SUB_TABS.prestige, ['flight', 'bloodline', 'hardships', 'supercolony', 'federation', 'edicts', 'speciation', 'genome', 'species']);
 });
 

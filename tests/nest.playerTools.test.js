@@ -100,7 +100,15 @@ test('C117: a pocket can move to plain soil within DRAINAGE.moveRows rows; refus
   addPocket(s, 10, 40, 2, 2);
   nest.derive(s, d);
   assert.equal(run(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 40 + DRAINAGE.moveRows + 1 }), 'invalid:row');
-  assert.equal(run(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 39 }), 'blocked:water', 'overlapping water');
+  // C140 (player report): one tile over its own cells is fine; another pocket's water is not
+  assert.equal(nest.handlers.relocatePocket.validate(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 39 }), null, 'over its own cells');
+  addPocket(s, 14, 40, 2, 2);
+  nest.derive(s, d);
+  assert.equal(run(s, d, { type: 'relocatePocket', pocket: 0, x: 13, y: 40 }), 'blocked:water', 'overlapping another pocket');
+  s.run.nest.features.water.pop();
+  for (const c of rectCells(14, 40, 2, 2)) s.run.nest.cells[c] = CELL.SOIL;
+  s.run.nest.rev++;
+  nest.derive(s, d);
   s.run.nest.cells[idx(30, 45)] = CELL.STONE;
   s.run.nest.rev++;
   assert.equal(run(s, d, { type: 'relocatePocket', pocket: 0, x: 29, y: 44 }), 'blocked:stone');
@@ -164,7 +172,8 @@ test('C119: a blueprint pre-digs the Royal Chamber at its saved spot, connected 
   s.cycle.traits.ancestral_blueprint = 1;
   // The snapshot records the Royal Chamber's corner.
   assert.equal(run(s, d, { type: 'saveBlueprint', slot: 0, name: 'Plan' }), null);
-  assert.deepEqual(s.era.blueprints[0].royal, { x: GRID.royal.x, y: GRID.royal.y });
+  // C137: with its reservation (the L1 room sits in its top-right corner)
+  assert.deepEqual(s.era.blueprints[0].royal, { x: GRID.royal.x, y: GRID.royal.y, res: { x: 15, y: 20, w: 7, h: 3 } });
   s.era.blueprints = [{ name: 'Deep', chambers: [], tunnels: [], royal: { x: 8, y: 30 } }];
   s.era.activeBlueprint = 0;
   nest.applyBlueprint(s, d);
@@ -283,7 +292,7 @@ test('C122: "Level cheapest" still shows (and levels) the selected chamber when 
   settle(s, d);
   assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 24, y: 12 }), null);
   settle(s, d);
-  assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 24, y: 14 }), null);
+  assert.equal(run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 24, y: 16 }), null); // C137: clear of the first one's reserved room
   settle(s, d);
   const [a, b] = s.run.nest.chambers.filter((c) => c.type === 'gallery');
   a.level = 6;
@@ -292,7 +301,7 @@ test('C122: "Level cheapest" still shows (and levels) the selected chamber when 
   assert.equal(sel.show, true, 'shown although the selected chamber is the cheapest');
   assert.equal(sel.uid, b.uid, 'it levels the selected one');
   assert.equal(sel.self, true);
-  assert.match(sel.label, /Shift\+L/);
+  assert.match(sel.label, /\(L\)$/, 'C142: L levels the cheapest');
   assert.match(sel.tip, /This one is the cheapest/);
   const other = cheapestButton(s, d, 'gallery', { selectedUid: a.uid });
   assert.equal(other.uid, b.uid);

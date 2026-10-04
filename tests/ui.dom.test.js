@@ -524,7 +524,7 @@ test('keyboard: 1–9 open revealed tabs, Esc cancels the tool, Space hand-forag
   const calls = [];
   game.actions.do = (type, args) => { calls.push({ type, args }); return { ok: true, reason: null }; };
   const key = (k) => doc.body.dispatchEvent(new FEvent('keydown', { key: k }));
-  key('8');
+  key('9');   // C143: Adaptations is tab 4, so Stats moved to key 9
   assert.equal(uistate.getUI().tab, 'stats');
   key('1');
   assert.equal(uistate.getUI().tab, 'stats', 'colony is not revealed yet');
@@ -985,7 +985,7 @@ test('C96: switching panel tab puts the claim tool down; arming a tool shows its
   uistate.setUI({ tool: { kind: 'claim' } });
   ui.openTab('stats', null);
   assert.deepEqual(uistate.getUI().tool, { kind: 'claim' }, 'the same tab keeps the tool');
-  keyDown('9');
+  keyDown('8');   // C143: 8 = Field Guide (9 is Stats, the open tab)
   assert.equal(uistate.getUI().tool, null, 'number keys switch tabs too');
   // a surface tool armed while only Below shows brings Above in
   uistate.setUI({ view: 'below' });

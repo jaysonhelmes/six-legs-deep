@@ -30,6 +30,7 @@ import { createNestCamera, FRAME_CELL } from './camera.js';
 import { pxToCell, clamp, hash01, hash2 } from './geom.js';
 import { STRATA, NEST, GRASS_LINE, ANT, CARRY_CODES, mix, shade, rgba, rivalColor, seasonBlend, blendSky, blendSeasonColor } from './palette.js';
 import { getAtlas } from './atlas.js';
+import * as cosmetics from './cosmetics.js';
 import {
   BUDGET, REALLOC_SEC, createPool, reconcile, allocBelow, createFieldCache, stepDown, randomNeighbor, KIND,
   removeSprite,
@@ -130,6 +131,14 @@ export function reasonLabel(reason) {
 /** Placement-ghost refusal copy for rule reasons (C99; the Build panel lists the same rules, ui/text.js). */
 const GHOST_RULE_TEXT = Object.freeze({
   'invalid:root': 'Must touch a root',
+  // C137: reservations
+  'blocked:reserved': 'Reserved for another chamber',
+  'resv:chamber': 'Full size overlaps a chamber (F: other corner)',
+  'resv:reserved': 'Full size overlaps a reserved space (F: other corner)',
+  'resv:bounds': 'Full size does not fit here (F: other corner)',
+  'resv:row': 'Full size breaks the depth rule (F: other corner)',
+  'resv:shaft': 'Full size covers a shaft entrance (F: other corner)',
+  'resv:hardship': 'Full size goes too deep for this Hardship',
   'invalid:row0': 'Must touch the surface (row 0)',
   'invalid:shaft': 'Must sit beside an entrance shaft',
   'invalid:water': 'Must touch a revealed water pocket no other Well uses',
@@ -1997,6 +2006,44 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   }
 
   /**
+   * C137: every chamber's reserved full-size room (the cells it will grow into) as a faint dashed outline with a light
+   * wash over the part it does not fill yet; brighter while a placement / relocation ghost is up or for the hovered /
+   * selected chamber. Planned blueprint chambers show their saved reservation fainter, in the planned blue. Drawn under
+   * the chambers.
+   */
+  function drawReservations(ctx, s) {
+    const chs = s.run.nest.chambers || [];
+    const v = view();
+    const ui0 = uiOf(ui);
+    const t = ui0.tool;
+    const placing = !!(t && (t.kind === 'placeChamber' || t.kind === 'relocate'));
+    const focus = new Set();
+    for (const r of [ui0.hover, ui0.selection]) if (r && r.view === 'nest' && (r.kind === 'chamber' || r.kind === 'nursery' || r.kind === 'queen')) focus.add(r.id);
+    const one = (R, room, strong, blue) => {
+      if (!R || !(R.w > 0) || !(R.h > 0)) return;
+      if (room && room.w >= R.w && room.h >= R.h) return; // grown to full size: nothing left to show
+      const x = v.ox + R.x * v.cell;
+      const y = v.oy + R.y * v.cell;
+      ctx.fillStyle = blue ? 'rgba(170,210,255,0.05)' : strong ? 'rgba(255,226,170,0.13)' : 'rgba(255,226,170,0.06)';
+      ctx.beginPath();
+      for (let yy = R.y; yy < R.y + R.h; yy++) {
+        for (let xx = R.x; xx < R.x + R.w; xx++) {
+          if (room && xx >= room.x && xx < room.x + room.w && yy >= room.y && yy < room.y + room.h) continue;
+          ctx.rect(v.ox + xx * v.cell, v.oy + yy * v.cell, v.cell, v.cell);
+        }
+      }
+      ctx.fill();
+      ctx.strokeStyle = blue ? 'rgba(170,210,255,0.35)' : strong ? 'rgba(255,226,170,0.75)' : 'rgba(255,226,170,0.32)';
+      ctx.lineWidth = strong ? 1.4 : 1;
+      ctx.setLineDash([3, 4]);
+      ctx.strokeRect(x + 0.5, y + 0.5, R.w * v.cell - 1, R.h * v.cell - 1);
+      ctx.setLineDash([]);
+    };
+    for (const c of chs) if (c && c.res) one(c.res, c, placing || focus.has(c.uid), false);
+    for (const p of safe(() => nestSys.plannedChambers(s), []) || []) if (p.res) one(p.res, p, false, true);
+  }
+
+  /**
    * C125: where a chamber covers a shaft, the shaft carries on through the cavity: a faint vertical passage (darker
    * strip with pale dashed walls) per contiguous run of pass cells, under the chamber's contents.
    */
@@ -2179,6 +2226,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
 
   /** The queen herself, drawn after the worker sprites so attendants never hide her. */
   function drawQueen(ctx, s, unit) {
+    cosmetics.syncAntTint(s);   // C149 palette cosmetic: amber-tinted ants (once per frame, before any ant is drawn)
     const c = royalRect();
     if (!c || !(c.uid >= 0) || !(c.status === 'active' || c.status === 'growing')) return;
     const r = chamberRectPx(c);
@@ -2189,30 +2237,15 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const hungry = !!s.run.colony.hungry;
     const pulse = queenPulse > 0 ? Math.sin((1 - queenPulse / 0.45) * Math.PI) : 0;
     const ang = hungry ? 0.22 : Math.sin(time * 0.8) * 0.04;
-    atlas.drawAnt(ctx, 'queen', 'none', ang, 0, q.x, q.y + (hungry ? unit * 0.08 : 0), unit * grow * (1 + 0.04 * pulse), null, NEST.antOutline);
+    atlas.drawAnt(ctx, 'queen', 'none', ang, 0, q.x, q.y + (hungry ? unit * 0.08 : 0), unit * grow * (1 + 0.04 * pulse), cosmetics.queenTint(s), NEST.antOutline);
     if (hungry) {
       ctx.fillStyle = 'rgba(80,60,50,0.25)';
       ctx.beginPath();
       ctx.ellipse(q.x, q.y, unit * 1.0 * grow, unit * 0.4 * grow, 0, 0, Math.PI * 2);
       ctx.fill();
     }
-    // crown cosmetic
-    const crown = s.meta && s.meta.cosmetics && s.meta.cosmetics.equipped && (s.meta.cosmetics.equipped.crown || s.meta.cosmetics.equipped.queen);
-    if (crown) {
-      const cx = q.x + unit * 0.55 * grow;
-      const cy = q.y - unit * 0.38 * grow;
-      ctx.fillStyle = '#ffd447';
-      ctx.beginPath();
-      ctx.moveTo(cx - unit * 0.18, cy + unit * 0.08);
-      ctx.lineTo(cx - unit * 0.14, cy - unit * 0.1);
-      ctx.lineTo(cx - unit * 0.05, cy);
-      ctx.lineTo(cx, cy - unit * 0.14);
-      ctx.lineTo(cx + unit * 0.05, cy);
-      ctx.lineTo(cx + unit * 0.14, cy - unit * 0.1);
-      ctx.lineTo(cx + unit * 0.18, cy + unit * 0.08);
-      ctx.closePath();
-      ctx.fill();
-    }
+    // C149 crown cosmetic (Crown, or Golden Queen: glow + jewelled crown)
+    cosmetics.drawQueenCosmetic(ctx, s, q.x, q.y, unit * grow, time);
   }
 
   /** "House full" pip over the Royal Chamber (diegetic hint, DESIGN §25.6); drawn outside the cavity clip. */
@@ -2707,10 +2740,11 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const x = clamp(cx - Math.floor((w - 1) / 2), 0, COLS - w);
     const y = clamp(cy - Math.floor((h - 1) / 2), 0, ROWS - h);
     const rev = d && d.nest ? d.nest.rev : 0;
-    const key = `${type}|${x}|${y}|${rev}|${s.run.nest.rev}|${relocateUid}`;
+    const anchor = tool.anchor || null; // C137: the start corner picked with F / right-click (null = auto)
+    const key = `${type}|${x}|${y}|${rev}|${s.run.nest.rev}|${relocateUid}|${anchor}`;
     if (ghostMemo.key !== key) {
       ghostMemo.key = key;
-      ghostMemo.res = safe(() => nestSys.validatePlacement(s, d, type, x, y, { relocateUid }), null)
+      ghostMemo.res = safe(() => nestSys.validatePlacement(s, d, type, x, y, { relocateUid, anchor }), null)
         || { ok: false, tint: 'red', reason: 'invalid', route: null, mods: [] };
     }
     return { type, x, y, w, h, res: ghostMemo.res, relocateUid };
@@ -2806,6 +2840,39 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     if (Array.isArray(res.route)) previewPassage(ctx, res.route, rgba(tint, 0.55), v);
     const x = v.ox + g.x * v.cell;
     const y = v.oy + g.y * v.cell;
+    // C137: the full-size room it reserves (dashed, a light wash), the small L1 room drawn inside it below; red when the
+    // reservation itself is refused. Obstacles inside (stone, water) are crossed: growth waits for them.
+    const R = res.res;
+    if (R && (R.w > g.w || R.h > g.h)) {
+      const resBad = typeof res.reason === 'string' && res.reason.startsWith('resv:');
+      const rc = resBad ? NEST.ghostBad : tint;
+      ctx.fillStyle = rgba(rc, resBad ? 0.16 : 0.1);
+      ctx.fillRect(v.ox + R.x * v.cell, v.oy + R.y * v.cell, R.w * v.cell, R.h * v.cell);
+      ctx.strokeStyle = rgba(rc, 0.8);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(v.ox + R.x * v.cell + 0.5, v.oy + R.y * v.cell + 0.5, R.w * v.cell - 1, R.h * v.cell - 1);
+      ctx.setLineDash([]);
+      const cellsArr = s.run.nest.cells;
+      ctx.strokeStyle = 'rgba(255,200,120,0.85)';
+      ctx.lineWidth = Math.max(1, v.cell * 0.08);
+      ctx.beginPath();
+      for (let yy = R.y; yy < R.y + R.h; yy++) {
+        for (let xx = R.x; xx < R.x + R.w; xx++) {
+          if (xx < 0 || yy < 0 || xx >= COLS || yy >= ROWS) continue;
+          const code = cellsArr[yy * COLS + xx];
+          if (code !== CELL.STONE && code !== CELL.WATER) continue;
+          const px = v.ox + xx * v.cell;
+          const py = v.oy + yy * v.cell;
+          const m = v.cell * 0.25;
+          ctx.moveTo(px + m, py + m);
+          ctx.lineTo(px + v.cell - m, py + v.cell - m);
+          ctx.moveTo(px + v.cell - m, py + m);
+          ctx.lineTo(px + m, py + v.cell - m);
+        }
+      }
+      ctx.stroke();
+    }
     // the footprint (thin, dashed) and the cavity it will become
     ctx.strokeStyle = rgba(tint, 0.55);
     ctx.lineWidth = 1;
@@ -2863,6 +2930,13 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const WARN = new Set(['frostExposed', 'raidReach', 'hygiene', 'floodZone', 'royalRoom']);
     for (const l of links) lines.push({ t: linkLabel(l), c: l.good ? '#c8f0c0' : '#ffb3b0' });
     for (const l of lost) if (l.good) lines.push({ t: linkLabel(l, true), c: '#ffd27a' });
+    // C137: the reserved room and the F key
+    if (R && (R.w > g.w || R.h > g.h)) {
+      const nAnc = Array.isArray(res.anchors) ? res.anchors.length : 0;
+      if (res.obstacles > 0) lines.push({ t: `Full size ${R.w}×${R.h}: ${res.obstacles} stone/water cell${res.obstacles === 1 ? '' : 's'} hold growth back`, c: '#ffd27a' });
+      else lines.push({ t: `Full size ${R.w}×${R.h} reserved`, c: '#f6ead2' });
+      if (nAnc > 1) lines.push({ t: 'F / right-click: start in another corner', c: '#d8c8a8' });
+    }
     for (const m of res.mods || []) {
       if (!m || !m.key) continue;
       // adjacency / hygiene are spelled out by the link lines above (C109)
@@ -3462,6 +3536,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     drawHints(ctx, s, d);
     syncLinks(s, d);
     drawPlanned(ctx, s);
+    drawReservations(ctx, s);
     drawShaftPass(ctx, H);
     drawChambers(ctx, s, d, unit, W, H);
     drawHousePip(ctx, s, d, unit);

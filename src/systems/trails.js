@@ -206,40 +206,81 @@ function dijkstra(arr, starts) {
 // Yield formula (ARCHITECTURE §8.3, DESIGN §8.5 / §12.1)
 // ------------------------------------------------------------------------------------------------------------------
 
-/** Haul h of a trail origin: main/nuptial entrance (or a trunk fork of one) → d.nest.agg.haulH, else 0.5 (C13). */
-function originHaul(s, d, origin, depth = 0) {
-  const S = s.run.surface;
+/** Haul h of a trail origin: main/nuptial entrance → d.nest.agg.haulH, any other entrance 0.5 (C13). */
+function originHaul(s, d, origin) {
   let found = false;
   let mainLike = false;
-  for (const e of S.entrances) {
+  for (const e of s.run.surface.entrances) {
     if (!e || e.hex !== origin) continue;
     found = true;
     if (e.kind === 'main' || e.kind === 'nuptial') mainLike = true;
   }
-  if (found) {
-    if (!mainLike) return GEOM.satelliteHaul;
+  if (found && mainLike) {
     const h = d && d.nest && d.nest.agg ? d.nest.agg.haulH : 0;
     return Math.max(0, num(h));
-  }
-  if (depth < 8) {
-    for (const t of S.trails) {
-      if (t.origin !== origin && Array.isArray(t.path) && t.path.includes(origin)) return originHaul(s, d, t.origin, depth + 1);
-    }
   }
   return GEOM.satelliteHaul;
 }
 
 /**
- * Per-tick memo for yieldParts (F24 perf): slope, D_nav, sources by uid and origin hauls, which do not change while a
- * tick computes its trails' parts.
+ * C132: how many trails cover each hex (a trail counts once per hex, whatever its waypoints do).
+ * @param {Array<{ path?: number[] }>} T
+ * @returns {Uint16Array}
+ */
+function hexCounts(T) {
+  const c = new Uint16Array(HEX_COUNT);
+  for (const t of T) {
+    if (!t || !Array.isArray(t.path)) continue;
+    const seen = new Set();
+    for (const h of t.path) {
+      if (!isHex(h) || seen.has(h)) continue;
+      seen.add(h);
+      if (c[h] < 65535) c[h]++;
+    }
+  }
+  return c;
+}
+
+/**
+ * C132: the shared stretch of a trail — its hexes after the origin (the entrance hex every trail from it shares is not
+ * counted) that also lie on at least one other trail. counts = hexCounts of the live trails; a trail that is one of
+ * them (same uid) is not counted against itself, a hypothetical one (preview, uid 0) is.
+ */
+function sharedOf(s, trail, counts) {
+  const path = Array.isArray(trail.path) ? trail.path : [];
+  const self = s.run.surface.trails.some((x) => x && x.uid === trail.uid) ? 1 : 0;
+  const seen = new Set();
+  let shared = 0;
+  let total = 0;
+  for (let k = 1; k < path.length; k++) {
+    const h = path[k];
+    if (!isHex(h) || seen.has(h) || h === path[0]) continue;
+    seen.add(h);
+    total++;
+    if (counts[h] - self >= 1) shared++;
+  }
+  return { shared, total, frac: total > 0 ? shared / total : 0 };
+}
+
+/** C132: Trunk Trails overlap multiplier ×(1 + overlap × shared fraction); 1 without the research. */
+function overlapMult(s, frac) {
+  if (!owns(s, 'trunk_trails')) return 1;
+  return 1 + fxOf(RESEARCH, 'trunk_trails', 'overlap', 0) * Math.max(0, Math.min(1, num(frac)));
+}
+
+/**
+ * Per-tick memo for yieldParts (F24 perf): slope, D_nav, sources by uid, origin hauls and the per-hex trail counts
+ * (C132), which do not change while a tick computes its trails' parts.
  */
 function partsCtx(s, d) {
   const bySrc = new Map();
   for (const src of s.run.surface.sources) if (!bySrc.has(src.uid)) bySrc.set(src.uid, src);
   const hauls = new Map();
+  const counts = hexCounts(s.run.surface.trails);
   return {
     slope: surface.slopeFor(s, d),
     dNav: surface.dNavFor(s),
+    counts,
     src: (uid) => bySrc.get(uid) || null,
     haul: (origin) => {
       if (!hauls.has(origin)) hauls.set(origin, originHaul(s, d, origin));
@@ -290,8 +331,12 @@ function yieldParts(s, d, trail, ctx = null) {
   if (s.run.hardship === 'barren_ground') srcMult *= fxOf(HARDSHIPS, 'barren_ground', 'yield', 1);
   if (def.job === 'forager' && def.y.food) srcMult *= num(sp.foodSource, 1);
   if (src.type === 'leaf_plant') srcMult *= num(sp.leafPlant, 1);
-  const trunk = owns(s, 'trunk_trails') && path.length >= fxOf(RESEARCH, 'trunk_trails', 'minLen', Infinity)
+  let trunk = owns(s, 'trunk_trails') && path.length >= fxOf(RESEARCH, 'trunk_trails', 'minLen', Infinity)
     ? fxOf(RESEARCH, 'trunk_trails', 'mult', 1) : 1;
+  // C132: overlapping stretches are stronger (Trunk Trails): ×(1 + overlap × shared-hex fraction), folded into `trunk`
+  if (owns(s, 'trunk_trails') && path.length > 1) {
+    trunk *= overlapMult(s, sharedOf(s, trail, ctx ? ctx.counts : hexCounts(s.run.surface.trails)).frac);
+  }
   return {
     lyc: false, src, def, res, res2,
     y1: res ? def.y[res] : 0, y2: res2 ? def.y[res2] : 0, ch1: res ? (ch[res] ?? 0) : 0, ch2: res2 ? (ch[res2] ?? 0) : 0,
@@ -541,6 +586,7 @@ export function tick(s, d, dt, env) {
     env.emit('trailDeleted', { uid: gone.uid });
     S.rev += 1;
   }
+  rehomeOrphans(s, d, env);   // C132: every trail starts at an entrance (old forked saves are re-routed on load)
   const ctx = partsCtx(s, d);
   const parts = T.map((t) => yieldParts(s, d, t, ctx));
   clampEscorts(s, d, T);
@@ -664,7 +710,7 @@ function waypointsOf(w) {
  */
 /**
  * [q] C102: the best place to start a trail to targetHex — every entrance (main, outposts from conquered nests,
- * satellites, the nuptial exit) plus, with trunk_trails, trail hexes; the 8 nearest by hex distance are routed and the
+ * satellites, the nuptial exit; C132: never a trail hex); the 8 nearest by hex distance are routed and the
  * shortest route wins (short trails also build strength fastest); ties go to more food per worker. Returns the origin
  * hex, or -1 if none can route.
  */
@@ -691,6 +737,68 @@ export function bestOrigin(s, d, targetHex) {
 /** [q] True if a trail already leads to this source (C100: one trail per destination). */
 export function hasTrailTo(s, srcUid) {
   return s.run.surface.trails.some((t) => t.src === srcUid);
+}
+
+/**
+ * [q] C132: a trail's shared stretch (hexes after its entrance that another trail also covers) and the Trunk Trails
+ * overlap multiplier it earns now (1 without the research). Works for a hypothetical trail (uid 0) too.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {{ uid?: number, path?: number[] }} trail
+ * @returns {{ shared: number, total: number, frac: number, mult: number }}
+ */
+export function trailOverlap(s, d, trail) {
+  if (!trail || typeof trail !== 'object') return { shared: 0, total: 0, frac: 0, mult: 1 };
+  const o = sharedOf(s, trail, hexCounts(s.run.surface.trails));
+  return { ...o, mult: overlapMult(s, o.frac) };
+}
+
+/**
+ * C132: every trail starts at an entrance. A trail whose origin is not one (a fork drawn from another trail under the
+ * old Trunk Trails rule, or an entrance that is gone) is re-routed from the entrance with the shortest route to its
+ * source (ties: nearest to the old origin), keeping its workers, escorts and strength; if no entrance can reach it, it
+ * is deleted. Emits trailRehomed { uid, ok, origin } (+ trailDeleted when dropped). Returns the number of trails fixed.
+ */
+function rehomeOrphans(s, d, env) {
+  const S = s.run.surface;
+  const ents = trailOrigins(s, d);
+  if (ents.length === 0) return 0;   // nothing to route to (skeleton states): leave the trails alone
+  const isEnt = new Set(ents);
+  let fixed = 0;
+  for (let i = S.trails.length - 1; i >= 0; i--) {
+    const t = S.trails[i];
+    if (isEnt.has(t.origin)) continue;
+    const src = sourceByUid(s, t.src);
+    let best = null;
+    let bestO = -1;
+    if (src) {
+      for (const o of ents) {
+        if (o === src.hex) continue;
+        const r = routeTrail(s, d, o, src.hex, []);
+        if (!r || r.path.length < 2) continue;
+        const better = !best || r.len < best.len - 1e-9
+          || (Math.abs(r.len - best.len) <= 1e-9 && isHex(t.origin) && hexDist(o, t.origin) < hexDist(bestO, t.origin));
+        if (better) {
+          best = r;
+          bestO = o;
+        }
+      }
+    }
+    if (best) {
+      t.origin = bestO;
+      t.path = best.path;
+      t.len = best.len;
+      env.emit('trailRehomed', { uid: t.uid, ok: true, origin: bestO });
+    } else {
+      S.trails.splice(i, 1);
+      forgetTrail(s, t.uid);
+      env.emit('trailDeleted', { uid: t.uid });
+      env.emit('trailRehomed', { uid: t.uid, ok: false, origin: -1 });
+    }
+    fixed++;
+  }
+  if (fixed > 0) S.rev += 1;
+  return fixed;
 }
 
 export function previewTrail(s, d, origin, target, waypoints = []) {
@@ -782,30 +890,19 @@ export function bestTargets(s, d, job = 'forager') {
 }
 
 /**
- * Valid trail origins: entrance / outpost / satellite hexes, plus every trail hex with trunk_trails (forks).
+ * Valid trail origins: the entrance hexes only (main, outposts, satellites, the nuptial exit). C132: trails no longer
+ * fork from other trails, with or without trunk_trails.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @returns {number[]}
  */
 export function trailOrigins(s, d) {
-  const S = s.run.surface;
   const out = [];
   const seen = new Set();
-  for (const e of S.entrances) {
+  for (const e of s.run.surface.entrances) {
     if (e && isHex(e.hex) && !seen.has(e.hex)) {
       seen.add(e.hex);
       out.push(e.hex);
-    }
-  }
-  if (owns(s, 'trunk_trails')) {
-    for (const t of S.trails) {
-      if (!Array.isArray(t.path)) continue;
-      for (const h of t.path) {
-        if (isHex(h) && !seen.has(h)) {
-          seen.add(h);
-          out.push(h);
-        }
-      }
     }
   }
   return out;

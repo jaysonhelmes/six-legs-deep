@@ -113,6 +113,16 @@ export const EDICTS = deepFreeze({
   edict_of_long_summer: { id: 'edict_of_long_summer', name: 'Edict of Long Summer', fx: {} },
 });
 
+/**
+ * C147: landing tags and Founding Boons that do nothing (or only harm) under a Hardship, left out of that landing's
+ * draw: Eternal Winter never has spring, summer or autumn (Seed Meadow's autumn bonus, Sunny Slope's autumn nursery /
+ * summer shade, Long Spring); Pacifist raises no soldiers, so Hostile Neighbours only adds danger (no conquests).
+ */
+export const LANDING_USELESS = deepFreeze({
+  eternal_winter: { sites: ['site_seed_meadow', 'site_sunny_slope'], boons: ['boon_long_spring'] },
+  pacifist: { sites: ['site_hostile_neighbours'], boons: [] },
+});
+
 /** Landing chooser: options per flight, tags per option, boons offered. */
 export const LANDING = deepFreeze({ options: 3, tagsMin: 1, tagsMax: 2, boons: 3 });
 

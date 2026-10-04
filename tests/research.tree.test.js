@@ -69,7 +69,7 @@ test('fx keys match the ARCHITECTURE §6.5 contract table', () => {
   const want = {
     trail_memory: { forage: 1.25, slots: 1 }, scent_marking: {}, tandem_running: { dNav: 1 }, recruitment_pheromones: { forage: 1.75 },
     double_bridge: { dMult: 0.9, rise: 2 }, persistent_trails: { tHalf: 90, sMax: 150 }, sun_compass: { radius: 12, slots: 2 },
-    mass_recruitment: { dNav: 2, rallySec: 60, slots: 2 }, frenzy_signal: {}, trunk_trails: { minLen: 5, mult: 1.5 },
+    mass_recruitment: { dNav: 2, rallySec: 60, slots: 2 }, frenzy_signal: {}, trunk_trails: { minLen: 5, mult: 1.5, overlap: 0.25 },
     odometer_navigation: { dNav: 3, slope: 0.5 }, coordinated_digging: { dig: 1.5 }, load_chains: { tunnel: 0.5, queue: 2 },
     clay_masonry: { clayWork: 7.2 }, mound_building: {}, drainage: { drought: 0.5 }, ventilation_shafts: { chamber: 1.10 },
     thermoregulation: { frost: 5 }, gallery_arches: { galleries: 2, housing: 1.25 }, acid_excavation: { dig: 2, stone: 3 },

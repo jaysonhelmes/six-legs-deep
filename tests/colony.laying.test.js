@@ -42,6 +42,7 @@ function capped({ layMult = 40 } = {}) {
   s.run.res.fungus = 1e6;
   d.nest.agg.housingBase = 1e6;
   d.nest.agg.berthsBase = 1000;
+  d.nest.agg.warBerthsBase = 1000; // C136: supermajors live in War Hall berths
   d.nest.agg.broodGroups = [{ kind: 'royal', uid: 1, cap: 1e6, factor: 1, exposed: false, snap: false, inReach: false }];
   d.meta.prestige.lay = layMult;
   s.run.unlocked.caste_soldier = true;

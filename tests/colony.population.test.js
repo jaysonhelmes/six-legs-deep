@@ -143,7 +143,7 @@ test('caste slider: the caste with the largest deficit is laid; shares converge 
   s.run.res.chitin = 1e6;
   s.run.res.honeydew = 1e6;
   d.stats.honeydewCap = 1e9;
-  Object.assign(d.nest.agg, { berthsBase: 1000, repleteBerthsBase: 1000 });
+  Object.assign(d.nest.agg, { berthsBase: 1000, warBerthsBase: 1000, repleteBerthsBase: 1000 });
   for (let i = 0; i < 100; i++) popTick(s, d, 0.1);
   const e = s.run.colony.eggs;
   assert.equal(e.minor + e.soldier + e.replete, 100);
@@ -159,7 +159,7 @@ test('a large batch (offline step) is split so it keeps the slider shares', () =
   s.run.colony.casteTargets = { soldier: 0.2, supermajor: 0, replete: 0.3 };
   s.run.res.chitin = 1e6;
   s.run.res.honeydew = 1e6;
-  Object.assign(d.nest.agg, { berthsBase: 1000, repleteBerthsBase: 1000 });
+  Object.assign(d.nest.agg, { berthsBase: 1000, warBerthsBase: 1000, repleteBerthsBase: 1000 });
   s.run.colony.layAcc = 0;
   popTick(s, d, 10, { offline: true });
   assert.deepEqual([s.run.colony.eggs.soldier, s.run.colony.eggs.replete, s.run.colony.eggs.minor], [20, 30, 50]);
@@ -331,7 +331,7 @@ test('larvae eat first: fungus for exactly one supermajor egg plus a big Nutriti
   s.run.colony.casteTargets = { soldier: 0, supermajor: 0.9, replete: 0 };
   s.run.colony.adults.minor = 10000;                       // demand 50 fungus/s
   s.run.colony.layAcc = 1;
-  d.nest.agg.berthsBase = 10;
+  d.nest.agg.warBerthsBase = 10; // C136: War Hall berths
   s.run.res.chitin = 25;
   s.run.res.fungus = 5;
   const ev = popTick(s, d, 0.1);

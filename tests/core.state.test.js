@@ -88,7 +88,7 @@ test('skeleton run: nest, surface, crumb source and trail (§4, §4.2)', () => {
   assert.equal(r.colony.naniticsLeft, 5);
   assert.deepEqual(r.colony.jobTargets, { forager: 0.6, digger: 0.2, nurse: 0.1, scout: 0.1, herder: 0, leafcutter: 0, gardener: 0 });
   assert.deepEqual(r.nest.chambers, [{ uid: 1, type: 'royal_chamber', k: 0, x: 18, y: 20, w: 4, h: 2, level: 1, target: 1,
-    status: 'active', blueprint: false, bornAt: 0 }]);
+    status: 'active', blueprint: false, bornAt: 0, res: { x: 15, y: 20, w: 7, h: 3 } }]);
   assert.equal(r.nest.nextUid, 2);
   assert.deepEqual(r.nest.shafts, [{ kind: 'main', col: 20, open: true, ref: -1 }]);
   assert.equal(r.nest.deepestRow, 21);

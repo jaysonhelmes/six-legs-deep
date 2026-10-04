@@ -30,8 +30,8 @@ test('strata: six contiguous layers covering rows 0–79 with DESIGN work and re
   assert.ok(Object.isFrozen(LAYERS) && Object.isFrozen(LAYERS.clay) && Object.isFrozen(DIG.floodRows));
 });
 
-test('chambers: 16 entries in DESIGN order with the §6.3 shape', () => {
-  assert.equal(CHAMBER_ORDER.length, 16);
+test('chambers: 17 entries in DESIGN order with the §6.3 shape', () => {
+  assert.equal(CHAMBER_ORDER.length, 17);
   assert.deepEqual(Object.keys(CHAMBERS).sort(), [...CHAMBER_ORDER].sort());
   const keys = ['id', 'name', 'unlock', 'maxInst', 'instBonus', 'w0', 'h0', 'grows', 'rowMin', 'rowMax', 'rule', 'place', 'placeGrowth',
     'f0', 's0', 'g', 'levelExtra', 'maxL', 'maxLBonus', 'frostImmune', 'fx'];
@@ -45,7 +45,7 @@ test('chambers: 16 entries in DESIGN order with the §6.3 shape', () => {
     assert.ok(Object.isFrozen(c) && Object.isFrozen(c.fx));
   }
   // F_place = 4 × F0 unless the table lists it (royal, hibernaculum extras, water well)
-  for (const id of ['gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'root_aphid_pen', 'fungus_garden',
+  for (const id of ['gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'root_aphid_pen', 'fungus_garden',
     'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'nuptial_chamber', 'deep_vault']) {
     assert.equal(CHAMBERS[id].place.food, 4 * CHAMBERS[id].f0, id);
   }
@@ -63,7 +63,7 @@ test('chambers: 16 entries in DESIGN order with the §6.3 shape', () => {
   // DESIGN §7.6 footprints, max instances, max levels, growth g
   const table = {
     royal_chamber: [4, 2, 1, 0, 2.20], gallery: [3, 2, 4, 0, 1.30], nursery: [3, 2, 3, 0, 1.60], granary: [2, 2, 3, 0, 1.55],
-    scent_library: [3, 2, 2, 0, 2.00], midden: [2, 2, 2, 8, 1.60], barracks: [3, 2, 2, 0, 1.70], root_aphid_pen: [3, 2, 2, 0, 1.75],
+    scent_library: [3, 2, 2, 0, 2.00], midden: [2, 2, 2, 8, 1.60], barracks: [3, 2, 2, 0, 1.70], war_hall: [4, 2, 2, 0, 1.80], root_aphid_pen: [3, 2, 2, 0, 1.75],
     fungus_garden: [3, 3, 3, 0, 1.70], repletion_hall: [3, 2, 2, 0, 1.80], hibernaculum: [4, 2, 2, 10, 1.50],
     thermal_chimney: [2, 4, 1, 6, 2.00], gate: [2, 2, 1, 10, 1.70], water_well: [2, 3, 'perPocket', 1, 1], nuptial_chamber: [5, 3, 1, 4, 2.00],
     deep_vault: [4, 3, 1, 8, 2.50],
@@ -84,6 +84,7 @@ test('chamber fx keys match the §6.3 contract table', () => {
     scent_library: { insight: 0.05, deep: 1.25, royalAdj: 1.10 },
     midden: { disease: 0.10, diseaseMax: 0.8, output: 0.02, outputMax: 0.2, hygiene: 0.8, chitin: 0.05 },
     barracks: { berths: 8, atk: 0.05, atkMax: 0.5, homeAP: 1.10 },
+    war_hall: { berths: 4 },
     root_aphid_pen: { honeydew: 0.05, herders: 1.10, winter: 0.5 },
     fungus_garden: { gardeners: 5, leafCap: 500, fungusCap: 1000, clay: 1.5, wellAdj: 1.30 },
     repletion_hall: { berths: 5 },
@@ -100,7 +101,7 @@ test('chamber fx keys match the §6.3 contract table', () => {
 test('unlock keys are the §11 keys', () => {
   const want = {
     royal_chamber: null, gallery: 'chamber_gallery', nursery: 'chamber_nursery', granary: 'chamber_granary',
-    scent_library: 'chamber_scent_library', midden: 'chamber_midden', barracks: 'chamber_barracks',
+    scent_library: 'chamber_scent_library', midden: 'chamber_midden', barracks: 'chamber_barracks', war_hall: 'chamber_war_hall',
     root_aphid_pen: 'chamber_root_aphid_pen', fungus_garden: 'chamber_fungus_garden', repletion_hall: 'chamber_repletion_hall',
     hibernaculum: 'chamber_hibernaculum', thermal_chimney: 'chamber_thermal_chimney', gate: 'chamber_gate',
     water_well: 'chamber_water_well', nuptial_chamber: 'chamber_nuptial_chamber', deep_vault: 'chamber_deep_vault',

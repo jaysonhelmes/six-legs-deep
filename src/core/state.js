@@ -10,6 +10,8 @@ import { EGG } from '../data/economy.js';
 import { SOURCES } from '../data/sources.js';
 import { EVENT_RULES } from '../data/events.js';
 import { YEAR } from '../data/seasons.js';
+import { CHAMBERS } from '../data/chambers.js';
+import { FLIGHT } from '../data/prestige.js';
 import { countInRadius } from './hex.js';
 
 /** Current save schema version. Bump together with a MIGRATIONS entry and a fixture (ARCHITECTURE §7.14). */
@@ -24,6 +26,21 @@ const SKELETON = Object.freeze({
   crumbUid: 1,
   trailUid: 2,
 });
+
+/**
+ * C137: the original Royal Chamber's reservation: its Flight-level (FLIGHT.royalLevel) footprint with the L1 room in the
+ * top-right corner (it grows left, toward the shaft side, and down; the Royal row rule keeps it from growing up). Footprint
+ * formula DESIGN §7.4.
+ * @param {{ x: number, y: number, w: number, h: number }} r
+ * @returns {{ x: number, y: number, w: number, h: number }}
+ */
+export function royalRes(r) {
+  const def = CHAMBERS.royal_chamber;
+  const L = Math.max(1, Math.floor(Number(FLIGHT.royalLevel) || 5));
+  const tall = Math.floor((L - 1) / 3);
+  const w = Math.max(r.w, def.w0 + L - 1 - tall);
+  return { x: r.x + r.w - w, y: r.y, w, h: Math.max(r.h, def.h0 + tall) };
+}
 
 /**
  * Default nest grid: all SOIL, main shaft (column 20, rows 0–19) TUNNEL, Royal Chamber (rows 20–21, cols 18–21) CHAMBER.
@@ -86,7 +103,7 @@ export function createRun(seed) {
       cells: defaultNestCells(),
       chambers: [
         { uid: SKELETON.royalUid, type: 'royal_chamber', k: 0, x: r.x, y: r.y, w: r.w, h: r.h,
-          level: 1, target: 1, status: 'active', blueprint: false, bornAt: 0 },
+          level: 1, target: 1, status: 'active', blueprint: false, bornAt: 0, res: royalRes(r) },
       ],
       nextUid: 2,
       queue: [],

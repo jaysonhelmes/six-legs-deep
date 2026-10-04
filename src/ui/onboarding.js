@@ -118,7 +118,7 @@ export function nextHint(s, d, { tab = null } = {}) {
       const ids = ADAPTATION_ORDER.length ? ADAPTATION_ORDER : ADAPT_FALLBACK;
       const affordable = ids.find((id) => q(() => adaptAvailable(s, id), false) && q(() => timeToAfford(s, d, adaptCost(s, id, 1)), -1) === 0);
       if (!bought && !affordable) return null;
-      return { id: 'hint_adapt', glow: tab === 'colony' ? (affordable ? 'adapt:' + affordable : null) : 'tab:colony', ghost: null, done: bought };
+      return { id: 'hint_adapt', glow: tab === 'adaptations' ? (affordable ? 'adapt:' + affordable : null) : 'tab:adaptations', ghost: null, done: bought };   // C143: own tab
     },
   ];
   for (const fn of hints) {

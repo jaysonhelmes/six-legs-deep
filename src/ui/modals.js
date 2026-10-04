@@ -393,7 +393,7 @@ export function openLandingChooser(ctx) {
   const boons = arr(p.boons);
   let index = options.length ? 0 : -1;
   let boon = boons.length ? boons[0] : null;
-  let season = p.chooseSeason ? 'spring' : null;
+  let season = p.chooseSeason && p.hardship !== 'eternal_winter' ? 'spring' : null;
   let handle = null;
 
   const re = FEDERATION.regional_expansion;
@@ -431,7 +431,7 @@ export function openLandingChooser(ctx) {
   let seasonRow = null;
   const seasonHost = h('div', { class: 'landing-season' });
   const buildSeasonRow = () => {
-    if (seasonRow) return;
+    if (seasonRow || p.hardship === 'eternal_winter') return;   // C147: always winter, nothing to choose
     season = season || 'spring';
     seasonRow = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Starting season' });
     const order = SEASON_ORDER.length ? SEASON_ORDER : SEASONS;

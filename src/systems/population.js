@@ -50,9 +50,9 @@ function own(obj, k) {
   return !!obj && typeof k === 'string' && Object.prototype.hasOwnProperty.call(obj, k);
 }
 
-/** Castes housed in barracks berths (soldier, supermajor). */
+/** Military castes: soldiers (Barracks berths) and supermajors (War Hall berths, C136). */
 function isMilitary(c) {
-  return own(CASTES, c) && CASTES[c].house === 'berths';
+  return own(CASTES, c) && (CASTES[c].house === 'berths' || CASTES[c].house === 'warBerths');
 }
 
 /** Σ brood n of one caste. */
@@ -97,7 +97,10 @@ function freeRoom(s, d, caste) {
   const B = broodTotal(s);
   switch (CASTES[caste].house) {
     case 'housing': return num(st.housing) - num(col.adults.minor) - housingBrood(s);
-    case 'berths': return num(st.berths) - num(col.adults.soldier) - num(col.adults.supermajor) - broodOf(s, 'soldier') - broodOf(s, 'supermajor');
+    // C136: Barracks berths house soldiers only; supermajors live in War Hall berths. Supermajors over their capacity
+    // (older saves: they used to share the Barracks) stay alive and only block new supermajor eggs (negative room).
+    case 'berths': return num(st.berths) - num(col.adults.soldier) - broodOf(s, 'soldier');
+    case 'warBerths': return num(st.warBerths) - num(col.adults.supermajor) - broodOf(s, 'supermajor');
     case 'repleteBerths': return num(st.repleteBerths) - num(col.adults.replete) - broodOf(s, 'replete');
     case 'alateCells': return num(st.alateCells) - num(col.alatesReared) - broodOf(s, 'alate');
     default: return 0;
@@ -131,7 +134,7 @@ function assignNewMinors(s, d, k) {
 
 /**
  * [x] WP5, WP6, WP7. Add n adults of a caste. Minors join `forager` (manual mode) or follow the targets (auto mode).
- * capped: clamp to the free housing (minors), berths (soldier/supermajor) or replete berths.
+ * capped: clamp to the free housing (minors), Barracks berths (soldiers), War Hall berths (supermajors) or replete berths.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {string} caste 'minor' | 'soldier' | 'supermajor' | 'replete'

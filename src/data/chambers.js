@@ -1,4 +1,4 @@
-// The 16 chambers (DESIGN §7.6), their cost model (§7.5), placement rules (§7.4) and adjacency rules (§7.7).
+// The 17 chambers (DESIGN §7.6; War Hall C136), their cost model (§7.5), placement rules (§7.4) and adjacency rules (§7.7).
 // Owner: WP3. Contract: ARCHITECTURE §6.3 (entry shape and `fx` keys per chamber).
 //
 // Entry fields: unlock (§11 key gating placement; null = pre-dug), maxInst (number | 'perPocket'), instBonus
@@ -16,7 +16,7 @@ const freeze = (o) => {
 
 /** Chamber ids in Build-panel order (DESIGN §7.6 table order). */
 export const CHAMBER_ORDER = freeze([
-  'royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'root_aphid_pen',
+  'royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'root_aphid_pen',
   'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber',
   'deep_vault',
 ]);
@@ -79,6 +79,15 @@ export const CHAMBERS = freeze({
     place: { food: 1200 }, placeGrowth: 2.5,
     f0: 300, s0: 150, g: 1.70, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
     fx: { berths: 8, atk: 0.05, atkMax: 0.5, homeAP: 1.10 },
+  },
+  // C136: supermajors live only here (Barracks berths are soldier-only). Deep (row ≥ 30), pricier than the Barracks.
+  war_hall: {
+    id: 'war_hall', name: 'War Hall', unlock: 'chamber_war_hall',
+    maxInst: 2, instBonus: [],
+    w0: 4, h0: 2, grows: true, rowMin: 30, rowMax: 79, rule: null,
+    place: { food: 25000 }, placeGrowth: 2.5,
+    f0: 6250, s0: 2500, g: 1.80, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
+    fx: { berths: 4 },
   },
   root_aphid_pen: {
     id: 'root_aphid_pen', name: 'Root Aphid Pen', unlock: 'chamber_root_aphid_pen',
