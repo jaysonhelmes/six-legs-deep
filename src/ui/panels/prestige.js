@@ -1,6 +1,7 @@
 // Prestige panel: sub-tabs Flight (checklist, alate rearing (C116), projection, alates/min meter with peak glow) · Bloodline (+ heirlooms) ·
 // Hardships · Supercolony · Federation (+ automation, satellites) · Edicts · Speciation · Genome (+ auto-supercolony,
-// chronobiology) · Species, each revealed by its unlock key (teasers greyed). Owner: WP9.
+// chronobiology) · Species, each revealed by its unlock key (teasers greyed); the Flight sub-tab ends with the Colony
+// History button (C130: gallery of past runs, ui/history.js). Owner: WP9.
 // Contract: ARCHITECTURE §14.5 (Prestige row), §8.6, §11; DESIGN §13–§15, §23.
 // Queries: d.meta.proj, prestige.project*, traits.*Cost, hardships.goal / effectiveTier.
 
@@ -21,6 +22,7 @@ import { GENOME_ORDER, GENOME, SPECIES_ORDER, SPECIES } from '../../data/genome.
 import { FLIGHT, SUPER, SPEC, HARDSHIP, HARDSHIPS, EDICTS } from '../../data/prestige.js';
 import { YEAR } from '../../data/seasons.js';
 import { makeAct, note, progressBar, subTabStrip, sliderRow } from './common.js';
+import { historyCount } from '../history.js';
 
 const SUBS = ['flight', 'bloodline', 'hardships', 'supercolony', 'federation', 'edicts', 'speciation', 'genome', 'species'];
 /** Reveal key per sub-tab, and the teaser key that shows it greyed. */
@@ -158,6 +160,11 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     alateSec,
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Projection' }),
       h('div', { class: 'row-between' }, h('span', null, projEl, ' alates'), perMinEl), meter.el, peakNote, flyKv, flyBtn, flyHint));
+  // Colony History (C130): replaces the Strata fossils once drawn in the nest's bedrock
+  const histNote = h('p', { class: 'note' });
+  const histBtn = h('button', { type: 'button', class: 'btn', text: 'Open Colony History', on: { click: () => dlg('history') } });
+  const histSec = h('section', { class: 'sec sec-history' }, h('h3', { class: 'sec-title', text: 'Colony History' }), histNote, histBtn);
+  views.flight.append(histSec);
 
   // ------------------------------------------------------------------ Generic buy list (traits, federation, genome)
   function buyList(kind, ids, tips, costFn, cmd, levelFn, maxFn) {
@@ -488,6 +495,9 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         setProp(flyBtn, 'disabled', !fly.ok);
         toggleClass(flyBtn, 'glow', !!fly.ok && glow);
         setText(flyHint, fly.ok ? '' : 'Complete the checklist to fly. Flights are never blocked by season.');
+        const nHist = historyCount(s);
+        show(histSec, nHist > 0);
+        if (nHist > 0) setText(histNote, 'The nests of your last ' + fmtCount(nHist) + (nHist === 1 ? ' run' : ' runs') + ', kept as a gallery.');
       } else if (sub === 'bloodline') {
         setText(alatesBal, fmtCount(num(s.cycle.alates)));
         setText(alatesMeta, fmtCount(num(s.cycle.alatesCycle)) + ' this cycle · Lineage ' + fmtMult(num(meta.lineage, 1)));

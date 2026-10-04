@@ -174,3 +174,61 @@ test('hexCorners: 6 corners at the given radius; hash noise is deterministic; cl
   assert.equal(clamp(NaN, 0, 1), 0);
   assert.equal(clamp(5, 0, 1), 1);
 });
+
+// C128 (player report): a drawn trail must never look as if it crosses a stone hex. Impassable hexes are drawn as
+// full hexes, so the smoothed curve (and the worn-earth stroke around it) must keep a margin off their corners.
+test('C128: trail curves keep clear of impassable hexes beside the path; the plain spline did not', async () => {
+  const { trailCurve, hexSdf, hexWorld } = await import('../src/render/geom.js');
+  const { hexIndex, neighbors, DIRS } = await import('../src/core/hex.js');
+  const walk = (dirs) => {
+    let q = 0;
+    let r = 0;
+    const p = [hexIndex(0, 0)];
+    for (const k of dirs) {
+      q += DIRS[k][0];
+      r += DIRS[k][1];
+      p.push(hexIndex(q, r));
+    }
+    return p;
+  };
+  const size = HEX.px;
+  const margin = 0.3 * size;
+  let naiveHits = 0;
+  let cases = 0;
+  // every 4-step self-avoiding zig-zag from the centre, with each off-path neighbour in turn as the stone
+  for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) for (let c = 0; c < 6; c++) {
+    const path = walk([0, a, b, c]);
+    const on = new Set(path);
+    if (on.size < path.length) continue;
+    const stones = new Set();
+    for (const hx of path) for (const nb of neighbors(hx)) if (!on.has(nb)) stones.add(nb);
+    for (const stone of stones) {
+      cases++;
+      const o = hexWorld(stone, size);
+      const naive = sampleSpline(path.map((hx) => hexWorld(hx, size)), 24);
+      if (naive.some((p) => hexSdf(p.x, p.y, o.x, o.y, size) < margin)) naiveHits++;
+      const curve = trailCurve(path, (hx) => hx === stone, { size, perSeg: 24 });
+      assert.equal(curve.length, naive.length, 'same sample layout as sampleSpline');
+      assert.deepEqual(curve[0], naive[0]);
+      assert.ok(Math.hypot(curve.at(-1).x - naive.at(-1).x, curve.at(-1).y - naive.at(-1).y) < 1e-9);
+      for (const p of curve) {
+        const sd = hexSdf(p.x, p.y, o.x, o.y, size);
+        assert.ok(sd >= margin - 1e-6, `path ${path} stone ${stone}: sample ${sd.toFixed(2)} px from the stone hex`);
+      }
+    }
+  }
+  assert.ok(cases > 100);
+  assert.ok(naiveHits > 0, 'the plain spline does come within the margin of a stone corner (the reported bug)');
+  // no obstacles → exactly the plain spline (trails away from stone look as before)
+  const path = walk([0, 1, 0, 5]);
+  assert.deepEqual(trailCurve(path, () => false, { size, perSeg: 6 }), sampleSpline(path.map((hx) => hexWorld(hx, size)), 6));
+});
+
+test('C128: hexSdf is negative inside a hex, ~0 on its corners and edges, positive outside', async () => {
+  const { hexSdf } = await import('../src/render/geom.js');
+  const c = hexCorners(10, 20, 26);
+  assert.ok(hexSdf(10, 20, 10, 20, 26) < 0);
+  for (let k = 0; k < 6; k++) assert.ok(Math.abs(hexSdf(c[2 * k], c[2 * k + 1], 10, 20, 26)) < 1e-9);
+  assert.ok(Math.abs(hexSdf(10 + 26 * Math.sqrt(3) / 2, 20, 10, 20, 26)) < 1e-9);
+  assert.ok(hexSdf(10 + 40, 20, 10, 20, 26) > 0);
+});

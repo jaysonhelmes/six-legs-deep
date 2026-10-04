@@ -5,10 +5,11 @@
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtMult, fmtRate } from '../format.js';
-import { nameOf, CHAMBER_TIPS, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText } from '../text.js';
+import { nameOf, CHAMBER_TIPS, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText,
+  plannedWaitText } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks, unneededTunnels, pocketAction, pocketAt,
-  rootCap, rootCost } from '../../systems/nest.js';
+  rootCap, rootCost, plannedWaits, plannedWait } from '../../systems/nest.js';
 import { DRAINAGE, ROOT_CULT } from '../../data/soilFeatures.js';
 import { moundCost } from '../../systems/surface.js';
 import { CHAMBER_ORDER, CHAMBERS } from '../../data/chambers.js';
@@ -441,12 +442,14 @@ export function createPanel(root, { game, ui, bridge }) {
   const featCost = h('span', { class: 'cost' });
   const featWork = h('span', { class: 'muted' });
   const featMsg = h('p', { class: 'note' });
+  // C126: why a planned blueprint chamber is still waiting
+  const featWait = h('p', { class: 'note planned-wait' });
   const drainBtn = armedButton('Drain pocket', (ev, b) => { const k = selectedPocket(); if (k >= 0) act('drainPocket', { pocket: k }, ev, b); }, 'btn-small btn-buy');
   const moveBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Move pocket…',
     on: { click: () => { const k = selectedPocket(); if (k >= 0) { ui.setUI({ tool: { kind: 'movePocket', pocket: k } }); switchToNest(); } } } });
   const cancelPlannedBtn = h('button', { type: 'button', class: 'btn btn-small btn-danger-ghost', text: 'Cancel planned chamber',
     on: { click: (ev) => { const sel = ui.getUI().selection; if (sel && sel.kind === 'planned') { const r = act('cancelPlanned', { cell: num(sel.i, -1) }, ev, cancelPlannedBtn); if (r.ok) bridge.select(null); } } } });
-  const featSec = h('section', { class: 'sec inspect inspect-feature' }, h('div', { class: 'row-between' }, featTitle, featBadge), featText,
+  const featSec = h('section', { class: 'sec inspect inspect-feature' }, h('div', { class: 'row-between' }, featTitle, featBadge), featText, featWait,
     h('div', { class: 'row-between' }, featCost, featWork), featMsg, h('div', { class: 'btn-row' }, drainBtn, moveBtn, cancelPlannedBtn));
   inspectView.append(inspEmpty, inspSec, featSec);
 
@@ -645,6 +648,9 @@ export function createPanel(root, { game, ui, bridge }) {
       const half = c && c.food !== undefined ? { ...c, food: c.food * num(DIG && DIG.blueprintPlaceMult, 0.5) } : c;
       setCost(featCost, half, s);
       setText(featWork, '');
+      const wait = q(() => plannedWait(s, d, cell), null);
+      setText(featWait, wait ? plannedWaitText(wait) : '');
+      show(featWait, !!wait);
       setText(featMsg, 'Cancelling removes it from this run\'s plan (the saved blueprint stays). Its waiting tunnels go with it.');
       toggleClass(featMsg, 'warn', false);
       show(drainBtn, false);
@@ -653,6 +659,7 @@ export function createPanel(root, { game, ui, bridge }) {
       return true;
     }
     if (kind === 'pocket') {
+      show(featWait, false);
       const k = selectedPocket();
       const p = arr(s.run.nest.features && s.run.nest.features.water)[k];
       if (!p || !p.revealed) return false;
@@ -858,16 +865,23 @@ export function createPanel(root, { game, ui, bridge }) {
       show(plannedBox, pend.length > 0);
       if (pend.length) {
         if (plannedAll.__disarm) plannedAll.__disarm();
+        const waits = q(() => plannedWaits(s, d), []) || [];
         syncList(plannedList, pend, (p) => p.type + '|' + p.x + '|' + p.y + '|' + (p.float ? 'f' : ''), (p0) => {
           const label = h('span', { class: 'planned-label' });
+          const why = h('span', { class: 'planned-wait' });
           const cell = p0.y * GRID_COLS + p0.x;
           const btn = h('button', { type: 'button', class: 'btn btn-icon btn-danger-ghost', text: '×', attrs: { 'aria-label': 'Cancel planned chamber' },
             dataset: { tip: 'Cancel this planned chamber (this run only).' },
             on: { click: (ev) => act('cancelPlanned', { cell }, ev, btn) } });
-          const row = h('div', { class: 'planned-row' }, label, btn);
-          row.__r = { label };
+          const row = h('div', { class: 'planned-row' }, h('div', { class: 'planned-main' }, label, why), btn);
+          row.__r = { label, why };
           return row;
-        }, (row, p) => setText(row.__r.label, nameOf('chamber', p.type) + (p.float ? ' (waits for a water pocket with room)' : ' · row ' + p.y)));
+        }, (row, p) => {
+          setText(row.__r.label, nameOf('chamber', p.type) + (p.float ? '' : ' · row ' + p.y));
+          // C126: the reason it is still waiting
+          const w = waits.find((x) => x.type === p.type && x.x === p.x && x.y === p.y);
+          setText(row.__r.why, w ? plannedWaitText(w) : (p.float ? 'Waiting: a revealed water pocket with room' : ''));
+        });
       }
       if (bpOn) {
         const slots = Array.from({ length: bpSlots(s) }, (_, i) => i);

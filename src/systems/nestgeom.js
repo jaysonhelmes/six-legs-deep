@@ -15,6 +15,11 @@ import { BOONS, EDICTS, HARDSHIP } from '../data/prestige.js';
 const COLS = GRID.cols;
 const ROWS = GRID.rows;
 const NCELLS = COLS * ROWS;
+/**
+ * C125: the top rows of every shaft (row 0 is the entrance cell on the surface, row 1 the cell right below it) stay
+ * shaft: no chamber footprint may cover them. Deeper shaft cells may be covered; the shaft then passes through.
+ */
+export const SHAFT_KEEP_ROWS = 2;
 const LAYER_INDEX = Object.freeze(Object.fromEntries(LAYER_ORDER.map((id, i) => [id, i])));
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -378,7 +383,8 @@ export function inRect(r, i) {
 
 /**
  * Build (or rebuild in place) the geometry cache of the nest: chamberAt, open, dist (BFS from the main shaft top),
- * entDist (BFS from every open shaft top), plus WP3-private masks _shaft (1 main shaft, 2 other shafts), _queued
+ * entDist (BFS from every open shaft top), plus WP3-private masks _shaft (1 main shaft, 2 other shafts), _pass
+ * (C125: open chamber cells a shaft passes through, same values), _queued
  * (undug cells of queued jobs), _backfill (pending backfill), _root (root-line cells), _pocket (water pocket index).
  * @param {import('../core/types.js').State} s
  * @param {Object} [out] object to fill (d.nest); a fresh object when omitted
@@ -397,6 +403,7 @@ export function buildGeom(s, out = {}) {
   const chamberAt = reuse('chamberAt', Int16Array, -1);
   const open = reuse('open', Uint8Array, 0);
   const shaft = reuse('_shaft', Uint8Array, 0);
+  const pass = reuse('_pass', Uint8Array, 0);
   const queued = reuse('_queued', Uint8Array, 0);
   const backfill = reuse('_backfill', Uint8Array, 0);
   const root = reuse('_root', Uint8Array, 0);
@@ -415,10 +422,17 @@ export function buildGeom(s, out = {}) {
     if (!sh || !sh.open || !(sh.col >= 0 && sh.col < COLS)) continue;
     const top = idx(sh.col, 0);
     if (open[top]) tops.push(top);
+    // C125: a chamber may cover a shaft below its top SHAFT_KEEP_ROWS rows. The shaft passes through it (its open
+    // chamber cells down to row sh.thru are marked _pass) and carries on below as shaft.
+    const thru = Number.isInteger(sh.thru) ? sh.thru : -1;
+    const v = sh.kind === 'main' ? 1 : 2;
     for (let y = 0; y < ROWS; y++) {
       const c = idx(sh.col, y);
-      if (cells[c] !== CELL.TUNNEL) break;
-      if (!shaft[c] || sh.kind === 'main') shaft[c] = sh.kind === 'main' ? 1 : 2;
+      if (cells[c] === CELL.TUNNEL) {
+        if (!shaft[c] || sh.kind === 'main') shaft[c] = v;
+      } else if (y <= thru && chamberAt[c] >= 0 && open[c]) {
+        if (!pass[c] || sh.kind === 'main') pass[c] = v;
+      } else break;
     }
   }
   for (const job of nest.queue) {

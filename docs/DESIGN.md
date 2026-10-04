@@ -310,7 +310,7 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 | `loam` | 10–23 | 6 | — | Galleries +10% housing. The hard-winter frost line reaches row 18. |
 | `clay` | 24–39 | 10 (7.2 with `clay_masonry`) | — | Humid. Fungus Gardens ×1.5. Granaries ×1.25 capacity but spoil 0.5%/min of the food held there (stopped by `ventilation_shafts`). |
 | `gravel` | 40–57 | 16 | — | Dry and stable. Granaries ×1.5 with no spoilage. Scent Library ×1.25. Nurseries +10% in winter. |
-| `bedrock` | 58–73 | 40 | `acid_excavation` | Granaries ×1.75. Deep Vault. Strata fossils are drawn here (§25.8). |
+| `bedrock` | 58–73 | 40 | `acid_excavation` | Granaries ×1.75. Deep Vault. (Past nests now live in the Colony History gallery, §25.8.) |
 | `aquifer` | 74–79 | 120 | Federation `aquifer_access` | Chambers here get +20% effect. Water Wells here count double. |
 
 - A chamber's layer is the layer holding the majority of its cells (ties go to the deeper layer).
@@ -348,6 +348,7 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
    - It also warns (amber) when the footprint would take the Royal Chamber's last room to grow to **L5**, which the Nuptial Flight requires: "Boxes in the Royal Chamber". The placement is still allowed. The advisor never suggests such a spot unless nothing else fits, and an enlargement with no chosen direction grows away from the queen's room.
 2. Validity:
    - The footprint must be undug soil or existing tunnel. It must not overlap stone (unless `acid_excavation`), water or another chamber.
+   - **Shafts do not block chambers** (ARCHITECTURE §18 C125). A footprint may cover shaft cells (main, nuptial or satellite shaft) except a shaft's **top two rows** (row 0, the entrance cell on the surface, and row 1 right below it), which always stay shaft. The covered cells become part of the chamber and the shaft passes straight through it: the entrance stays connected, path distances (haul, raid reach) run through the cavity, and the nest view draws the shaft continuing inside the chamber as a faint passage. The same holds for relocation, enlargement and blueprint chambers. Demolishing or moving the chamber turns its cells back into tunnel, so the shaft is whole again.
    - It must satisfy the chamber's row rule. The Build panel lists each chamber's rule ("Depth 24 or deeper", "Must touch a root", "Needs its own exit shaft"), the ghost's refusal names the numbers ("Must be at depth 24 or deeper (you are at 17)"), and the limit row is drawn as a line while placing.
    - It must connect to an open cell, either directly or via the auto-route.
 3. Placement food is paid immediately. The cells join the dig queue. The chamber **activates at 100% excavated** and fills in visibly while being dug.
@@ -538,7 +539,7 @@ Finite stocks are sized at discovery (the moment the source is first visible: at
 - **One trail per destination:** a source can have only one trail leading to it (C100). To put more ants on it, add workers to that trail.
 **Drawing.**
 - Drag from an origin (any entrance, outpost or satellite; with `trunk_trails`, any node of an existing trail, which makes a fork) to a target hex.
-- A\* auto-routes, and the player can drag waypoints to reroute.
+- A\* auto-routes, and the player can drag waypoints to reroute. Stone (and puddles in spring) are impassable; the drawn trail line is smoothed but never cuts across an impassable hex, and the ants walk the same line (ARCHITECTURE C128). Hovering a stone hex says "Stone — impassable. Trails route around it." (C129).
 - The tool previews `d`, yield per worker, capacity and saturation.
 - **Trails are free to draw and reroute.** They are limited by **trail slots**:
 
@@ -1163,7 +1164,7 @@ Run-1 rows are medians of the balance simulation (Balance Verification). Conques
 | `founding_stores` | Founding Stores | 1 × 3^L (1, 3, 9) | 3 | Start each run with 500 / 5,000 / 50,000 food (may exceed the cap until spent) and 100 / 1,000 / 10,000 soil |
 | `nanitic_vigor` | Nanitic Vigor | 2 | 1 | The first 25 eggs are nanitics. The first 50 workers produce ×3. |
 | `remembered_paths` | Remembered Paths | 2 | 1 | Runs start with trails drawn to the 2 best revealed sources, at 50% strength |
-| `ancestral_blueprint` | Ancestral Blueprint | 3 | 1 | Save your nest layout. After each flight it auto-queues; blueprint cells dig at 3× speed; blueprint chambers cost −50% placement food. Chambers that are still locked or unaffordable at run start stay **planned** (faint dashed outlines) and queue themselves, at the same price and dig speed, as soon as they unlock and can be paid for; a spot that can never be used this run (water, another chamber, a seeded rule) is dropped with a notice (ARCHITECTURE §18 C106). The Royal Chamber starts at its saved spot when that spot works on the new soil (else at the usual spot, with a notice). Water Wells follow the new run's water: each takes the free spot nearest its saved one that touches a revealed water pocket, or is left out when no pocket has room (C119). |
+| `ancestral_blueprint` | Ancestral Blueprint | 3 | 1 | Save your nest layout. After each flight it auto-queues; blueprint cells dig at 3× speed; blueprint chambers cost −50% placement food. Chambers that are still locked or unaffordable at run start stay **planned** (faint dashed outlines) and queue themselves, at the same price and dig speed, as soon as they unlock and can be paid for (the planned outline's tooltip, its inspect view and the Build panel's Blueprints list say why each one still waits, e.g. "Waiting: stone in the way — needs Acid Excavation" or "Waiting: 2.1K food (blueprint half price)"; ARCHITECTURE §18 C126); a spot that can never be used this run (water, another chamber, a seeded rule) is dropped with a notice (ARCHITECTURE §18 C106). The Royal Chamber starts at its saved spot when that spot works on the new soil (else at the usual spot, with a notice). Water Wells follow the new run's water: each takes the free spot nearest its saved one that touches a revealed water pocket, or is left out when no pocket has room (C119). |
 | `automaton_instincts` | Automaton Instincts | 5 | 1 | `age_polyethism` and `response_thresholds` innate; Adaptation autobuyer; dig queue +2 |
 | `hardy_workers` | Hardy Workers | 5 × 3.5^L | 12 | Forager, herder and leafcutter output ×1.4 |
 | `deep_diggers` | Deep Diggers | 5 × 3.5^L | 12 | Dig work ×1.4 |
@@ -1990,7 +1991,7 @@ Camera controls on the canvas the player clicked last: wheel (Above: zoom; Below
 | `richness` | `r(d)` and capacity per source |
 
 ### 25.8 Pride features (from C)
-- **Strata:** each completed run's nest silhouette (tunnels and chambers) is drawn as a faint fossil in bedrock rows 58–79. The last 12 are kept. Supercolony cycles are tinted amber, and Speciation sets an amber block.
+- **Strata → Colony History** (ARCHITECTURE C130): each completed run keeps a record: its nest silhouette (tunnels and chambers) plus the run number, the layer that ended it (Nuptial Flight, Supercolony or Speciation), species, duration, peak ants, the alates / kinship / genes earned, the date and any Hardship. The last 12 are kept. They are no longer drawn as fossils in the bedrock; **Prestige → Flight → Colony History** opens a gallery with one card per run (a mini drawing of that nest on its soil layers, newest first; Supercolony and Speciation cards framed in amber). Records from before this change show what they have.
 - **Photo Mode:** hide the UI and export either view (or both stacked) as a PNG with a stat card via `canvas.toDataURL`. The download requires a click. (STRETCH, cut-list #5.)
 - **Names:** the colony and queen can be named. The queen sprite grows with Royal Chamber level.
 - **Cosmetics** from achievements: palettes, mound skins and flags, trail colours, a crown, a ladybug pet, a winged cursor.

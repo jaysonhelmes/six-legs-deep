@@ -175,25 +175,26 @@ test('relocating the Royal Chamber into a spot with no growth room warns (amber 
   assert.ok(!ok.mods.some((m) => m.key === 'royalRoom'));
 });
 
-test('the Nuptial exit shaft picks a column that keeps the room; an explicit column that does not is warned', () => {
+test('C125: a Nuptial exit shaft through the Royal room does not take it (the Royal Chamber may grow over a shaft)', () => {
   const { s, d } = setup();
   addChamber(s, 'gallery', 15, 20, 3, 3);   // room left: x 18..24 only (C97: the L5 Royal footprint is 7×3)
   nest.derive(s, d);
-  // Default order would try column 24 (centre of the chamber at x 22..26), then 23: both cut every footprint.
+  // Column 24 (centre of the chamber at x 22..26) runs through every free Flight-level footprint, but below its top
+  // rows a shaft passes through chambers, so it is no obstacle any more: no warning, and the default keeps column 24.
   const v = nest.validatePlacement(s, d, 'nuptial_chamber', 22, 24, { shaftCol: 24 });
   assert.equal(v.ok, true);
-  assert.ok(v.mods.some((m) => m.key === 'royalRoom'), 'explicit column 24 warns');
+  assert.ok(!v.mods.some((m) => m.key === 'royalRoom'), 'explicit column 24 no longer warns');
   assert.equal(run(s, d, { type: 'placeChamber', chamber: 'nuptial_chamber', x: 22, y: 24 }), null);
   const sh = s.run.nest.shafts.find((x) => x.kind === 'nuptial');
-  assert.equal(sh.col, 25);
+  assert.equal(sh.col, 24);
   assert.equal(nest.blocksRoyalGrowth(s, { x: 0, y: 70, w: 1, h: 1 }), false, 'room kept with the queued shaft counted');
 });
 
-test('a satellite shaft that would take the last room is detected (placeSatellite refuses it with royalRoom)', () => {
+test('C125: a satellite shaft through the Royal room no longer takes it (shaftBoxesRoyal only counts the shaft top rows)', () => {
   const { s, d } = setup();
   addChamber(s, 'gallery', 15, 20, 3, 3);
   nest.derive(s, d);
-  assert.equal(nest.shaftBoxesRoyal(s, d, 24), true);
+  assert.equal(nest.shaftBoxesRoyal(s, d, 24), false, 'the Royal Chamber may grow over the shaft');
   assert.equal(nest.shaftBoxesRoyal(s, d, 30), false);
   assert.equal(nest.shaftBoxesRoyal(s, d, 4), false);
   // Through the WP7 command.
@@ -201,7 +202,7 @@ test('a satellite shaft that would take the last room is detected (placeSatellit
   d.surface.owned[ring3] = 1;
   s.era.federation.satellite_nest = 1;
   const v = (col) => prestige.handlers.placeSatellite.validate(s, d, { type: 'placeSatellite', hex: ring3, col });
-  assert.equal(v(24), 'blocked:royalRoom');
+  assert.equal(v(24), null);
   assert.equal(v(30), null);
 });
 

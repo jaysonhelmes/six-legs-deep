@@ -332,6 +332,54 @@ export function reasonText(reason, type = null) {
   return REASONS[base] || REASONS.invalid;
 }
 
+/**
+ * C126: "Waiting: …" copy per waiting code of a pending blueprint chamber (nest.plannedWaits) that needs no numbers.
+ * Codes not listed fall back to REASON_DETAILS / REASONS ("Waiting: " + that text, first letter lowered).
+ */
+export const WAIT_TEXT = Object.freeze({
+  'blocked:stone': 'stone in the way — needs ' + nameOr(RESEARCH, 'acid_excavation', 'Acid Excavation'),
+  'blocked:royalRoom': 'would wall in the Royal Chamber (level it to L' + ROYAL_LEVEL + ' first)',
+  'blocked:queued': 'cells still being dug',
+  'blocked:backfill': 'cells still being backfilled',
+  'blocked:layer': 'that layer is still closed (' + nameOr(RESEARCH, 'acid_excavation', 'Acid Excavation') + ' opens bedrock, '
+    + nameOr(FEDERATION, 'aquifer_access', 'Aquifer Access') + ' the aquifer)',
+  'blocked:shaft': 'a shaft entrance is in the way (the top two rows of a shaft stay open)',
+  'blocked:water': 'a water pocket is in the way',
+  'blocked:chamber': 'another chamber is in the way',
+  'blocked:route': 'no tunnel route reaches it yet',
+  'invalid:water': 'needs a revealed water pocket that no other Well uses',
+  'wait:water': 'a revealed water pocket with room (dig near water to reveal one)',
+  'wait:path': 'the planned tunnels or chambers before it come first',
+  'wait:next': 'queues on the next check',
+  hardship: 'not allowed in this Hardship',
+  queueFull: 'the dig queue is full',
+});
+
+/**
+ * C126: player text for why a pending blueprint chamber still waits ("Waiting: 2.1K food (blueprint half price)").
+ * @param {{ type: string, code: string, detail?: Object|null }|null} w an entry of nest.plannedWaits
+ * @returns {string}
+ */
+export function plannedWaitText(w) {
+  if (!w || !w.code) return '';
+  const lc = (t) => (t ? t.charAt(0).toLowerCase() + t.slice(1) : t);
+  const strip = (t) => String(t || '').replace(/[.]+$/, '');
+  const det = w.detail || {};
+  const name = nameOf('chamber', w.type);
+  let body;
+  if (w.code === 'locked') body = 'locked — unlocks: ' + lc(strip(unlockHint(det.key || 'chamber_' + w.type)));
+  else if (w.code === 'max') body = name + ' limit reached (' + fmtCount(num0(det.n, 0)) + '/' + fmtCount(num0(det.max, 0)) + ')';
+  else if (w.code === 'cantAfford') {
+    const cost = det.cost && typeof det.cost === 'object' ? det.cost : {};
+    const parts = Object.keys(cost).filter((r) => num0(cost[r], 0) > 0).map((r) => fmt(cost[r]) + ' ' + nameOf('res', r).toLowerCase());
+    body = (parts.length ? parts.join(' + ') : 'resources') + ' (blueprint half price)';
+  } else if (w.code === 'blocked:shaft' && CHAMBERS[w.type] && CHAMBERS[w.type].rule === 'nuptialShaft') {
+    body = 'no free column for its own exit shaft yet';
+  } else if (WAIT_TEXT[w.code]) body = WAIT_TEXT[w.code];
+  else body = lc(strip(reasonText(w.code)));
+  return 'Waiting: ' + body;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Tabs, seasons, bottlenecks, overlays
 // ---------------------------------------------------------------------------------------------------------------
@@ -1086,3 +1134,13 @@ export function eventToast(e, s = null) {
 export function wordCount(str) {
   return String(str).trim().split(/\s+/).filter(Boolean).length;
 }
+
+/** C129: hex tooltip for impassable terrain (stone always; a puddle while it blocks in spring). */
+export const TERRAIN_BLOCK_TIPS = Object.freeze({
+  stone: 'Stone — impassable. Trails route around it.',
+  puddle: 'Puddle — flooded in spring. Trails route around it.',
+});
+
+/** C130: Colony History (Prestige tab): the layer that ended each recorded run, and its currency. */
+export const HISTORY_LAYERS = Object.freeze({ run: 'Nuptial Flight', cycle: 'Supercolony', era: 'Speciation' });
+export const HISTORY_GAINS = Object.freeze({ run: 'alates', cycle: 'kinship', era: 'genes' });

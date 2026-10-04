@@ -6,13 +6,13 @@ import { h, setText, clear } from './dom.js';
 import { fmt, fmtRate, fmtCount, fmtTime, fmtMult, fmtPct } from './format.js';
 import {
   nameOf, RES_NAMES, RES_TIPS, CHAMBER_TIPS, SEASON_NAMES, SEASON_TIPS, BOTTLENECK_TIPS, unlockHint, unlockLabel, BATTLE_NAMES, PARTY_NAMES,
-  reasonText, linkText,
+  reasonText, linkText, TERRAIN_BLOCK_TIPS, plannedWaitText,
 } from './text.js';
 import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
 import { oldRidgeImmunity, frontInfo, frontLabel, satellitesFree, satelliteHexWhy, spanText } from './rules.js';
-import { cellInfo, chamberLinks, pocketAction } from '../systems/nest.js';
+import { cellInfo, chamberLinks, pocketAction, plannedWait } from '../systems/nest.js';
 import { groomText } from './panels/build.js';
 import { ringOf } from '../core/hex.js';
 import { TERRAIN_ORDER } from '../data/surface.js';
@@ -105,6 +105,20 @@ export function tipForKey(key, s, d) {
 }
 
 /** Find a chamber by uid. */
+/**
+ * C129: first line of a revealed hex's tooltip: the terrain name, or for impassable terrain (stone; a puddle while
+ * d.surface.passable says it blocks, i.e. in spring) a line saying trails route around it.
+ * @param {string} terrId
+ * @param {number} hex
+ * @param {Object} d
+ * @returns {string}
+ */
+export function hexTerrainLine(terrId, hex, d) {
+  const pass = d && d.surface && d.surface.passable;
+  const blocked = terrId === 'stone' || (terrId === 'puddle' && !!pass && pass[hex] === 0);
+  return blocked && TERRAIN_BLOCK_TIPS[terrId] ? TERRAIN_BLOCK_TIPS[terrId] : nameOf('terrain', terrId);
+}
+
 function chamberBy(s, uid) {
   return arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === uid) || null;
 }
@@ -138,8 +152,11 @@ export function tipForTarget(t, s, d) {
     }
     // C106: a pending blueprint chamber's planned outline
     if (k === 'planned') {
+      // C126: with the reason it is still waiting
+      let wait = null;
+      try { wait = plannedWait(s, d, num(t.i, -1)); } catch { wait = null; }
       return { title: 'Planned: ' + nameOf('chamber', t.chamberType), lines: ['Planned (blueprint): queues when unlocked and affordable.',
-        'Click to inspect it or cancel this planned chamber.'] };
+        wait ? plannedWaitText(wait) : '', 'Click to inspect it or cancel this planned chamber.'].filter(Boolean) };
     }
     // C117: a revealed water pocket (drain / move with Drainage)
     if (k === 'pocket') {
@@ -230,7 +247,8 @@ export function tipForTarget(t, s, d) {
     const revealed = arr(surf.revealed)[hex] === 1;
     const order = TERRAIN_ORDER.length ? TERRAIN_ORDER : TERRAIN_FALLBACK;
     const owned = d && d.surface && d.surface.owned ? d.surface.owned[hex] : 0;
-    const lines = [revealed ? nameOf('terrain', order[num(arr(surf.terrain)[hex])] || 'grass') : 'Unexplored: scouts will reveal it.'];
+    const terrId = order[num(arr(surf.terrain)[hex])] || 'grass';
+    const lines = [revealed ? hexTerrainLine(terrId, hex, d) : 'Unexplored: scouts will reveal it.'];
     if (owned) lines.push('Your territory.');
     // F15: while placing a satellite, say whether this hex qualifies (and why not) before the click
     const tool = getUI().tool;

@@ -8,7 +8,7 @@
 // trailScreenPolyline(uid), entranceAt(hex).
 
 import { HEX, GRID } from '../data/balance.js';
-import { TERRAIN_ORDER, TRAIL, SCOUT, TERRITORY } from '../data/surface.js';
+import { TERRAIN, TERRAIN_ORDER, TRAIL, SCOUT, TERRITORY } from '../data/surface.js';
 import { SOURCES } from '../data/sources.js';
 import { RESET } from '../data/prestige.js';
 import { GOLDEN } from '../data/events.js';
@@ -18,7 +18,7 @@ import * as nestSys from '../systems/nest.js';
 import { hexToPixel, hexQR, hexIndex, ringOf, countInRadius, hexDist, DIRS, HEX_COUNT } from '../core/hex.js';
 import { createLayer, createOffscreen, pageHidden, nowMs, reducedMotion } from './canvas.js';
 import { createSurfaceCamera } from './camera.js';
-import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, sampleSpline, arcTable, pointAtArc, distToPolyline, SQRT3 } from './geom.js';
+import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, arcTable, pointAtArc, distToPolyline, trailCurve, SQRT3 } from './geom.js';
 import {
   terrainColor, SURFACE, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
   rivalPatternKind, seasonBlend, blendWash, blendWeather,
@@ -197,6 +197,8 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   const terr = { key: '', owned: new Uint8Array(HEX_COUNT), border: new Uint8Array(HEX_COUNT), rival: new Int16Array(HEX_COUNT), frontier: [] };
   /** trail uid → { sig, world, tab } */
   const trailGeo = new Map();
+  /** C128: signature of the impassable-terrain hexes (stone, spring puddles) the trail curves avoid; set per frame */
+  let blockKey = '';
   const claimMemo = { key: '', res: null };
   const pulses = []; // { kind, uid, hex, t, max }
 
@@ -1234,13 +1236,53 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   // trails
   // ---------------------------------------------------------------------------------------------------------------
 
+  /**
+   * C128: true for a hex the trail curve must stay out of: impassable now (d.surface.passable) because of its terrain
+   * (TERRAIN move null, or a puddle while puddles block in spring). Molehills etc. are drawn as objects, not as full
+   * hexes, and are not obstacles for the curve.
+   */
+  function isBlockedHex(hex) {
+    return blockedIn(S(), D(), hex, -1);
+  }
+
+  /** isBlockedHex with an optional precomputed map hex count n (−1 = compute). */
+  function blockedIn(s, d, hex, n) {
+    const pass = d && d.surface && d.surface.passable;
+    const terrain = s && s.run && s.run.surface && s.run.surface.terrain;
+    if (!pass || !terrain || !(hex >= 0) || pass[hex] !== 0) return false;
+    if (hex >= (n >= 0 ? n : countInRadius(radiusOf(s)))) return false;
+    const def = TERRAIN[TERRAIN_ORDER[terrain[hex]]];
+    return !!def && (def.move === null || def.springMove === null);
+  }
+
+  /** C128: blockKey from the current impassable terrain (cheap: one pass over the map's hexes). */
+  function syncBlockKey(s, d) {
+    const pass = d && d.surface && d.surface.passable;
+    const n = countInRadius(radiusOf(s));
+    let h1 = n;
+    let h2 = 0;
+    if (pass) {
+      for (let i = 0; i < n; i++) {
+        if (blockedIn(s, d, i, n)) {
+          h1 = (Math.imul(h1, 31) + i) | 0;
+          h2++;
+        }
+      }
+    }
+    blockKey = h1 + ':' + h2;
+  }
+
+  /** C128: the world-space curve for a hex path (trail, drag ghost, reroute ghost), clear of impassable hexes. */
+  function pathCurve(path, perSeg) {
+    return trailCurve(path, isBlockedHex, { size: SIZE, perSeg });
+  }
+
   function trailWorld(tr) {
     const path = Array.isArray(tr.path) ? tr.path : [];
-    const sig = path.join(',');
+    const sig = path.join(',') + '|' + blockKey;
     let g = trailGeo.get(tr.uid);
     if (g && g.sig === sig) return g;
-    const pts = path.filter((h) => h >= 0 && h < HEX_COUNT).map((h) => hexWorldPt(h));
-    const world = pts.length >= 2 ? sampleSpline(pts, 6) : pts;
+    const world = pathCurve(path, 6);
     g = { sig, world, tab: arcTable(world) };
     trailGeo.set(tr.uid, g);
     return g;
@@ -2197,8 +2239,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
 
   function drawPathHexes(ctx, path, color, dashed = true) {
     if (!Array.isArray(path) || path.length < 2) return;
-    const pts = path.filter((h) => h >= 0).map((h) => hexWorldPt(h));
-    const sp = sampleSpline(pts, 5).map((p) => w2s(p.x, p.y));
+    const sp = pathCurve(path, 5).map((p) => w2s(p.x, p.y));
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.lineCap = 'round';
@@ -2405,6 +2446,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
     drawFrontier(ctx, s, d, T);
     const trails = s.run.surface.trails || [];
+    syncBlockKey(s, d);
     const polys = trails.map((tr) => (tr ? trailScreen(tr) : null));
     drawDaughters(ctx, s);
     drawTrails(ctx, s, d, polys);

@@ -1,9 +1,10 @@
 // Pure render geometry: nest cell <-> pixel with a scroll view, hex <-> pixel with a pan/zoom camera, polyline
-// distance, Catmull-Rom splines and arc-length tables, plus tiny deterministic hash-noise helpers. Owner: WP8.
+// distance, Catmull-Rom splines (C128: obstacle-avoiding trail curves) and arc-length tables, plus tiny deterministic
+// hash-noise helpers. Owner: WP8.
 // Contract: ARCHITECTURE §13.3 (render/geom.js, unit-tested by tests/render.geom.test.js). No DOM, no state writes.
 
 import { GRID, HEX } from '../data/balance.js';
-import { hexToPixel, pixelToHex, ringOf, HEX_COUNT } from '../core/hex.js';
+import { hexToPixel, pixelToHex, ringOf, neighbors, HEX_COUNT } from '../core/hex.js';
 
 /** √3, used by pointy-top hex maths. */
 export const SQRT3 = Math.sqrt(3);
@@ -302,6 +303,110 @@ export function polylineLength(pts) {
   let L = 0;
   for (let i = 0; pts && i + 1 < pts.length; i++) L += Math.hypot(px(pts[i + 1]) - px(pts[i]), py(pts[i + 1]) - py(pts[i]));
   return L;
+}
+
+/**
+ * Signed distance-like value from (x, y) to a pointy-top hex of corner radius `size` centred at (cx, cy): negative
+ * inside, 0 on the border, positive outside (the max of the three edge-pair plane distances, so outside it never
+ * over-estimates the true distance: a conservative "how far from entering this hex" measure).
+ * @returns {number}
+ */
+export function hexSdf(x, y, cx, cy, size) {
+  const dx = x - cx;
+  const dy = y - cy;
+  const k = SQRT3 / 2;
+  return Math.max(Math.abs(dx), Math.abs(0.5 * dx + k * dy), Math.abs(-0.5 * dx + k * dy)) - size * k;
+}
+
+/**
+ * C128: Catmull-Rom spline through hex centres that never enters an obstacle hex. Segment by segment, the curve is
+ * blended toward the straight centre-to-centre chord (alpha 1 → 0.6 → 0.3 → 0) until every sample keeps `margin`
+ * world px (default 0.3 × size: half the widest worn-earth stroke at zoom 0.6; impassable hexes are drawn as full
+ * hexes, so the stroke must stay off their corners) from every nearby obstacle hex. The chord between two ADJACENT
+ * hexes stays inside those two hexes and ≥ 0.43 × size from any third hex, so the fallback (alpha 0) is always clear. Same sample layout as sampleSpline
+ * (perSeg samples per segment, endpoints included), so arc tables and hit tests keep working.
+ * @param {Array<{x:number,y:number}|number[]>} pts hex centres (consecutive points = adjacent hexes)
+ * @param {Array<{x:number,y:number}>} obstacles centres of impassable hexes (not on the path)
+ * @param {{ perSeg?: number, size?: number, margin?: number }} [opts]
+ * @returns {{ x: number, y: number }[]}
+ */
+export function avoidSpline(pts, obstacles, opts = {}) {
+  const n = pts ? pts.length : 0;
+  if (n === 0) return [];
+  if (n === 1) return [{ x: px(pts[0]), y: py(pts[0]) }];
+  const per = Math.max(1, Math.floor(opts.perSeg > 0 ? opts.perSeg : 6));
+  const obs = Array.isArray(obstacles) ? obstacles : [];
+  if (!obs.length) return sampleSpline(pts, per);
+  const size = opts.size > 0 ? opts.size : HEX.px;
+  const margin = Number.isFinite(opts.margin) ? opts.margin : 0.3 * size;
+  const reach2 = (2.2 * size) ** 2;
+  const out = [{ x: px(pts[0]), y: py(pts[0]) }];
+  const seg = new Array(per);
+  for (let k = 0; k + 1 < n; k++) {
+    const p0 = pts[k > 0 ? k - 1 : 0];
+    const p3 = pts[k + 2 < n ? k + 2 : n - 1];
+    const x1 = px(pts[k]);
+    const y1 = py(pts[k]);
+    const x2 = px(pts[k + 1]);
+    const y2 = py(pts[k + 1]);
+    const near = [];
+    for (const o of obs) {
+      if ((o.x - x1) ** 2 + (o.y - y1) ** 2 <= reach2 || (o.x - x2) ** 2 + (o.y - y2) ** 2 <= reach2) near.push(o);
+    }
+    for (const alpha of near.length ? [1, 0.6, 0.3, 0] : [1]) {
+      let ok = true;
+      for (let j = 1; j <= per; j++) {
+        const u = j / per;
+        const lx = x1 + (x2 - x1) * u;
+        const ly = y1 + (y2 - y1) * u;
+        const cx = j === per ? x2 : crAxis(px(p0), x1, x2, px(p3), u);
+        const cy = j === per ? y2 : crAxis(py(p0), y1, y2, py(p3), u);
+        const q = { x: lx + (cx - lx) * alpha, y: ly + (cy - ly) * alpha };
+        seg[j - 1] = q;
+        if (alpha > 0 && ok) {
+          for (const o of near) {
+            if (hexSdf(q.x, q.y, o.x, o.y, size) < margin) {
+              ok = false;
+              break;
+            }
+          }
+        }
+      }
+      if (ok) break;
+    }
+    for (let j = 0; j < per; j++) out.push(seg[j]);
+  }
+  return out;
+}
+
+/**
+ * C128: world-space trail curve for a hex path (consecutive hexes adjacent): Catmull-Rom through the hex centres,
+ * kept out of every neighbouring hex for which isBlocked(hex) is true (stone, a spring puddle …; hexes on the path
+ * itself are never obstacles). The one curve used for the drawn trail, the drag / reroute ghost, hit tests and the
+ * ants walking it.
+ * @param {number[]} path spiral indices
+ * @param {(hex: number) => boolean} [isBlocked]
+ * @param {{ perSeg?: number, size?: number, margin?: number }} [opts]
+ * @returns {{ x: number, y: number }[]}
+ */
+export function trailCurve(path, isBlocked, opts = {}) {
+  const size = opts.size > 0 ? opts.size : HEX.px;
+  const hexes = (Array.isArray(path) ? path : []).filter((hx) => hx >= 0 && hx < HEX_COUNT);
+  const pts = hexes.map((hx) => hexWorld(hx, size));
+  if (pts.length < 2) return pts;
+  const obstacles = [];
+  if (typeof isBlocked === 'function') {
+    const onPath = new Set(hexes);
+    const seen = new Set();
+    for (const hx of hexes) {
+      for (const nb of neighbors(hx)) {
+        if (onPath.has(nb) || seen.has(nb)) continue;
+        seen.add(nb);
+        if (isBlocked(nb)) obstacles.push(hexWorld(nb, size));
+      }
+    }
+  }
+  return avoidSpline(pts, obstacles, { ...opts, size });
 }
 
 /**

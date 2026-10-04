@@ -1,5 +1,5 @@
 // Below canvas: the warm soil cross-section, framed as one ant farm. Strata cache (offscreen; smooth depth gradient,
-// wavy strata boundaries, flecks/pebbles, roots, stones, water, Strata fossils; batched soil painting; dirty-region
+// wavy strata boundaries, flecks/pebbles, roots, stones, water; batched soil painting; dirty-region
 // redraws on rev/cellDug/chamber changes) with passages drawn as smooth rounded tubes (dark rims, lit floors) and each
 // chamber as one organic cavity (vaulted ceiling, flat floor, a doorway per run of touching passage) → decorative soil
 // margins either side → cache hints → chamber set dressing (nestDecor, cached) and contents clipped to the cavity
@@ -90,12 +90,6 @@ function layerAt(y) {
     for (const L of list) for (let r = Math.max(0, L.y0); r <= Math.min(ROWS - 1, L.y1); r++) LAYER_AT[r] = L.id;
   }
   return LAYER_AT[clamp(y | 0, 0, ROWS - 1)];
-}
-
-function layerBand(id) {
-  const list = layerList();
-  for (const L of list) if (L.id === id) return L;
-  return { id, y0: 0, y1: ROWS - 1 };
 }
 
 /** Display name of a chamber type. */
@@ -271,12 +265,12 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
 
   /** strata cache */
   const cache = { canvas: null, ctx: null, cpp: 0, drawn: new Int8Array(NCELL).fill(-9), rev: -1, cellsRef: null, waterKey: '',
-    fossilKey: '', fossil: null, rootsKey: '', roots: new Uint8Array(NCELL), rootOwn: new Uint8Array(NCELL), water: new Uint8Array(NCELL), pristine: null,
-    featRev: -1, featRef: null, featStrata: -1, featCpp: 0, force: new Uint8Array(NCELL), grad: null, chamberKeys: new Map() };
+    rootsKey: '', roots: new Uint8Array(NCELL), rootOwn: new Uint8Array(NCELL), water: new Uint8Array(NCELL), pristine: null,
+    featRev: -1, featRef: null, featCpp: 0, force: new Uint8Array(NCELL), grad: null, chamberKeys: new Map() };
   /** decorative soil either side of the grid */
   const margin = { canvas: null, ctx: null, cpm: 0 };
   /** chamber geometry rebuilt on rev change */
-  const geo = { rev: -1, cellsRef: null, at: new Int16Array(NCELL).fill(-1), cells: [], shaftCells: new Uint8Array(NCELL), tops: [],
+  const geo = { rev: -1, cellsRef: null, at: new Int16Array(NCELL).fill(-1), cells: [], shaftCells: new Uint8Array(NCELL), passCells: new Uint8Array(NCELL), tops: [],
     hints: [], hintsKey: '', chambersRef: null, door: new Uint8Array(NCELL), full: [], shape: [], sig: 0 };
   const glows = []; // { uid, t, max }
   const ghostMemo = { key: '', res: null };
@@ -363,7 +357,6 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     cache.drawn.fill(-9);
     cache.rev = -1;
     cache.cellsRef = null;
-    cache.fossilKey = '';
     cache.rootsKey = '';
     cache.waterKey = '';
     cache.pristine = null;
@@ -574,13 +567,21 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       geo.cells.push(list);
     }
     geo.shaftCells.fill(0);
+    geo.passCells.fill(0);
     geo.tops = [];
     const shafts = nest.shafts && nest.shafts.length ? nest.shafts : [{ kind: 'main', col: GRID.mainCol, open: true }];
     for (const sh of shafts) {
       if (!sh || !(sh.col >= 0) || sh.col >= COLS) continue;
+      // C125: the shaft passes through chambers that cover it (down to its recorded bottom row sh.thru)
+      const thru = Number.isInteger(sh.thru) ? sh.thru : -1;
       for (let y = 0; y < ROWS; y++) {
         const i = y * COLS + sh.col;
-        if (!fields.open[i] || geo.at[i] >= 0) break;
+        if (!fields.open[i]) break;
+        if (geo.at[i] >= 0) {
+          if (y > thru) break;
+          geo.passCells[i] = 1;
+          continue;
+        }
         geo.shaftCells[i] = 1;
       }
       if (fields.open[sh.col]) geo.tops.push({ col: sh.col, kind: sh.kind, i: sh.col });
@@ -734,19 +735,16 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     cache.cpp = cpp;
     cache.grad = null;
     cache.drawn.fill(-9);
-    cache.fossil = null;
-    cache.fossilKey = '';
     cache.pristine = null;
   }
 
   function syncFeatures(s) {
     const f = s.run.nest.features || {};
     // features only change with the grid (reveals happen when a cell is dug, rev++) or with a new run / prestige
-    const strataN = ((s.meta && s.meta.strata) || []).length;
-    if (cache.featRev === s.run.nest.rev && cache.featRef === f && cache.featStrata === strataN && cache.featCpp === cache.cpp) return;
+    // (C127: past runs' Strata silhouettes are no longer drawn in the bedrock band; the Colony History gallery shows them)
+    if (cache.featRev === s.run.nest.rev && cache.featRef === f && cache.featCpp === cache.cpp) return;
     cache.featRev = s.run.nest.rev;
     cache.featRef = f;
-    cache.featStrata = strataN;
     cache.featCpp = cache.cpp;
     const roots = f.roots || [];
     const rk = roots.map((r) => `${r.col},${r.y0},${r.y1}${r.own ? 'c' : ''}`).join(';');
@@ -777,52 +775,6 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
       for (let i = 0; i < NCELL; i++) if (before[i] !== cache.water[i]) cache.drawn[i] = -9;
     }
-    const strata = (s.meta && s.meta.strata) || [];
-    const fk = `${strata.length}|${strata.length ? strata[strata.length - 1].at : 0}|${cache.cpp}`;
-    if (fk !== cache.fossilKey) {
-      cache.fossilKey = fk;
-      cache.fossil = buildFossils(strata, cache.cpp);
-      const bandTop = layerBand('bedrock').y0;
-      for (let i = bandTop * COLS; i < NCELL; i++) cache.drawn[i] = -9;
-    }
-  }
-
-  /** Fossil image for the bedrock band: up to 12 run silhouettes as thumbnails (cycles amber-tinted, eras in amber). */
-  function buildFossils(strata, cpp) {
-    if (!strata.length) return null;
-    const band = layerBand('bedrock');
-    const y0 = band.y0;
-    const h = (ROWS - y0) * cpp;
-    const w = COLS * cpp;
-    const off = createOffscreen(w, h);
-    if (!off.ctx) return null;
-    const g = off.ctx;
-    g.clearRect(0, 0, w, h);
-    const recs = strata.slice(-12);
-    const per = 4;
-    const thumb = Math.min((w / per) * 0.86, (h / 3) * 0.92);
-    const pxc = thumb / 40;
-    recs.forEach((rec, k) => {
-      const col = k % per;
-      const row = Math.floor(k / per);
-      const ox = (w / per) * col + ((w / per) - thumb) / 2;
-      const oy = (h / 3) * row + ((h / 3) - thumb) / 2;
-      const cells = decodeRle(rec && rec.cells);
-      if (rec && rec.kind === 'era') {
-        g.fillStyle = 'rgba(217,142,31,0.55)';
-        rrect(g, ox - 3, oy - 3, thumb + 6, thumb + 6, 6, 6, 6, 6);
-        g.fill();
-      }
-      g.fillStyle = rec && rec.kind === 'run' ? 'rgba(232,222,198,0.30)' : 'rgba(240,170,70,0.42)';
-      g.beginPath();
-      for (let i = 0; i < Math.min(cells.length, 40 * 40); i++) {
-        const c = cells[i];
-        if (c !== CELL.TUNNEL && c !== CELL.CHAMBER) continue;
-        g.rect(ox + (i % 40) * pxc, oy + Math.floor(i / 40) * pxc, pxc + 0.4, pxc + 0.4);
-      }
-      g.fill();
-    });
-    return { canvas: off.canvas, y0 };
   }
 
   function codeAt(cells, i) {
@@ -1030,12 +982,11 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     out.push(px + cs, base);
   }
 
-  /** Base layer of grid cells in the strata cache: soil (batched), then stone / revealed water, roots and fossils. */
+  /** Base layer of grid cells in the strata cache: soil (batched), then stone / revealed water and roots. */
   function paintBaseBatch(g, cells, list, cs, grad, forceSoil = false) {
     const items = [];
     for (const i of list) items.push(i % COLS, (i / COLS) | 0, (i % COLS) * cs, ((i / COLS) | 0) * cs);
     paintSoilBatch(g, items, cs, grad);
-    const fossilCells = [];
     for (const i of list) {
       let code = forceSoil ? CELL.SOIL : codeAt(cells, i);
       if (code === CELL.WATER && !cache.water[i]) code = CELL.SOIL;
@@ -1043,18 +994,9 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         const x = i % COLS;
         const y = (i / COLS) | 0;
         if (cache.roots[i]) rootSegment(g, x, y, x * cs, y * cs, cs, cache.roots[i], cache.rootOwn[i] === 1);
-        if (cache.fossil && y >= cache.fossil.y0) fossilCells.push(i);
       } else if (code === CELL.STONE || code === CELL.WATER) {
         paintSolid(g, cells, i, cs, code);
       }
-    }
-    if (fossilCells.length) {
-      g.save();
-      g.beginPath();
-      for (const i of fossilCells) g.rect((i % COLS) * cs, ((i / COLS) | 0) * cs, cs, cs);
-      g.clip();
-      g.drawImage(cache.fossil.canvas, 0, cache.fossil.y0 * cs);
-      g.restore();
     }
   }
 
@@ -2050,6 +1992,40 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         ctx.fillStyle = 'rgba(200,228,255,0.92)';
         ctx.fillText(text, x + w / 2, y + hgt / 2 + 0.5);
         ctx.textAlign = 'left';
+      }
+    }
+  }
+
+  /**
+   * C125: where a chamber covers a shaft, the shaft carries on through the cavity: a faint vertical passage (darker
+   * strip with pale dashed walls) per contiguous run of pass cells, under the chamber's contents.
+   */
+  function drawShaftPass(ctx, H) {
+    const v = view();
+    const pc = geo.passCells;
+    for (let x = 0; x < COLS; x++) {
+      let y = 0;
+      while (y < ROWS) {
+        if (!pc[y * COLS + x]) { y++; continue; }
+        const y0 = y;
+        while (y < ROWS && pc[y * COLS + x]) y++;
+        const px = v.ox + (x + 0.28) * v.cell;
+        const pw = v.cell * 0.44;
+        const py = v.oy + y0 * v.cell;
+        const ph = (y - y0) * v.cell;
+        if (py > H || py + ph < 0) continue;
+        ctx.fillStyle = 'rgba(18,9,3,0.3)';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.strokeStyle = 'rgba(236,206,160,0.42)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(px + 0.5, py);
+        ctx.lineTo(px + 0.5, py + ph);
+        ctx.moveTo(px + pw - 0.5, py);
+        ctx.lineTo(px + pw - 0.5, py + ph);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
   }
@@ -3486,6 +3462,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     drawHints(ctx, s, d);
     syncLinks(s, d);
     drawPlanned(ctx, s);
+    drawShaftPass(ctx, H);
     drawChambers(ctx, s, d, unit, W, H);
     drawHousePip(ctx, s, d, unit);
     drawFrost(ctx, d, W);

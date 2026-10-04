@@ -127,10 +127,11 @@ test('level-up: growing types queue growth cells in the chosen direction; level 
   assert.equal(ch.status, 'active');
   const info = nest.levelInfo(s, d, ch.uid);
   assert.equal(info.grows, true);
-  assert.deepEqual(info.dirs, { left: false, right: true, up: false, down: false });
+  // C125: left grows over the main shaft (it passes through the chamber)
+  assert.deepEqual(info.dirs, { left: true, right: true, up: false, down: false });
   assert.equal(info.blocked, false);
   assert.ok(near(info.cost.food, 10 * 1.3) && near(info.cost.soil, 24 * 1.3), 'f0 × g^L, s0 × g^L at L1');
-  assert.equal(run(s, d, { type: 'levelChamber', uid: ch.uid, dir: 'left' }), 'blocked', 'left is the shaft');
+  assert.deepEqual(info.dirRects.left, { x: 20, y: 12, w: 4, h: 2 }, 'left takes the shaft column');
   assert.equal(run(s, d, { type: 'levelChamber', uid: ch.uid, dir: 'up' }), 'invalid:dir', 'height does not grow at L1→L2');
   const ev = fakeEnv();
   assert.equal(run(s, d, { type: 'levelChamber', uid: ch.uid, dir: 'right' }, ev), null);
@@ -189,12 +190,12 @@ test('non-growing chambers (and L > 8) level up at once; max level reported', ()
 
 test('blocked level-up is reported (every growth direction blocked)', () => {
   const { s, d } = setup();
-  // Gallery at x 21..23 y 12..13 with stones right of it; left is the shaft.
-  const g = { uid: s.run.nest.nextUid++, type: 'gallery', k: 0, x: 21, y: 12, w: 3, h: 2, level: 1, target: 1, status: 'active',
+  // Gallery at x 25..27 y 12..13 with stones either side of it (C125: a shaft would no longer block growth).
+  const g = { uid: s.run.nest.nextUid++, type: 'gallery', k: 0, x: 25, y: 12, w: 3, h: 2, level: 1, target: 1, status: 'active',
     blueprint: false, bornAt: 0 };
   s.run.nest.chambers.push(g);
-  setCells(s, rectCells(21, 12, 3, 2), CELL.CHAMBER);
-  setCells(s, [idx(24, 12), idx(24, 13)], CELL.STONE);
+  setCells(s, rectCells(25, 12, 3, 2), CELL.CHAMBER);
+  setCells(s, [idx(24, 12), idx(24, 13), idx(28, 12), idx(28, 13)], CELL.STONE);
   const info = nest.levelInfo(s, d, g.uid);
   assert.equal(info.grows, true);
   assert.equal(info.blocked, true);

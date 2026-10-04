@@ -523,8 +523,9 @@ export function newGame(s, d) {
 /**
  * Run-end bookkeeping shared by Flight, Hardship start, Supercolony and Speciation (always before any reset):
  * innate research run counts (C44), one strata record, a daughter colony for flights.
+ * `gain` = the currency the reset awards (alates for a flight, kinship for a Supercolony, genes for a Speciation).
  */
-function runEndBookkeeping(s, kind, alates) {
+function runEndBookkeeping(s, kind, gain) {
   const era = s.era;
   const need = lv(s.cycle.traits, 'ancestral_memory') > 0 ? TRAITS.ancestral_memory.fx.runs : INNATE.runs;
   const spInnate = Array.isArray(speciesMods(s).innate) ? speciesMods(s).innate : [];
@@ -534,14 +535,38 @@ function runEndBookkeeping(s, kind, alates) {
     if (era.researchRuns[id] >= need) era.innate[id] = true;
   }
   const strata = s.meta.strata;
-  strata.push({ kind, cells: strataSilhouette(s.run.nest.cells), at: s.meta.simTime });
+  strata.push({ kind, cells: strataSilhouette(s.run.nest.cells), at: s.meta.simTime, ...strataMeta(s, gain) });
   while (strata.length > RESET.strataMax) strata.shift();
   compactStrata(strata);
   if (kind === 'run') {
     const dau = s.cycle.daughters;
-    dau.push({ seed: s.run.seed >>> 0, alates });
+    dau.push({ seed: s.run.seed >>> 0, alates: gain });
     while (dau.length > RESET.daughtersMax) dau.shift();
   }
+}
+
+/**
+ * C130: run metadata kept on a Strata record for the Colony History gallery (Prestige tab). Short keys (save size):
+ * n = run number (1-based), sp = species, dur = run seconds, peak = peak adults, gain = currency awarded (alates /
+ * kinship / genes by record kind), date = wall-clock minutes since the epoch (meta.lastSeen, ≤ one autosave old),
+ * hs = the run's Hardship (only when set). Older records have none of these; the gallery shows what a record has.
+ * @param {import('../core/types.js').State} s
+ * @param {number} gain
+ * @returns {Object}
+ */
+export function strataMeta(s, gain) {
+  const run = s.run;
+  const out = {
+    n: Math.max(1, Math.floor(num(run.index)) + 1),
+    sp: typeof s.era.species === 'string' ? s.era.species : 'garden_ant',
+    dur: Math.max(0, Math.round(num(run.time))),
+    peak: Math.max(0, Math.round(Math.max(num(run.stats && run.stats.maxAdults), adultsTotal(s)))),
+    gain: Math.max(0, Number(clampNum(num(gain)).toPrecision(4))),
+  };
+  const seen = num(s.meta.lastSeen);
+  if (seen > 0) out.date = Math.round(seen / 60000);
+  if (typeof run.hardship === 'string' && run.hardship) out.hs = run.hardship;
+  return out;
 }
 
 /** True for an open nest cell (tunnel or chamber): the part of a nest a Strata fossil shows. */
@@ -633,7 +658,7 @@ export function doSupercolony(s, d, env, opts) {
   const kin = projectKinship(s, d);
   const meta = s.meta;
   const era = s.era;
-  runEndBookkeeping(s, 'cycle', 0);
+  runEndBookkeeping(s, 'cycle', kin);
   era.kinship = clampNum(era.kinship + kin);
   era.kinshipLife = clampNum(era.kinshipLife + kin);
   meta.counters.kinshipEver = clampNum(meta.counters.kinshipEver + kin);
@@ -658,7 +683,7 @@ export function doSupercolony(s, d, env, opts) {
 function doSpeciation(s, d, env, species) {
   const g = projectGenes(s, d);
   const meta = s.meta;
-  runEndBookkeeping(s, 'era', 0);
+  runEndBookkeeping(s, 'era', g);
   meta.genes = clampNum(meta.genes + g);
   meta.genesLife = clampNum(meta.genesLife + g);
   meta.counters.speciations++;

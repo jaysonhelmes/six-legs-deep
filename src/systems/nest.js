@@ -1066,7 +1066,8 @@ function cellBlock(s, geo, c, relIdx) {
   const code = cells[c];
   if (code === CELL.WATER) return 'blocked:water';
   if (geo.chamberAt[c] >= 0) return 'blocked:chamber';
-  if (geo._shaft[c]) return 'blocked:shaft';
+  // C125: only a shaft's top SHAFT_KEEP_ROWS rows block a footprint; a chamber over deeper shaft cells lets it pass.
+  if (geo._shaft[c] && c < G.SHAFT_KEEP_ROWS * COLS) return 'blocked:shaft';
   if (geo._backfill[c]) return 'blocked:backfill';
   if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return 'blocked:stone';
   if (geo._queued[c]) return 'blocked:queued';
@@ -1184,7 +1185,7 @@ function shaftPath(s, geo, rect, col) {
   const dig = [];
   for (const c of path) {
     if (geo.open[c]) {
-      if (geo._shaft[c] === 1) return null; // never through the main shaft
+      if (geo._shaft[c] === 1 || geo._pass[c] === 1) return null; // never through the main shaft
       continue;
     }
     if (geo.chamberAt[c] >= 0 || geo._backfill[c] || geo._queued[c]) return null;
@@ -1224,12 +1225,12 @@ function planNuptialShaft(s, geo, rect, shaftCol, guard = null) {
 }
 
 /**
- * The cells of a Nuptial exit shaft at column col that become shaft cells once it opens (the column from row 0 down to
- * the connector row; the connector's other cells stay plain tunnel), for the Royal guard.
+ * The cells of a Nuptial exit shaft at column col that become permanent obstacles once it opens, for the Royal guard.
+ * C125: only the shaft's top G.SHAFT_KEEP_ROWS rows (chambers may cover the rest; the shaft passes through them).
  */
 function shaftCells(rect, col) {
   const out = [];
-  for (let y = rect.y - 1; y >= 0; y--) out.push(G.idx(col, y));
+  for (let y = Math.min(rect.y - 1, G.SHAFT_KEEP_ROWS - 1); y >= 0; y--) out.push(G.idx(col, y));
   return out;
 }
 
@@ -1328,6 +1329,27 @@ function planPlacement(s, d, type, x, y, opts = {}) {
   return P;
 }
 
+/**
+ * C125: before a footprint `rect` turns open shaft cells into chamber cells, remember on each such shaft how deep it
+ * runs (sh.thru = its bottom row), so the geometry keeps tracing it through the chamber (_pass) and below it. When the
+ * chamber goes (demolish, relocation, cancel), its cells become tunnel again and the plain shaft trace takes over.
+ */
+function markShaftPass(s, d, rect) {
+  const geo = ensureGeom(s, d);
+  for (const sh of s.run.nest.shafts) {
+    if (!sh || !sh.open || !isInt(sh.col) || sh.col < rect.x || sh.col >= rect.x + rect.w) continue;
+    let bottom = -1;
+    let hit = false;
+    for (let y = 0; y < ROWS; y++) {
+      const c = G.idx(sh.col, y);
+      if (!geo._shaft[c] && !geo._pass[c]) break;
+      bottom = y;
+      if (geo._shaft[c] && y >= rect.y && y < rect.y + rect.h) hit = true;
+    }
+    if (hit) sh.thru = Math.max(isInt(sh.thru) ? sh.thru : -1, bottom);
+  }
+}
+
 /** Renumber instance indices k of a type by placement order (uid). */
 function renumberK(s, type) {
   const list = s.run.nest.chambers.filter((c) => c.type === type).sort((a, b) => a.uid - b.uid);
@@ -1342,6 +1364,7 @@ function executePlacement(s, d, type, P, env, blueprint = false) {
   const uid = nest.nextUid++;
   const ch = { uid, type, k: countType(s, type), x: r.x, y: r.y, w: r.w, h: r.h, level: 0, target: 1, status: 'digging',
     blueprint: !!blueprint, bornAt: s.run.time };
+  markShaftPass(s, d, r);
   nest.chambers.push(ch);
   for (const c of P.footOpen) nest.cells[c] = CELL.CHAMBER;
   const job = { uid: nest.nextUid++, kind: 'chamber', chamber: uid, cells: [...(P.routeCells || []), ...P.footSoil], cur: 0, prog: 0,
@@ -1366,6 +1389,7 @@ function executeRelocation(s, d, P, env) {
   const nest = s.run.nest;
   const ch = P.rel.ch;
   const nr = P.rect;
+  markShaftPass(s, d, nr);
   for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) {
     if (!G.inRect(nr, c) && nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
   }
@@ -1540,6 +1564,7 @@ function doLevel(s, d, ch, P, env) {
   if (!spend(s, P.cost)) return false;
   if (P.grows && P.rect) {
     const from = { x: ch.x, y: ch.y, w: ch.w, h: ch.h };
+    markShaftPass(s, d, P.rect);
     ch.x = P.rect.x;
     ch.y = P.rect.y;
     ch.w = P.rect.w;
@@ -1615,7 +1640,8 @@ function subsetSums(list) {
  * (default: where it is now): each contains `rect`, is reachable by the remaining growth steps (its left / up offsets
  * are subset sums of the per-level width / height growth), meets the Royal row rule, the bounds and Shallow Soil, and
  * holds no permanent obstacle: another chamber (except `relUid`), water, an undiggable cell (stone without
- * acid_excavation, a locked layer), a shaft cell, or a cell of a queued shaft job. Transient blockers (queued dig cells,
+ * acid_excavation, a locked layer), or a shaft cell (or queued shaft cell) in a shaft's top G.SHAFT_KEEP_ROWS rows (C125:
+ * deeper shaft cells pass through chambers, so they are no obstacle). Transient blockers (queued dig cells,
  * pending backfill) do not count: they clear by themselves.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived|null} d
@@ -1665,7 +1691,8 @@ function royalRoom(s, d, { relUid = 0, rect = null, level = 0 } = {}) {
       const o = chs[j];
       if (o && o.uid !== 1 && o.uid !== relUid) return true;
     }
-    if (geo._shaft[c] || shaftJob[c]) return true;
+    // C125: shafts pass through chambers, so only their top rows (which the Royal row rule never reaches) are permanent.
+    if ((geo._shaft[c] || shaftJob[c]) && c < G.SHAFT_KEEP_ROWS * COLS) return true;
     const code = cells[c];
     if (code === CELL.WATER) return true;
     return (code === CELL.SOIL || code === CELL.STONE) && !G.isDiggable(s, c);
@@ -2398,8 +2425,9 @@ export function shaftBoxesRoyal(s, d, col) {
   if (!guard) return false;
   const list = planShaftCells(s, G.getGeom(s, d), col);
   if (!list) return false;
-  // Only the column becomes shaft (the connecting route, if any, stays tunnel).
-  return guard.blocks(null, list.filter((c) => c % COLS === col));
+  // Only the column becomes shaft (the connecting route, if any, stays tunnel), and C125 only its top rows are a
+  // permanent obstacle (a chamber, the Royal Chamber included, may cover the rest: the shaft passes through).
+  return guard.blocks(null, list.filter((c) => c % COLS === col && c < G.SHAFT_KEEP_ROWS * COLS));
 }
 
 /** Cells of a shaft dug from row 0 at column col down to the open nest (null when it cannot be dug). */
@@ -2439,7 +2467,10 @@ function planShaftCells(s, geo, col) {
 /**
  * Placement refusals that can never clear during this run for a pending blueprint chamber (C106): the spot is out
  * of bounds or breaks the row rule, sits on water or another chamber, the run's hardship forbids it, or a seeded rule
- * (root, row 0, entrance shaft) fails; 'max' only when no instance bonus is left to raise the limit. Everything else
+ * (root, row 0, entrance shaft) fails; 'max' only when no instance bonus is left to raise the limit. C125: a shaft only
+ * blocks a footprint at its top G.SHAFT_KEEP_ROWS rows (deeper, it passes through the chamber), and shafts never close,
+ * so 'blocked:shaft' is permanent too (bpPermanent; not for a Nuptial Chamber, whose exit shaft may find a column
+ * later). Everything else
  * (locked, cost, queued / backfilling cells, stone or a locked layer, the Royal room, an unrevealed water pocket)
  * waits.
  */
@@ -2448,6 +2479,9 @@ const BP_PERMANENT = new Set(['invalid', 'invalid:bounds', 'invalid:row', 'inval
 
 function bpPermanent(s, type, reason) {
   if (BP_PERMANENT.has(reason)) return true;
+  // C125: a footprint over a shaft's top rows never clears; a Nuptial Chamber's 'blocked:shaft' (no exit-shaft column
+  // for now) can.
+  if (reason === 'blocked:shaft') return !!CHAMBERS[type] && CHAMBERS[type].rule !== 'nuptialShaft';
   if (reason === 'max') {
     const def = CHAMBERS[type];
     if (!def || def.maxInst === 'perPocket') return false;
@@ -2491,7 +2525,7 @@ function wellSpots(s, geo, k, strict) {
       if (!G.perimeter(rect).some((c) => geo._pocket[c] === k && cells[c] === CELL.WATER)) continue;
       let ok = true;
       for (const c of G.rectCells(x, y, fp.w, fp.h)) {
-        if (strict ? cellBlock(s, geo, c, -1) : (cells[c] === CELL.WATER || geo.chamberAt[c] >= 0 || geo._shaft[c])) { ok = false; break; }
+        if (strict ? cellBlock(s, geo, c, -1) : (cells[c] === CELL.WATER || geo.chamberAt[c] >= 0 || (geo._shaft[c] && c < G.SHAFT_KEEP_ROWS * COLS))) { ok = false; break; }
       }
       if (ok) out.push({ x, y });
     }
@@ -2874,6 +2908,87 @@ export function plannedChambers(s) {
     out.push({ type: sp.type, x: sp.x, y: sp.y, w: fp.w, h: fp.h });
   }
   return out;
+}
+
+/** Waiting-reason cache per nest object (not saved; C126): { rev, t, u, pend, list }. */
+const waitMemo = new WeakMap();
+
+/**
+ * Why one pending blueprint spec is still waiting (C126). Same checks as the blueprint pass (bpPlace), in the order a
+ * player can act on them: locked, instance limit, the spot itself (planPlacement with the connection assumed: bounds,
+ * row rule, Shallow Soil, water / chamber / shaft top / backfill / stone / queued / closed layer cells, the type's rule,
+ * a Nuptial exit shaft), the Royal room (C66), the blueprint price; then whether anything open reaches it yet.
+ */
+function waitOf(s, d, sp) {
+  const def = CHAMBERS[sp.type];
+  const base = { type: sp.type, x: sp.x, y: sp.y, float: !!sp.float, cell: sp.y * COLS + sp.x };
+  if (!def) return { ...base, code: 'invalid', detail: null };
+  if (def.unlock && !s.run.unlocked[def.unlock]) return { ...base, code: 'locked', detail: { key: def.unlock } };
+  const n = countType(s, sp.type);
+  const max = instLimit(s, d, sp.type);
+  if (n >= max) return { ...base, code: 'max', detail: { n, max } };
+  let at = sp;
+  if (sp.float || (sp.type === 'water_well' && !sp.auto)) {
+    // C119: a floating Water Well has no spot until a revealed pocket has a free one; then it is judged there.
+    at = wellTarget(s, d, sp, []);
+    if (!at) return { ...base, code: 'wait:water', detail: null };
+  }
+  const P = planPlacement(s, d, sp.type, at.x, at.y, { blueprint: true, ignoreQueue: true, assumeConnected: true });
+  if (P.reason === 'cantAfford') return { ...base, code: 'cantAfford', detail: { cost: P.cost } };
+  if (P.reason) return { ...base, code: P.reason, detail: null };
+  if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
+    return { ...base, code: 'blocked:royalRoom', detail: null };
+  }
+  const geo = G.getGeom(s, d);
+  const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
+  const r = P.rect;
+  const near = G.rectCells(r.x, r.y, r.w, r.h).some(reach) || G.perimeter(r).some(reach);
+  return { ...base, code: near ? 'wait:next' : 'wait:path', detail: null };
+}
+
+/**
+ * [q] C126: the waiting reason of every pending blueprint chamber (s.run.nest.bpPending order), for the planned
+ * outline's tooltip, its inspect view and the Build panel's Blueprints list. Derived, never saved: cached per nest and
+ * recomputed when the nest (rev), the unlocks or the pending list change, or after BP_CHECK_SEC of run time (the
+ * pending re-check cadence of bpTick). Codes: 'locked' { key }, 'max' { n, max }, 'cantAfford' { cost } (blueprint
+ * price), any planPlacement reason ('blocked:stone', 'blocked:queued', 'blocked:backfill', 'blocked:layer',
+ * 'blocked:shaft', 'hardship', 'invalid:water', …), 'blocked:royalRoom', 'wait:water' (a floating Water Well: no
+ * revealed pocket has a free spot yet), 'wait:path' (nothing open reaches it yet: the planned tunnels or chambers before
+ * it come first), 'wait:next' (it queues on the next re-check).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {Array<{ type: string, x: number, y: number, float: boolean, cell: number, code: string, detail: Object|null }>}
+ */
+export function plannedWaits(s, d) {
+  const nest = s.run.nest;
+  const pend = Array.isArray(nest.bpPending) ? nest.bpPending : [];
+  if (!pend.length) return [];
+  const t = num(s.run.time);
+  let u = 0;
+  for (const k in s.run.unlocked) if (s.run.unlocked[k]) u++;
+  const m = waitMemo.get(nest);
+  if (m && m.rev === nest.rev && m.u === u && m.pend === pend && m.n === pend.length && t >= m.t && t - m.t < BP_CHECK_SEC) return m.list;
+  const list = [];
+  for (const sp of pend) {
+    if (!sp || !CHAMBERS[sp.type] || !isInt(sp.x) || !isInt(sp.y)) continue;
+    let w;
+    try { w = waitOf(s, d, sp); } catch { w = { type: sp.type, x: sp.x, y: sp.y, float: !!sp.float, cell: sp.y * COLS + sp.x, code: 'invalid', detail: null }; }
+    list.push(w);
+  }
+  waitMemo.set(nest, { rev: nest.rev, u, pend, n: pend.length, t, list });
+  return list;
+}
+
+/**
+ * [q] C126: the waiting reason of the pending blueprint chamber whose top-left cell is `cell` (see plannedWaits), or
+ * null.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} cell
+ * @returns {Object|null}
+ */
+export function plannedWait(s, d, cell) {
+  return plannedWaits(s, d).find((w) => w.cell === cell) || null;
 }
 
 /**

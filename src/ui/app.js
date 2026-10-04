@@ -20,6 +20,7 @@ import {
   openHardReset, openImportConfirm, openEnding, openPupaChooser, openSatelliteColumn, openWarChooser, fallbackMiniMap,
 } from './modals.js';
 import { createEventCard } from './eventCard.js';
+import { openColonyHistory } from './history.js';
 import { openWelcome } from './welcome.js';
 import { createOnboarding } from './onboarding.js';
 import { isClickableSource } from './panels/map.js';
@@ -177,6 +178,7 @@ export function mountUI(root, game, opts = {}) {
     speciation: () => openSpeciationDialog(mctx),
     hardReset: () => openHardReset(mctx, () => afterReset()),
     importSave: (str, cb) => openImportConfirm(mctx, str, cb),
+    history: () => openColonyHistory(mctx),   // C130: Colony History gallery (Prestige tab)
   };
 
   // ------------------------------------------------------------------ bridge

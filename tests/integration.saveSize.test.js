@@ -68,7 +68,8 @@ test('F26: a late-game save that rotates 12 worst-case nests through the Strata 
   const str = toExportString(s, 1);
   assert.ok(str.length <= SAVE.targetBytes, 'save is ' + str.length + ' bytes (target ≤ ' + SAVE.targetBytes + '; fixture was ' + before + ')');
   const strataBytes = JSON.stringify(s.meta.strata).length;
-  assert.ok(strataBytes <= RESET.strataMax * (Math.ceil(N / 6) + 64), 'strata ' + strataBytes + ' B');
+  // C130: + ~70 B of run metadata per record (run number, species, duration, peak, gain, date) for Colony History
+  assert.ok(strataBytes <= RESET.strataMax * (Math.ceil(N / 6) + 160), 'strata ' + strataBytes + ' B');
   const r = fromExportString(str);
   assert.equal(r.ok, true, r.error);
   assert.deepEqual(r.state.meta.strata, s.meta.strata);

@@ -77,7 +77,9 @@ test('reasons: locked, max, invalid:bounds, invalid:row, blocked:* cells, hardsh
   setCells(s, [idx(22, 12)], CELL.WATER);
   assert.equal(vp(s, d, 'gallery', 21, 12).reason, 'blocked:water');
   setCells(s, [idx(22, 12)], CELL.SOIL);
-  assert.equal(vp(s, d, 'gallery', 19, 18).reason, 'blocked:shaft');
+  // C125: a footprint may cover shaft cells below the shaft's top two rows (the shaft passes through it)
+  assert.equal(vp(s, d, 'gallery', 19, 18).reason, null);
+  assert.equal(vp(s, d, 'gallery', 19, 1).reason, 'blocked:shaft');
   assert.equal(vp(s, d, 'gallery', 20, 21).reason, 'blocked:chamber');
   assert.equal(vp(s, d, 'deep_vault', 5, 60).reason, 'blocked:layer');
   s.run.hardship = 'shallow_soil';

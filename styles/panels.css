@@ -1118,3 +1118,29 @@
 .planned-list { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
 .planned-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); color: var(--text-2); }
 .planned-row .btn-icon { min-width: 24px; min-height: 24px; }
+
+/* C126: why a planned blueprint chamber is still waiting (Blueprints list and the planned inspect view) */
+.planned-main { display: flex; flex-direction: column; min-width: 0; }
+.planned-wait { font-size: var(--fs-xs); color: var(--warn); overflow-wrap: anywhere; }
+p.planned-wait { margin: 2px 0 4px; }
+
+/* C130: Colony History gallery (Prestige tab → modal): one card per past run, responsive grid, works at 375 px */
+.history-wrap { display: grid; gap: 8px; }
+.history-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr)); gap: 10px; }
+.history-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 8px; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--bg-2); }
+.history-card.history-cycle, .history-card.history-era { border-color: color-mix(in srgb, var(--gold) 55%, var(--line-soft)); }
+.history-card.history-era { background: color-mix(in srgb, var(--gold) 8%, var(--bg-2)); }
+.history-nest { display: block; width: 100%; height: auto; max-height: 200px; object-fit: contain; image-rendering: pixelated; border-radius: var(--r-sm, 4px); background: #2a1c10; }
+.history-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+.history-title { font-size: var(--fs-md); margin: 0; }
+.history-layer { font-size: var(--fs-xs); color: var(--gold); text-transform: uppercase; letter-spacing: 0.06em; }
+.history-card.history-run .history-layer { color: var(--text-2); }
+.history-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; margin: 0; font-size: var(--fs-sm); }
+.history-kv dt { color: var(--text-3); }
+.history-kv dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.history-when { margin: 0; font-size: var(--fs-xs); color: var(--text-3); }
+@media (max-width: 420px) {
+  .history-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .history-card { padding: 6px; }
+  .history-kv { font-size: var(--fs-xs); }
+}
