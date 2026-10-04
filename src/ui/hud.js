@@ -12,7 +12,8 @@ import { OVERLAY_IDS, setOverlay, viewShows } from './uistate.js';
 import { broodSummary } from '../systems/population.js';
 import { firstHatchEta, adultsEta } from './intro.js';
 import { UNLOCKS, REVEAL } from '../data/unlocks.js';
-import { GRID } from '../data/balance.js';
+import { GRID, DIAPAUSE, OFFLINE } from '../data/balance.js';
+import { offlineCapEff } from '../core/offline.js';
 import { frontWindows } from './rules.js';
 import { rivalName } from '../systems/rivals.js';
 
@@ -32,6 +33,49 @@ export const OVERLAY_KEYS = Object.freeze({
   climate: 'climate_overlay', raid_reach: ['raid_warnings', 'chamber_gate'], haul: 'chamber_granary', adjacency: 'chamber_nursery',
   territory: ['hex_claim', 'panel_rivals'], trail_strength: 'trail_slots', danger: 'raid_warnings', richness: 'trail_slots',
 });
+
+/**
+ * Diapause state for the HUD (C112; DESIGN §21.5, core/game.js advance). Pure. While active with a bank, every tick
+ * runs with econScale = speed and the bank drains by (speed − 1) s per real second, so it lasts bank / (speed − 1).
+ * @param {Object} s
+ * @param {Object} [d]
+ * @returns {{ bank: number, active: boolean, running: boolean, speed: number, mastery: boolean, endsIn: number,
+ *   drain: number, bankMax: number, bankRate: number, capSec: number }}
+ */
+export function diapauseInfo(s, d) {
+  const dp = obj(s && s.meta && s.meta.diapause);
+  const bank = Math.max(0, num(dp.bank));
+  const mastery = num(s && s.era && s.era.federation && s.era.federation.diapause_mastery) > 0;
+  const speed = mastery ? DIAPAUSE.speedMastery : DIAPAUSE.speed;
+  const active = !!dp.active;
+  let capSec = OFFLINE.baseCapSec;
+  try {
+    capSec = offlineCapEff(s, d).capSec;
+  } catch {
+    capSec = OFFLINE.baseCapSec;
+  }
+  return { bank, active, running: active && bank > 0, speed, mastery, endsIn: bank / (speed - 1), drain: speed - 1,
+    bankMax: OFFLINE.bankMaxSec, bankRate: OFFLINE.bankRate, capSec };
+}
+
+/**
+ * Diapause tooltip: what runs faster (exactly the systems that integrate env.econDt), what keeps real time, the drain
+ * and how the bank is earned (C112).
+ * @param {ReturnType<typeof diapauseInfo>} x
+ * @returns {string}
+ */
+export function diapauseTip(x) {
+  // Longer than the §25.6 12-word rule on purpose (C112): the full list lives in the Stats panel's Diapause section.
+  const sp = x.speed + '×';
+  const head = x.running
+    ? 'Diapause ' + sp + ': ' + fmtTime(x.bank) + ' banked, ends in ' + fmtTime(x.endsIn) + '.'
+    : 'Diapause: ' + fmtTime(x.bank) + ' banked (max ' + fmtTime(x.bankMax) + '). Spend to run ' + sp + '.';
+  return head
+    + ' Economy runs ' + sp + ': income, upkeep, laying, brood, digging.'
+    + ' Seasons, events and raids stay real-time.'
+    + ' Uses ' + x.drain + ' s of bank per second.'
+    + ' Earned: ' + Math.round(x.bankRate * 100) + '% of offline time beyond the ' + fmtTime(x.capSec) + ' cap.';
+}
 
 const SEASON_FALLBACK = ['spring', 'summer', 'autumn', 'winter'];
 const LONG_SUMMER = ['spring', 'summer', 'summer', 'autumn'];
@@ -366,7 +410,7 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
   }
   const scaleRow = h('div', { class: 'res-row res-scale', dataset: { tipKey: 'scale' } }, h('span', { class: 'res-name', text: 'Colony Scale' }), h('span', { class: 'res-val' }));
   const scaleVal = scaleRow.querySelector('.res-val');
-  const diaRow = h('div', { class: 'res-row res-diapause', dataset: { tip: 'Banked offline time: spend it to run the economy faster.' } },
+  const diaRow = h('div', { class: 'res-row res-diapause', dataset: { tip: 'Diapause: banked offline time. Spend it to run the colony economy 2× as fast.' } },
     h('span', { class: 'res-name', text: 'Diapause' }), h('span', { class: 'res-val' }));
   const diaVal = diaRow.querySelector('.res-val');
   const diaBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Spend',
@@ -415,7 +459,15 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     h('button', { type: 'button', class: 'btn btn-icon', text: '×', attrs: { 'aria-label': 'Dismiss' }, on: { click: () => { skewDismissed = true; show(skewNote, false); } } }));
   notices.appendChild(skewNote);
   const actions = h('div', { class: 'hud-actions' });
-  if (hudTop) hudTop.append(seasonBox, badge, raidBadge, threatBox, ribbon, notices, actions);
+  // Diapause chip (C112): while the bank is being spent, the speed, bank and time left, with what it accelerates
+  const diaChipText = h('span', { class: 'dia-chip-text' });
+  const diaChip = h('button', { type: 'button', class: 'dia-chip', dataset: { tip: '' } },
+    h('span', { class: 'dia-chip-ico', attrs: { 'aria-hidden': 'true' } }), diaChipText);
+  diaChip.addEventListener('click', () => {
+    const res = game.actions.do('spendDiapause', { on: false });
+    if (!res.ok) bridge.reject(res.reason, 0, 0, 'spendDiapause');
+  });
+  if (hudTop) hudTop.append(seasonBox, badge, raidBadge, diaChip, threatBox, ribbon, notices, actions);
   let skewDismissed = false;
 
   // ---------------------------------------------------------------- flow strip
@@ -437,6 +489,10 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     ovGroups[OVERLAY_VIEW[id] || 'above'].appendChild(b);
   }
   if (overlayBar) overlayBar.append(ovGroups.below, ovGroups.above);
+
+  function canSpendDiapause() {
+    return !!(game.actions && typeof game.actions.spendDiapause === 'function');
+  }
 
   function onBadge() {
     const id = game.s.run.bottleneck && game.s.run.bottleneck.id;
@@ -497,13 +553,16 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     const scale = num(d && d.meta && d.meta.colonyScale, num(st.colonyScale, 1));
     show(scaleRow, scale > 1.0001);
     setText(scaleVal, fmtMult(scale));
-    const dia = obj(s.meta.diapause);
-    const hasDia = num(dia.bank) > 0 && typeof game.actions.spendDiapause === 'function';
+    const dia = diapauseInfo(s, d);
+    const hasDia = dia.bank > 0 && canSpendDiapause();
     show(diaRow, hasDia);
     if (hasDia) {
-      setText(diaVal, fmtTime(num(dia.bank)));
+      setText(diaVal, dia.running ? dia.speed + '× · ' + fmtTime(dia.bank) : fmtTime(dia.bank));
       setText(diaBtn, dia.active ? 'Pause' : 'Spend');
       toggleClass(diaRow, 'active', !!dia.active);
+      const tip = diapauseTip(dia);
+      if (diaRow.dataset.tip !== tip) diaRow.dataset.tip = tip;
+      diaBtn.setAttribute('aria-label', (dia.active ? 'Pause Diapause. ' : 'Spend Diapause. ') + tip);
     }
   }
 
@@ -537,6 +596,15 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
       setText(badge, ui.getUI().layout === 'narrow' ? bnText.replace(/^Bottleneck: /, '') : bnText);
       const cls = 'bn-badge bn-' + bnId + (ui.getUI().glow === 'badge' ? ' glow' : '');
       if (badge.__cls !== cls) { badge.__cls = cls; badge.className = cls; }
+    }
+    // Diapause chip (C112)
+    const dia = diapauseInfo(s, d);
+    show(diaChip, dia.running && canSpendDiapause());
+    if (dia.running) {
+      setText(diaChipText, 'Diapause ' + dia.speed + '× · ' + fmtTime(dia.bank) + ' banked · ends in ' + fmtTime(dia.endsIn));
+      const tip = diapauseTip(dia) + ' Click to pause.';
+      if (diaChip.dataset.tip !== tip) diaChip.dataset.tip = tip;
+      diaChip.setAttribute('aria-label', tip);
     }
     // raid chip (every raid in warning, soonest first)
     const raids = raidAlerts(s);

@@ -82,7 +82,7 @@ test('chamber fx keys match the §6.3 contract table', () => {
     nursery: { slots: 3, royalAdj: 0.15 },
     granary: { cap: 400, capGrowth: 1.65, layer: { clay: 1.25, gravel: 1.5, bedrock: 1.75, aquifer: 1.75 }, claySpoil: 0.005 },
     scent_library: { insight: 0.05, deep: 1.25, royalAdj: 1.10 },
-    midden: { disease: 0.10, diseaseMax: 0.8, output: 0.02, outputMax: 0.2, hygiene: 0.8 },
+    midden: { disease: 0.10, diseaseMax: 0.8, output: 0.02, outputMax: 0.2, hygiene: 0.8, chitin: 0.05 },
     barracks: { berths: 8, atk: 0.05, atkMax: 0.5, homeAP: 1.10 },
     root_aphid_pen: { honeydew: 0.05, herders: 1.10, winter: 0.5 },
     fungus_garden: { gardeners: 5, leafCap: 500, fungusCap: 1000, clay: 1.5, wellAdj: 1.30 },

@@ -56,7 +56,19 @@ export const SPOILAGE = deepFreeze({ clayPerMin: 0.005 });
 export const BOTTLENECK = deepFreeze({ capFrac: 0.99, capSec: 5 });
 
 /** Slider limits: egg reserve up to 90 % of the food cap (§5.1); caste targets sum ≤ 90 % (§5.5). */
-export const SLIDERS = deepFreeze({ eggReserveMax: 0.9, casteSumMax: 0.9 });
+export const SLIDERS = deepFreeze({ eggReserveMax: 0.9, casteSumMax: 0.9,
+  // C104 chitin reserve (absolute chitin, player request): the slider walks this ladder; soldier / supermajor eggs only
+  // spend chitin above the reserve. The last step is the command's upper bound.
+  chitinReserveSteps: [0, 1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000,
+    1500, 2000, 3000, 5000, 7500, 10000] });
+
+/**
+ * C103 passive chitin from moults (player request): every adult that hatches (any caste, alates included) leaves a
+ * pupal case worth `perHatch` chitin, once chitin matters (`gate`: any of these unlock keys), so the first minutes of a
+ * first run do not reveal a resource with no use yet. Flat (no channel multiplier). `avgSec`: time constant of the
+ * displayed moult rate (d.rates.chitin.molts).
+ */
+export const MOLT = deepFreeze({ perHatch: 0.025, gate: ['caste_soldier', 'res_chitin'], avgSec: 60 });
 
 /** Extra winter-forage R terms: honeypot species `winterForageHalf` (penalty halved) = 0.5 (DESIGN §15.6). */
 export const WINTER_R = deepFreeze({ honeypotHalf: 0.5 });

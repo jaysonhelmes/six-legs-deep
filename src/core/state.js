@@ -70,6 +70,7 @@ export function createRun(seed) {
       rearRequested: 0,
       casteTargets: { soldier: 0, supermajor: 0, replete: 0 },
       eggReserve: 0,
+      chitinReserve: 0,   // C104: chitin held back from soldier / supermajor eggs (absolute; per run)
       fungalBrood: false,
       hungry: false,
       phi: 0,
@@ -94,6 +95,9 @@ export function createRun(seed) {
       shafts: [{ kind: 'main', col: GRID.mainCol, open: true, ref: -1 }],
       maint: 0,
       deepestRow: r.y + r.h - 1,
+      // C106: pending blueprint chambers [{ type, x, y }] and the blueprint tunnel cells behind them (nest.applyBlueprint).
+      bpPending: [],
+      bpTunnels: [],
     },
     surface: {
       rev: 1,

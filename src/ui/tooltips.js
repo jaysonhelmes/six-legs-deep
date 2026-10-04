@@ -6,13 +6,14 @@ import { h, setText, clear } from './dom.js';
 import { fmt, fmtRate, fmtCount, fmtTime, fmtMult, fmtPct } from './format.js';
 import {
   nameOf, RES_NAMES, RES_TIPS, CHAMBER_TIPS, SEASON_NAMES, SEASON_TIPS, BOTTLENECK_TIPS, unlockHint, unlockLabel, BATTLE_NAMES, PARTY_NAMES,
-  reasonText,
+  reasonText, linkText,
 } from './text.js';
 import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
 import { oldRidgeImmunity, frontInfo, frontLabel, satellitesFree, satelliteHexWhy, spanText } from './rules.js';
-import { cellInfo } from '../systems/nest.js';
+import { cellInfo, chamberLinks } from '../systems/nest.js';
+import { groomText } from './panels/build.js';
 import { ringOf } from '../core/hex.js';
 import { TERRAIN_ORDER } from '../data/surface.js';
 import { GRID } from '../data/balance.js';
@@ -55,6 +56,12 @@ export function tipForKey(key, s, d) {
       if (num(r.clicks) > 0) lines.push('Clicks ' + fmtRate(num(r.clicks)));
     } else if (kind === 'res') {
       lines.push('Net ' + fmtRate(num(r.net)));
+      if (arg === 'chitin') { // C103: where chitin comes from (ledger sources + the moult average)
+        const src = obj(r.src);
+        const parts = [['trails', 'Trails'], ['midden', 'Midden']].filter(([k]) => num(src[k]) > 0).map(([k, l]) => l + ' ' + fmtRate(num(src[k])));
+        if (num(r.molts) > 0.0005) parts.push('Moults ' + fmtRate(num(r.molts)));
+        if (parts.length) lines.push(parts.join(' · '));
+      }
     }
     if (r.sc || kind === 'sc') lines.push('Softcapped: raw ' + fmtRate(num(r.raw)) + ' → ' + fmtRate(num(r.gross)));
     if (arg === 'food' && capKey && have >= num(st[capKey]) * 0.99 && num(st[capKey]) > 0) lines.push('Storage full: production is wasted.');
@@ -122,9 +129,15 @@ export function tipForTarget(t, s, d) {
       if (Number.isFinite(dc.eff) && Math.abs(dc.eff - 1) > 1e-9) lines.push('Effect ' + fmtMult(dc.eff));
       if (dc.exposed) lines.push('Frost-exposed: effect halved.');
       if (k === 'queen') lines.push('Lay rate ' + fmtRate(num(d && d.stats && d.stats.layRate)));
-      if (k === 'nursery') lines.push('Click to groom the brood.');
+      // C109: adjacency links (the link badge on the chamber): bonus and partner
+      let links = [];
+      try { links = chamberLinks(s, d, c.uid); } catch { links = []; }
+      for (const l of links) lines.push((l.good ? 'Link: ' : 'Penalty: ') + linkText(l));
+      if (k === 'nursery') lines.push('Click to groom. ' + groomText(s, d, c.uid));
       return { title: nameOf('chamber', c.type) + ' L' + fmtCount(num(c.level)), lines: lines.filter(Boolean) };
     }
+    // C106: a pending blueprint chamber's planned outline
+    if (k === 'planned') return { title: 'Planned: ' + nameOf('chamber', t.chamberType), lines: ['Planned (blueprint): queues when unlocked and affordable.'] };
     if (k === 'digFace') return { title: 'Dig face', lines: ['Click to help dig.', 'Dig rate ' + fmtRate(num(d && d.stats && d.stats.digW)).replace('/s', ' work/s')] };
     if (k === 'pupa') return { title: 'Golden pupa', lines: ['Click to claim Frenzy or Windfall.'] };
     if (k === 'mold') return { title: 'Mold', lines: ['Halves this chamber. Click to scrape it off.'] };

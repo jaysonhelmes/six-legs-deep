@@ -54,7 +54,7 @@ const PANELS = {
 const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'raidResult', 'conquest', 'battleEnd', 'hungryStart', 'hungryEnd',
   'winterSoon', 'seasonChanged', 'chamberActivated', 'cacheFound', 'softcapHit', 'beetleClaimed', 'beetleSpawned', 'pupaSpawned',
   'hardshipTier', 'entranceOpened', 'rivalSighted', 'adultsDied', 'broodDied', 'giftOpened', 'commandRejected', 'flightComplete',
-  'supercolonyComplete', 'speciationComplete'];
+  'supercolonyComplete', 'speciationComplete', 'blueprintDropped'];
 /**
  * Panel unlock keys and their tabs. A reveal never steals the open tab (the onboarding glow could otherwise point at
  * one tab while the shell had switched to another): the new tab slides in with a "new" dot. Only while the welcome
@@ -859,10 +859,23 @@ export function mountUI(root, game, opts = {}) {
       if (sel && sel.kind === 'trail') runAct('mark', { uid: sel.id }, null);
       return;
     }
-    if (ev.key === 'r' || ev.key === 'R') {
-      if (sel && sel.kind === 'trail') runAct('rally', { uid: sel.id }, null);
+    // R is context-dependent: Rally for a selected trail, Relocate for a selected chamber (C108).
+    if ((ev.key === 'r' || ev.key === 'R') && sel && sel.kind === 'trail') {
+      runAct('rally', { uid: sel.id }, null);
       return;
     }
+    // C108: chamber hotkeys with a nest chamber selected: L level, Shift+L level the cheapest of the type, G growth
+    // side, R relocate.
+    const hk = buildPanel.chamberHotkey(ev.key, ev.shiftKey, sel);
+    if (hk) {
+      const a = buildPanel.chamberHotkeyAction(game.s, game.d, hk);
+      if (a && a.cmd) runAct(a.cmd.type, a.cmd.args, null);
+      else if (a && a.tool) setUI({ tool: a.tool });
+      else if (a && a.reject) popReject(a.reject);
+      ev.preventDefault();
+      return;
+    }
+    if (ev.key === 'r' || ev.key === 'R') return;
     // V cycles Above → Below → Stacked → Side by side (C96). Tab stays the browser's focus key: browsers and
     // keyboard users rely on it, and it never reached the game reliably.
     if ((ev.key === 'v' || ev.key === 'V') && !ev.shiftKey) {

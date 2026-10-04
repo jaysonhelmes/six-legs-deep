@@ -3,7 +3,7 @@
 // §10 events. Pure module (no DOM). Display names come from the data tables' `name` fields when present; the
 // fallbacks below keep the UI readable while a data table is still empty.
 
-import { CHAMBERS } from '../data/chambers.js';
+import { CHAMBERS, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
 import { RESEARCH, BRANCHES } from '../data/research.js';
 import { ADAPTATIONS } from '../data/adaptations.js';
 import { JOBS } from '../data/jobs.js';
@@ -21,7 +21,7 @@ import { UNLOCKS } from '../data/unlocks.js';
 import { LAYERS, GEOM } from '../data/strata.js';
 import { TERRAIN } from '../data/surface.js';
 import { YEAR } from '../data/seasons.js';
-import { fmt, fmtTime, fmtCount } from './format.js';
+import { fmt, fmtTime, fmtCount, fmtRate, fmtPct, fmtMult } from './format.js';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Generic naming
@@ -116,7 +116,7 @@ export const RES_TIPS = Object.freeze({
   soil: 'Dug out by diggers. Pays for chamber levels and the Mound.',
   insight: 'Earned by scouting and libraries. Spent on research.',
   pheromone: 'Regenerates over time. Fuels Mark, Rally, Frenzy and claims.',
-  chitin: 'From insects, hunts and battles. Soldiers need it.',
+  chitin: 'From insects, hunts, battles, moults and Middens. Soldiers need it.',
   honeydew: 'Milked from aphids by herders. Feeds the queen and repletes.',
   leaves: 'Cut by leafcutters. Gardeners turn them into fungus.',
   fungus: 'Grown in gardens. Feeds the colony and supermajors.',
@@ -459,6 +459,100 @@ export function placementRuleLines(id, rows = null) {
   return out;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Chamber level-up gains and adjacency (C107, C109)
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Stat labels for nest.levelGain lines. */
+export const GAIN_LABELS = Object.freeze({
+  housing: 'housing', broodSlots: 'brood slots', granaryCap: 'Granary capacity', insight: 'insight', disease: 'Disease chance',
+  output: 'All output', berths: 'soldier berths', atk: 'Soldier ATK', honeydew: 'honeydew', gardeners: 'gardener slots',
+  leafCap: 'Leaf cap', fungusCap: 'Fungus cap', repleteBerths: 'replete berths', shelter: 'brood sheltered from frost',
+  upkeep: 'Winter upkeep', winterForage: 'Winter forage penalty', gateHp: 'Defender HP at the gate', theft: 'Food stolen by raids',
+  alateCells: 'alate cells', offline: 'offline cap', alates: 'Flight alates', lay: 'Lay rate',
+});
+
+/** Whole numbers as counts ("33"), fractions with one decimal ("12.1"). */
+function gainAmount(x) {
+  return Math.abs(x - Math.round(x)) < 1e-6 ? fmtCount(Math.round(x)) : fmt(x);
+}
+
+/**
+ * One nest.levelGain line as player text: "+11 housing (33 → 44)", "Granary capacity 660 → 1.08K",
+ * "+0.05 insight/s (0.10/s → 0.15/s)", "Disease chance −10% → −20% (max −80% combined)", "Lay rate ×1.32 → ×1.52".
+ * @param {{ stat: string, from: number, to: number, kind: string, sign?: number, cap?: number }} line
+ * @returns {string}
+ */
+export function levelGainText(line) {
+  if (!line) return '';
+  const lab = GAIN_LABELS[line.stat] || humanize(line.stat);
+  const a = num0(line.from, 0);
+  const b = num0(line.to, 0);
+  const sg = line.sign < 0 ? -1 : 1;
+  switch (line.kind) {
+    case 'count': return '+' + gainAmount(b - a) + ' ' + lab + ' (' + gainAmount(a) + ' → ' + gainAmount(b) + ')';
+    case 'num': return lab + ' ' + fmt(a) + ' → ' + fmt(b);
+    case 'rate': return '+' + fmtRate(b - a).replace('/s', '') + ' ' + lab + '/s (' + fmtRate(a) + ' → ' + fmtRate(b) + ')';
+    case 'pct': return lab + ' ' + fmtPct(sg * a) + ' → ' + fmtPct(sg * b)
+      + (num0(line.cap, 0) > 0 ? ' (max ' + fmtPct(sg * line.cap) + ' combined)' : '');
+    case 'mult': return lab + ' ' + fmtMult(a) + ' → ' + fmtMult(b);
+    case 'time': return '+' + fmtTime(b - a) + ' ' + lab + ' (' + fmtTime(a) + ' → ' + fmtTime(b) + ')';
+    case 'flag': return line.stat === 'flight' ? 'Reaches L' + num0(FLIGHT && FLIGHT.royalLevel, 5) + ', the level the Nuptial Flight needs.' : lab;
+    default: return lab;
+  }
+}
+
+/** "next to" (within the adjacency path) or "within N path cells of". */
+function nearWords(r) {
+  return num0(r.path, 4) <= num0(GEOM && GEOM.adjPathMax, 4) ? 'next to' : 'within ' + r.path + ' path cells of';
+}
+
+/** "a Royal Chamber", "a Nursery or a Fungus Garden", "an entrance". */
+function aNames(ids) {
+  return ids.map((id) => (id === 'entrance' ? 'an entrance' : 'a ' + nameOf('chamber', id))).join(' or ');
+}
+
+/**
+ * Adjacency rules a chamber type takes part in (DESIGN §7.7, from data ADJACENCY): what it gets and from which
+ * chamber types, or what it gives. Nursery: "+15% brood speed next to a Royal Chamber.", "Hygiene −20% within 6 path
+ * cells of a Midden."; Royal Chamber: "Next to a Nursery: +15% brood speed for it.".
+ * @param {string} type
+ * @returns {string[]}
+ */
+export function adjacencyLines(type) {
+  const out = [];
+  for (const id of ADJACENCY_ORDER) {
+    const r = ADJACENCY[id];
+    if (!r) continue;
+    const bs = Array.isArray(r.b) ? r.b : [r.b];
+    if (r.a === type) {
+      if (id === 'hyg_midden') out.push(r.text + ' for ' + aNames(bs) + ' ' + nearWords(r) + ' it.');
+      else out.push(r.text + ' ' + nearWords(r) + ' ' + aNames(bs) + '.');
+    } else if (bs.includes(type)) {
+      if (id === 'hyg_midden' || id === 'adj_granary_repletion') out.push(r.text + ' ' + nearWords(r) + ' ' + aNames([r.a]) + '.');
+      else {
+        const w = nearWords(r);
+        out.push(w.charAt(0).toUpperCase() + w.slice(1) + ' ' + aNames([r.a]) + ': ' + r.text + ' for it.');
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * A live or previewed adjacency link (nest.chamberLinks, validatePlacement links / lost) as text: receiver 'self' →
+ * "+15% brood speed (next to Royal Chamber)"; 'partner' → "Nursery: +15% brood speed".
+ * @param {{ rule: string, partner: string, text: string, receiver: string }} link
+ * @returns {string}
+ */
+export function linkText(link) {
+  if (!link) return '';
+  const r = ADJACENCY[link.rule] || { path: 4 };
+  const name = link.partner === 'entrance' ? 'an entrance' : nameOf('chamber', link.partner);
+  if (link.receiver === 'partner') return name + ': ' + link.text;
+  return link.text + ' (' + nearWords(r) + ' ' + name + ')';
+}
+
 /** Adaptation effect tooltips. */
 export const ADAPT_TIPS = Object.freeze({
   quick_dispatch: '+1 food per click.',
@@ -581,7 +675,7 @@ export const FED_TIPS = Object.freeze({
   regional_expansion: 'Map radius 16; up to four rivals.',
   megacolony_galleries: 'Colony scale ×2.',
   highway_network: 'Trails reach much further; satellites share the garrison.',
-  diapause_mastery: 'Offline cap 24 h at full efficiency.',
+  diapause_mastery: 'Offline cap 24 h at full efficiency; Diapause runs 3×.',
   queens_council: 'Two more Royal Chambers.',
   megacolony: 'The Argentine Front appears. Required for Speciation.',
 });
@@ -927,6 +1021,7 @@ export function eventToast(e, s = null) {
     case 'hungryEnd': return { text: 'The colony is fed again.', kind: 'good', priority: 'low' };
     case 'winterSoon': return { text: 'Winter in ' + fmtTime(Number(YEAR && YEAR.forecastSec) || 60) + ': shallow brood will freeze.', kind: 'info', priority: 'high' };
     case 'seasonChanged': return { text: (SEASON_NAMES[e.id] || humanize(e.id)) + ': ' + (SEASON_TIPS[e.id] || ''), kind: 'season', priority: 'low' };
+    case 'blueprintDropped': return { text: 'Blueprint: the ' + nameOf('chamber', e.chamberType) + ' spot can no longer be used.', kind: 'info', priority: 'low' };
     case 'chamberActivated': return { text: chamberName(e.uid, e.chamberType) + ' complete.', kind: 'good', priority: 'low' };
     case 'cacheFound': return { text: 'Found a ' + humanize(e.kind) + ': +' + fmt(e.amount || 0) + ' ' + (RES_NAMES[e.res] || '').toLowerCase() + '.', kind: 'good', priority: 'low' };
     case 'softcapHit': return { text: (RES_NAMES[e.stat] || humanize(e.stat)) + ' production is now softcapped.', kind: 'info', priority: 'low' };

@@ -9,6 +9,7 @@ import { nameOf } from '../text.js';
 import { num, arr, obj } from '../reveal.js';
 import { adultsTotal } from '../../core/state.js';
 import { LAYER_ORDER, LAYERS } from '../../data/strata.js';
+import { diapauseInfo } from '../hud.js';
 
 const LAYER_FALLBACK = [['topsoil', 0], ['loam', 10], ['clay', 24], ['gravel', 40], ['bedrock', 58], ['aquifer', 74]];
 
@@ -61,6 +62,14 @@ const SECTIONS = [
       + (s.run.boon ? ' · ' + nameOf('boon', s.run.boon) : '')],
     ['Hardship', (s) => (s.run.hardship ? nameOf('hardship', s.run.hardship) : 'None')],
     ['Species', (s) => nameOf('species', s.era.species)],
+  ]],
+  // C112: what Diapause does, its bank, drain and how it is earned (toggled from the rail's Diapause row)
+  ['Diapause', [
+    ['Bank', (s, d) => { const x = diapauseInfo(s, d); return fmtTime(x.bank) + ' of ' + fmtTime(x.bankMax) + ' max'; }],
+    ['Status', (s, d) => { const x = diapauseInfo(s, d); return x.running ? 'Running at ' + x.speed + '× · ends in ' + fmtTime(x.endsIn) : x.bank > 0 ? 'Paused (Spend from the resource rail)' : 'Empty'; }],
+    ['Effect', (s, d) => { const x = diapauseInfo(s, d); return x.speed + '× economy: income and upkeep, source depletion, laying, brood growth, digging. Seasons, events, raids, rivals and battles stay real-time.'; }],
+    ['Cost', (s, d) => { const x = diapauseInfo(s, d); return x.drain + ' s of bank per real second' + (x.mastery ? ' (Diapause Mastery)' : ' (3× with Diapause Mastery)'); }],
+    ['Earned', (s, d) => { const x = diapauseInfo(s, d); return Math.round(x.bankRate * 100) + '% of offline time beyond the ' + fmtTime(x.capSec) + ' offline cap'; }],
   ]],
   ['Lifetime', [
     ['Time played', (s) => fmtTime(num(s.meta.simTime))],
@@ -140,11 +149,11 @@ export function createPanel(root) {
   }
 
   return {
-    update(s) {
+    update(s, d) {
       if (!s || !s.run || !s.meta) return;
       for (const [dd, fn] of cells) {
         let t;
-        try { t = fn(s); } catch { t = '—'; }
+        try { t = fn(s, d); } catch { t = '—'; }
         setText(dd, t);
       }
       const deepest = num(s.meta.stats && s.meta.stats.deepestRow);

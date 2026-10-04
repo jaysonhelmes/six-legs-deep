@@ -21,13 +21,16 @@
 //   before the store and taken back out of run.stats.foodWasted, so one long step lays what the same time in ticks lays.
 // C71: a slider caste (or requested alate) whose single egg costs more food than laying can ever spend (cap above the
 //   egg reserve, or this step's store + spill) is skipped like a caste with a full berth, so it never blocks minors.
+// C103: each hatched adult sheds MOLT.perHatch chitin (once caste_soldier or res_chitin is unlocked); d.rates.chitin.molts.
+// C104: soldier / supermajor eggs spend only chitin above run.colony.chitinReserve (skipped like a full berth at or
+//   below it); chitinNeed [q] tells trails.allocate when chitin trails get the auto-fill first.
 
 import { CASTE_ORDER, CASTES } from '../data/castes.js';
-import { EGG, BROOD, NUTRITION, SLIDERS } from '../data/economy.js';
+import { EGG, BROOD, NUTRITION, SLIDERS, MOLT } from '../data/economy.js';
 import { GENOME } from '../data/genome.js';
 import { JOB_ORDER, JOBS } from '../data/jobs.js';
 import { clampNum, lvl } from '../core/math.js';
-import { canAfford, spend } from '../core/wallet.js';
+import { canAfford, spend, grant } from '../core/wallet.js';
 import { adultsTotal, broodTotal, clickAvailable, consumeClick } from '../core/state.js';
 import { eggCost } from './stats.js';
 import { releaseMinors, jobCap } from './jobs.js';
@@ -371,12 +374,53 @@ function extraMax(s, caste, form, have) {
   return Infinity;
 }
 
+/** C104: the chitin reserve (absolute chitin held back from soldier / supermajor eggs), clamped to the slider range. */
+export function chitinReserve(s) {
+  const steps = SLIDERS.chitinReserveSteps;
+  return clampNum(num(s.run.colony.chitinReserve), 0, steps[steps.length - 1]);
+}
+
+/** Stock of resource r an egg of the caste may spend: military castes only spend chitin above the reserve (C104). */
+function spendable(s, caste, r) {
+  const have = num(s.run.res[r]);
+  return r === 'chitin' && isMilitary(caste) ? Math.max(0, have - chitinReserve(s)) : have;
+}
+
 /** Most eggs of the caste the extras (chitin, honeydew, fungus …) allow. */
 function eggsByExtras(s, caste) {
   const extra = CASTES[caste].extra || {};
   let n = Infinity;
-  for (const r of Object.keys(extra)) n = Math.min(n, extraMax(s, caste, extra[r], num(s.run.res[r])));
+  for (const r of Object.keys(extra)) n = Math.min(n, extraMax(s, caste, extra[r], spendable(s, caste, r)));
   return n;
+}
+
+/**
+ * [q] C104 chitin demand, read by trails.allocate (auto-fill puts free foragers on chitin trails first while needed)
+ * and the UI. next = the chitin of the next egg of the cheapest military caste the caste slider wants (with a free
+ * berth), else of the next soldier egg; needed = some military caste can be laid at all, a reserve is set or a military
+ * egg is wanted, and chitin < reserve + next. Pure (state + d.stats).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {{ needed: boolean, reserve: number, next: number, wanted: boolean }}
+ */
+export function chitinNeed(s, d) {
+  const reserve = chitinReserve(s);
+  const col = s.run.colony;
+  let next = Infinity;
+  let fallback = Infinity;
+  let allowed = false;
+  for (const c of ['soldier', 'supermajor']) {
+    if (!casteAllowed(s, c)) continue;
+    allowed = true;
+    const form = CASTES[c].extra ? CASTES[c].extra.chitin : undefined;
+    const one = form === undefined ? 0 : extraTotal(s, c, form, 1);
+    if (c === 'soldier') fallback = one;
+    if (num(col.casteTargets[c]) > 0 && d && d.stats && freeRoom(s, d, c) > EPS) next = Math.min(next, one);
+  }
+  const wanted = Number.isFinite(next);
+  if (!wanted) next = Number.isFinite(fallback) ? fallback : 0;
+  const needed = allowed && (wanted || reserve > 0) && num(s.run.res.chitin) < reserve + next - EPS;
+  return { needed, reserve, next, wanted };
 }
 
 /** Caste rules that forbid laying a caste regardless of targets (hardships, locks). */
@@ -554,11 +598,20 @@ function layEggs(s, d, econDt, env) {
 // Development, hatching, frost, nutrition
 // ------------------------------------------------------------------------------------------------------------------
 
-/** Advance every cohort and hatch the finished ones (DESIGN §5.3; alates → alatesReared; golden_brood). */
+/** C103: true once moults yield chitin (any MOLT.gate unlock key set). */
+function moltsOn(s) {
+  for (const k of MOLT.gate) if (s.run.unlocked[k]) return true;
+  return false;
+}
+
+/**
+ * Advance every cohort and hatch the finished ones (DESIGN §5.3; alates → alatesReared; golden_brood). Each hatched
+ * adult sheds a pupal case worth MOLT.perHatch chitin (C103). Returns the moult chitin granted.
+ */
 function develop(s, d, econDt, env) {
   const col = s.run.colony;
   const st = d.stats;
-  if (col.brood.length === 0) return;
+  if (col.brood.length === 0) return 0;
   const alloc = broodAllocation(s, d);
   if (alloc.bSpeed > 0) {
     const baseT = BROOD.baseSec * num(st.mbt, 1) / Math.max(1, num(st.nurseTerm, 1)) / alloc.bSpeed;
@@ -575,8 +628,9 @@ function develop(s, d, econDt, env) {
     if (c.p >= 1) hatched[c.c] = (hatched[c.c] || 0) + c.n;
     else keep.push(c);
   }
-  if (keep.length === col.brood.length) return;
+  if (keep.length === col.brood.length) return 0;
   col.brood = keep;
+  let molt = 0;
   for (const caste of CASTE_ORDER) {
     const n = hatched[caste];
     if (!(n > 0)) continue;
@@ -588,7 +642,17 @@ function develop(s, d, econDt, env) {
     }
     s.run.stats.hatched = clampNum(num(s.run.stats.hatched) + n);
     env.emit('hatched', { caste, n });
+    if (moltsOn(s)) molt += grant(s, d, 'chitin', n * MOLT.perHatch);
   }
+  return molt;
+}
+
+/** C103: d.rates.chitin.molts = moult chitin per second, an EMA (time constant MOLT.avgSec) for the resource tooltip. */
+function moltRate(d, amount, econDt) {
+  const r = d.rates && d.rates.chitin;
+  if (!r || !(econDt > 0)) return;
+  const cur = num(r.molts);
+  r.molts = clampNum(cur + (amount / econDt - cur) * (1 - Math.exp(-econDt / MOLT.avgSec)));
 }
 
 /** Frost deaths: online, winter, not mild, year ≥ 1 (DESIGN §17.3). Snap freezes never kill. */
@@ -626,7 +690,7 @@ export function tick(s, d, dt, env) {
   const econDt = step > 0 ? (env && env.econDt > 0 ? env.econDt : step) : 0;
   if (!(step > 0)) return;
   layEggs(s, d, econDt, env);
-  develop(s, d, econDt, env);
+  moltRate(d, develop(s, d, econDt, env), econDt);
   frost(s, d, dt, env);
   nutrition(s, econDt);
   const a = adultsTotal(s);
@@ -683,6 +747,18 @@ export const handlers = {
     },
     apply(s, d, cmd) {
       s.run.colony.eggReserve = clampNum(cmd.frac, 0, SLIDERS.eggReserveMax);
+    },
+  },
+
+  /** setChitinReserve { amount }: C104, chitin held back from soldier / supermajor eggs (0..last ladder step). */
+  setChitinReserve: {
+    validate(s, d, cmd) {
+      const steps = SLIDERS.chitinReserveSteps;
+      return inRange(cmd.amount, 0, steps[steps.length - 1]) ? null : 'invalid';
+    },
+    apply(s, d, cmd) {
+      const steps = SLIDERS.chitinReserveSteps;
+      s.run.colony.chitinReserve = clampNum(cmd.amount, 0, steps[steps.length - 1]);
     },
   },
 

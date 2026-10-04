@@ -613,6 +613,32 @@ test('surface input: forage click, trail drag, war drag, claim tool, beetle clic
   detach();
 });
 
+test('surface input (C110): an event object on the entrance never blocks a trail drag; a plain click still hits it', () => {
+  const game = makeGame();
+  const ui = makeUI();
+  const bridge = makeBridge();
+  const sc = makeCanvas(800, 600);
+  const surf = createSurfaceRenderer(sc, { game, ui, bus: game.bus });
+  surf.render(0.016);
+  const detach = attachSurfaceInput(sc, surf, { game, ui, bridge });
+  game.s.run.surface.sources.push({ uid: 20, type: 'seed_patch', hex: 9, stock: 150, max: 300, level: 1, herdT: 0, age: 0, ttl: -1, cd: 0, data: {} });
+  const objs = game.s.run.events.objects;
+  for (const kind of ['myrmecophile', 'wandering_queen', 'army_column', 'footstep']) {
+    objs.length = 0;
+    objs.push({ uid: 900, kind, hex: 0, cell: -1, t: -1, data: { card: true } });
+    surf.render(0.016);
+    const e0 = surf.hexToScreen(0);
+    assert.equal(surf.pick(e0.x, e0.y).kind, 'eventObject', `${kind} is picked on the entrance`);
+    const sp = surf.hexToScreen(9);
+    drag(sc, e0.x, e0.y, sp.x, sp.y);
+    assert.deepEqual(game.calls.pop(), { type: 'drawTrail', args: { origin: 0, target: 9 } }, `${kind}: the drag drew a trail`);
+    click(sc, e0.x, e0.y);
+    assert.deepEqual(game.calls.pop(), { type: 'clickEventObject', args: { uid: 900 } }, `${kind}: a click still opens it`);
+  }
+  objs.length = 0;
+  detach();
+});
+
 test('ceremonies draw on both views and resolve; minimaps and the seam draw headless', async () => {
   const game = makeGame();
   const ui = makeUI();
@@ -731,4 +757,24 @@ test('playCeremony accepts the renderers or their canvases (speciation scrolls t
   assert.ok(nest.getView().topRow > 40, 'a renderer works directly');
   endCeremony();
   await p2;
+});
+
+test('terrain (C111): linked puddles and garden paths paint in every season with finite, valid calls; groundUnder', async () => {
+  const { groundUnder } = await import('../src/render/surfaceRenderer.js');
+  const game = makeGame();
+  const ter = game.s.run.surface.terrain;
+  // a 3-hex pool around the centre ring and a garden-path strip through ring 2, plus a lone puddle
+  for (const i of [1, 2, 7]) ter[i] = 6;
+  for (const i of [9, 10, 11, 23]) ter[i] = 3;
+  ter[40] = 6;
+  const n = ter.length;
+  assert.ok(['grass', 'sand', 'leaf_litter'].includes(groundUnder(ter, 1, n)));
+  assert.equal(groundUnder(ter, 1, n), groundUnder(ter, 1, n), 'deterministic');
+  const surf = createSurfaceRenderer(makeCanvas(800, 600), { game, ui: makeUI(), bus: game.bus });
+  stats.bad.length = 0;
+  for (const season of ['spring', 'summer', 'autumn', 'winter']) {
+    game.d.season.id = season;
+    surf.render(0.016);
+  }
+  assert.deepEqual(stats.bad, []);
 });

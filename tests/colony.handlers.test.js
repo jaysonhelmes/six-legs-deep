@@ -22,6 +22,7 @@ const OWNED = {
   clickForage: ['run.res.food', 'run.fRun', 'meta.stats.foodEver', 'run.stats.foodWasted', 'run.clicks', 'meta.counters.clicks'],
   setCasteTargets: ['run.colony.casteTargets', 'meta.automation.keep.casteTargets'],
   setEggReserve: ['run.colony.eggReserve'],
+  setChitinReserve: ['run.colony.chitinReserve'],
   setFungalBrood: ['run.colony.fungalBrood'],
   rearAlate: ['run.colony.rearRequested'],
   groomBrood: ['run.colony.brood', 'run.clicks', 'meta.counters.clicks'],

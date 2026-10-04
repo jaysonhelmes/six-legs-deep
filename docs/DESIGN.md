@@ -111,7 +111,7 @@ FORAGERS ─(trails, Above)─► FOOD ─► eggs ─► QUEEN ─► BROOD ─
 | `soil` | Soil | Dig work, **1 soil per 1 work**, whether the work is spent on queued cells or on "maintenance excavation" when the queue is empty | Chamber level-ups, Mound levels, Gate | None | 3 adults, with the Digger job (~0:30) |
 | `insight` | Insight | Scouts revealing hexes, Scent Library, Field Guide entries, fossil caches, conquests | Research | None | First hex revealed (~2:15) |
 | `pheromone` | Pheromone | Regenerates: `(0.5 + 0.05 × √adults) × (1.5 with pheromone_glands)` per s | Mark (5), Rally (20), Alarm Rally (25), Mobilize (40), Frenzy (60), hex claims, Mass Recruit (20) | `50 + 50·pheromone_glands + 5 × mound level` | `scent_marking` research (~6 min) |
-| `chitin` | Chitin | Dead insects, prey hunts, battles, beetle-husk caches, events | Soldier eggs, supermajors, military Adaptations, Gate | None | First chitin gained (~5 min) |
+| `chitin` | Chitin | Dead insects, prey hunts, battles, beetle-husk caches, events, moults (0.025 per hatched adult), Midden recycling (0.05/s per level) | Soldier eggs, supermajors, military Adaptations, Gate | None | First chitin gained (~5 min) |
 | `honeydew` | Honeydew | Herders at aphid colonies, Root Aphid Pens, flower patches (trace), Lycaenid caterpillars | Queen's Feast, repletes, alate rearing, Sweet Tooth, bribes | `50 + 0.1 × food cap` | `aphid_husbandry` (~12 min) |
 | `leaves` | Leaves | Leafcutters on leaf-plant trails | Fungus Garden input only (a buffered flow) | `500 × Σ fungus garden levels` | `leafcutting` (~25 min); shown only in the Fungus widget |
 | `fungus` | Fungus | Gardeners: each turns 0.3 leaves/s into 0.1 fungus/s | Nutrition (continuous), supermajors, Fungal Brood | `1,000 × Σ fungus garden levels` | `fungiculture` (~45–50 min) |
@@ -199,6 +199,7 @@ T = 25 s × M_bt / (1 + min(4, (nurses + 1) / brood_slots)) / B_speed
 - `B_speed` = the slot-weighted average, over all nurseries plus the Royal Chamber's own 3 slots, of `(1 + adjacency + microclimate)` (§7.7, §17.2). Frozen nurseries contribute **0** for their share.
 - **Stages** (used for visuals only): egg for progress < 0.25, larva for 0.25–0.75, pupa for ≥ 0.75.
 - **First worker check:** at game start it is spring and there are no nurses, so `T = 25 × 0.8 / (1 + 1/3) = 15 s`. The first egg is laid at 0:00, using the 5 starting food and the nanitic half-price egg, so the **first worker hatches at about 0:15**. This MUST be asserted by a test (window 15–30 s).
+- **Moults (player request, ARCHITECTURE §18 C103):** every adult that hatches (any caste, alates included) leaves a pupal case worth **0.025 chitin**, once chitin matters (`caste_soldier` or `res_chitin` unlocked; the first minutes of a first run reveal nothing new). Flat, no channel multiplier. The chitin tooltip shows it as a ~60 s average ("Moults x/s").
 - **Cohorts:** brood is stored as cohorts `{caste, count, progress}`. Cohorts laid in the same second merge. Cohorts are distributed across nurseries in proportion to free slots (with `thermal_brood_shuttling`: best microclimate first). That distribution matters for frost (§17.3) and raid reach (§9.10).
 
 ### 5.4 Housing, brood slots and berths
@@ -217,6 +218,8 @@ T = 25 s × M_bt / (1 + min(4, (nurses + 1) / brood_slots)) / B_speed
 - The player sets target shares for `soldier`, `supermajor` and `replete` eggs, up to 90% in total. The remainder are minors.
 - On each lay, the caste with the largest deficit (`target share × eggs this run − laid of that caste`) is chosen. It falls back to minor if no berth is free or the secondary resources are short.
 - A caste whose single egg costs more food than storage can ever hold above the egg reserve is skipped like a full berth: the queen lays the next caste by deficit, then minors, instead of stopping. A caste that storage can hold but cannot pay for yet still waits for the food (ARCHITECTURE §18 C71).
+- **Chitin reserve (player request, ARCHITECTURE §18 C104):** a slider under the caste sliders, an absolute amount on a ladder 0, 1, 2, 3, 5, 10 … 10,000 chitin (default 0; per run, back to 0 after a prestige). Soldier and supermajor eggs spend only chitin **above** the reserve; at or below it they are skipped like a full berth (minors are laid instead; laying never blocks). Serrated Mandibles, Thick Cuticle and the Gate are not limited by it (the player spends those by hand).
+- **Chitin priority (player request, C104):** while chitin is needed — a soldier or supermajor egg is wanted by the slider (with a free berth) but chitin < reserve + its chitin cost, or a reserve is set and chitin < reserve + the next soldier egg — unassigned foragers fill chitin-yielding trails (dead insects, termite swarms: any source with a chitin yield) up to saturation before the usual best-marginal order. Explicit per-trail assignments are untouched. The Map panel marks such trails "chitin priority".
 - **UI copy:** "Larval diet decides caste" (Field Guide `fg_polymorphism`).
 
 ### 5.6 Colony scale
@@ -373,7 +376,7 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 | `nursery` | Nursery | 8 adults | 3 | 3×2, grows | row ≥ 1 | 80 | 20 | 45 | 1.60 | — | +3 brood slots. Microclimate (§17.2). Adjacent to `royal_chamber`: +15% brood speed. |
 | `granary` | Granary | food earned ≥ 120 or food cap reached | 3 | 2×2, grows | row ≥ 1 | 60 | 15 | 36 | 1.55 | — | Capacity `400 × 1.65^(L−1)` × layer modifier (clay 1.25 with spoilage, gravel 1.5, bedrock 1.75). |
 | `scent_library` | Scent Library | 30 adults | 2 | 3×2, grows | row ≥ 1 | 600 | 150 | 120 | 2.00 | — | +0.05 insight/s. Gravel or deeper ×1.25. Adjacent to `royal_chamber` ×1.10. |
-| `midden` | Midden | 120 adults | 2 | 2×2, grows | row ≥ 1 | 200 | 50 | 75 | 1.60 | 8 | Disease-event chance −10% (combined max −80%). +2% all output (additive group, combined max +20%). **Hygiene penalty:** a Nursery or Fungus Garden within 6 path cells gets −20%. |
+| `midden` | Midden | 120 adults | 2 | 2×2, grows | row ≥ 1 | 200 | 50 | 75 | 1.60 | 8 | Disease-event chance −10% (combined max −80%). +2% all output (additive group, combined max +20%). **Recycling (C103):** +0.05 chitin/s per level (× chamber efficiency: frost, hygiene; × the chitin channel). **Hygiene penalty:** a Nursery or Fungus Garden within 6 path cells gets −20%. |
 | `barracks` | Barracks | `polymorphism` | 2 | 3×2, grows | row ≥ 1 | 1,200 | 300 | 150 | 1.70 | — | +8 berths. Soldier/supermajor ATK +5% (combined cap +50%). Within 12 path cells of an entrance: garrison deploys instantly and home AP +10%. |
 | `root_aphid_pen` | Root Aphid Pen | `aphid_husbandry` | 2 | 3×2, grows | must touch a `root_line` cell | 1,600 | 400 | 240 | 1.75 | — | +0.05 honeydew/s passive (winter ×0.5). Herders +10% per pen. |
 | `fungus_garden` | Fungus Garden | `fungiculture` | 3 | 3×3, grows | row ≥ 24 | 4,000 | 1,000 | 450 | 1.70 | — | +5 gardener slots (× colony_scale), +500 leaf cap, +1,000 fungus cap. Clay ×1.5. Adjacent to a Water Well +30%. |
@@ -388,7 +391,7 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 All chamber effects are ×1.10 with `ventilation_shafts` and ×0.5 while frost-exposed in winter (§17.3). The Royal Chamber, Gate and Thermal Chimney are immune to frost.
 
 ### 7.7 Adjacency rules
-Two chambers are **adjacent** if their footprints touch or are linked by a path of ≤ 4 open cells. Hovering a chamber draws faint link lines to its adjacency partners.
+Two chambers are **adjacent** if their footprints touch or are linked by a path of ≤ 4 open cells. Hovering a chamber draws faint link lines to its adjacency partners. A chamber that receives a bonus wears a small link badge (red for the Midden's hygiene hit) whose tooltip names the bonus and the partner; the placement and relocation ghost highlights the chambers it would link to and labels the gain or loss ("+15% brood speed (next to Royal Chamber)"); the Build list and inspect panel state each type's rules (ARCHITECTURE §18 C109).
 
 | Rule id | Condition | Effect |
 |---|---|---|
@@ -439,9 +442,9 @@ Layer × season modifiers are in §17.2, and the frost line rules are in §17.3.
 | Target | Action |
 |---|---|
 | Empty soil | Drag from an open cell across soil to dig a tunnel. Drop a chamber ghost from the Build panel. Any other drag scrolls (and pans when zoomed in). |
-| Chamber | Open the inspect panel: level up (with direction), relocate, demolish, see modifiers. Hover shows adjacency links. |
+| Chamber | Open the inspect panel: level up (with direction), relocate, demolish, see modifiers. The panel says exactly what the next level gives for that chamber ("+11 housing (33 → 44)", "Granary capacity 660 → 1.08K"), its cost, dig work and which side it grows (C107). Hover shows adjacency links. Keys: `L` level up, `Shift+L` level the cheapest chamber of that type, `G` pick the growth side, `R` relocate (C108). |
 | Active dig face | **Help Dig**. |
-| Nursery | **Groom Brood**: +1% progress to the brood there per click. |
+| Nursery | **Groom Brood**: each click adds 1% × that nursery's share of all brood slots to the development of every brood cohort in the colony (a nursery with 56% of the slots: +0.56% per click). Counts toward the 15 clicks/s cap; not allowed in the Claustral Founding hardship (ARCHITECTURE §18 C20). |
 | Queen | Status card. Counts toward the secret achievement `ach_queens_favorite`. |
 | Golden Pupa | Claim Frenzy or Windfall (§18.3). |
 | Mold spot | Scrape it off (Mold Bloom event). |
@@ -489,6 +492,8 @@ Layer × season modifiers are in §17.2, and the frost line rules are in §17.3.
 | `stone` | ~6% | impassable | — |
 | `puddle` | ~6% | impassable in spring, 1.0 otherwise | Dries in summer. |
 | `log` | 0–1 | 1.0 | `fallen_log`: prey ×2 within 2 hexes (carpenter ants nest here). |
+
+Adjacent puddle hexes draw as one pool (shore only on its outer edge) and adjacent garden-path hexes as one continuous paved strip with rounded ends, both on the surrounding ground (ARCHITECTURE C111).
 
 `d` = A\* path length weighted by move cost, ×0.9 with `double_bridge`.
 
@@ -544,7 +549,7 @@ Finite stocks are sized at discovery (the moment the source is first visible: at
 | Each outpost | +1 |
 | Each satellite | +1 |
 
-- Workers are assigned per trail with +/− buttons or drag. Unassigned foragers auto-fill the best unsaturated trail.
+- Workers are assigned per trail with +/− buttons or drag. Unassigned foragers auto-fill the best unsaturated trail (chitin-yielding trails first while chitin is needed for soldier eggs, §5.5, C104).
 
 **Yield of one trail.**
 ```
@@ -652,7 +657,7 @@ Early on, far sources are roughly neutral and worth visiting only for their stoc
 | Target | Action |
 |---|---|
 | Source hex | Hand-forage: `+click value` food (§10). Open source info. |
-| Drag from an origin | Draw a trail. Drag a trail's waypoints to reroute. Dropping on a rival nest, prey or the termite mound opens the war-party chooser (sliders, live odds, Launch). |
+| Drag from an origin | Draw a trail (even when an event object such as a myrmecophile guest sits on the entrance: a drag draws, a plain click hits the object; C110). Drag a trail's waypoints to reroute. Dropping on a rival nest, prey or the termite mound opens the war-party chooser (sliders, live odds, Launch). |
 | Trail | Select: +/− workers, escorts, Mark, Rally, delete. |
 | Hex | Info. Claim (or start a channel). Flag for scouting. Place a satellite or tournament where allowed. While the satellite tool is active, valid hexes are tinted green and the rest greyed out, and hovering a hex says why it fails (for example "Too close to an entrance: 1 hex away, satellites need 3+"). |
 | Rival nest | War panel: Raid / Assault / Tournament / Bribe, with the live odds preview (§9.5). |
@@ -839,6 +844,8 @@ Only trail raids offer a **Dispatch garrison** button; against a nest raid the g
 
 **Click value** = `(1 + quick_dispatch) × (2 with ach_clickstorm) + p × gross food/s`. Clicks count toward `f_run`.
 
+**Bulk buying (player request, ARCHITECTURE §18 C105):** each row shows the total cost of the next 10 levels beside its ×10 button (green when affordable, red when not) and a **Max (n)** button that buys the n levels affordable right now (n shown; respects the monomorphic L10 cap).
+
 ---
 
 ## 11. Research tree (paid in insight)
@@ -1010,7 +1017,7 @@ Then `λ = (0.2 + 0.05·RF) × 1.15^(RC−1) × M_lay × colony_scale`. Laying i
 - **Honeydew** = herder trails (`0.08` base, trail formula) × 1.1^root_aphid_pens × 2 [sugar_economy] × 1.15^sweet_tooth × 2 [sweet_inheritance] × season × (1 + 0.5φ) × `(1+K)^0.5 × (1+G)^0.25 × 1.01^ach`, + Root Aphid Pen passive + flower trace + Lycaenid.
 - **Leaves** = leafcutter trails (`0.3` base) × season × (1 + 0.5φ) × 1.4^hardy_workers × same prestige terms as honeydew.
 - **Fungus** = `min(gardeners, slots) × 0.1 × leaf supply ratio × 1.5 [weeder_ants] × layer/well modifiers (slot-weighted) × prestige terms as honeydew`.
-- **Chitin** = source rates × `(1+K)^0.5 × (1+G)^0.25 × 1.01^ach`. One-shots are sized in seconds of income with minimums.
+- **Chitin** = source rates × `(1+K)^0.5 × (1+G)^0.25 × 1.01^ach`. One-shots are sized in seconds of income with minimums. Passive sources (C103): Midden recycling `0.05 × Σ midden level × eff` /s through the same channel; moults 0.025 per hatched adult (flat). Balance aim: they cover roughly 10–25% of the chitin a mid-game colony spends on soldier eggs (pacing bot, seeds 1–8: ~18–27%), so soldiers still need dead insects, hunts and battles.
 
 ### 12.8 Caps
 - Food cap = `(150 + Σ granary capacity × layer modifier) × (1 + 0.02 × repletes × adj_granary_repletion) × autumn 1.25 × 1.1 [ach_hoarder] × species`.
@@ -1152,7 +1159,7 @@ Run-1 rows are medians of the balance simulation (Balance Verification). Conques
 | `founding_stores` | Founding Stores | 1 × 3^L (1, 3, 9) | 3 | Start each run with 500 / 5,000 / 50,000 food (may exceed the cap until spent) and 100 / 1,000 / 10,000 soil |
 | `nanitic_vigor` | Nanitic Vigor | 2 | 1 | The first 25 eggs are nanitics. The first 50 workers produce ×3. |
 | `remembered_paths` | Remembered Paths | 2 | 1 | Runs start with trails drawn to the 2 best revealed sources, at 50% strength |
-| `ancestral_blueprint` | Ancestral Blueprint | 3 | 1 | Save your nest layout. After each flight it auto-queues; blueprint cells dig at 3× speed; blueprint chambers cost −50% placement food. |
+| `ancestral_blueprint` | Ancestral Blueprint | 3 | 1 | Save your nest layout. After each flight it auto-queues; blueprint cells dig at 3× speed; blueprint chambers cost −50% placement food. Chambers that are still locked or unaffordable at run start stay **planned** (faint dashed outlines) and queue themselves, at the same price and dig speed, as soon as they unlock and can be paid for; a spot that can never be used this run (water, another chamber, a seeded rule) is dropped with a notice (ARCHITECTURE §18 C106). |
 | `automaton_instincts` | Automaton Instincts | 5 | 1 | `age_polyethism` and `response_thresholds` innate; Adaptation autobuyer; dig queue +2 |
 | `hardy_workers` | Hardy Workers | 5 × 3.5^L | 12 | Forager, herder and leafcutter output ×1.4 |
 | `deep_diggers` | Deep Diggers | 5 × 3.5^L | 12 | Dig work ×1.4 |
@@ -1706,6 +1713,7 @@ The torpor floor (from B) is a backstop. If any code path would reduce adults of
 - Time beyond the cap is banked at **10%** into `diapause`, up to 8 h.
 - The player can spend it to run the game at **2× speed** (3× with `diapause_mastery`) while online.
 - Events and raids keep their real-time pacing, so acceleration affects only economy and brood.
+- While it runs, a HUD chip shows the speed, the bank and the time left (bank ÷ (speed − 1)); its tooltip, the rail row and the Stats panel say what is accelerated (income and upkeep, source depletion, laying, brood growth, digging), what keeps real time (seasons, events, raids, rivals, battles, scouting), the drain and how the bank is earned (ARCHITECTURE C112).
 
 ### 21.6 Welcome-back screen (from C)
 - A modal with stat lines:
@@ -1927,7 +1935,8 @@ See §7.12 (Below) and §8.10 (Above). Clicking a rival nest, prey or the termit
 - `1–9`: tabs;
 - `Space`: hand-forage the selected source;
 - `M`: Mark the selected trail;
-- `R`: Rally the selected trail;
+- `R`: Rally the selected trail; with a chamber selected in the nest, Relocate it;
+- `L` / `Shift+L`: level the selected chamber / the cheapest chamber of its type; `G`: pick its growth side;
 - `Tab`: switch view on medium and narrow layouts;
 - `Esc`: cancel a tool, deselect, then close the drawer or lower the panel sheet.
 

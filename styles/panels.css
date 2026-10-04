@@ -1063,6 +1063,16 @@
 /* incoming raid: its own chip beside the bottleneck badge (C72), pulsing, click to show the raiders' nest */
 .threat-chip.raid-chip { border-color: var(--danger); animation: reveal-in 0.3s ease-out both, pulse-danger 1.2s ease-in-out 0.3s infinite; }
 .threat-time:empty { display: none; }
+/* Diapause running (C112): speed, bank and time left; click pauses */
+.dia-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 11px 4px 8px;
+  border-radius: 999px; border: 1px solid color-mix(in srgb, var(--c-insight) 70%, transparent);
+  background: color-mix(in srgb, var(--c-insight) 14%, transparent); color: var(--text);
+  font-size: var(--fs-sm); font-weight: 650; white-space: nowrap; cursor: pointer; font-variant-numeric: tabular-nums;
+  animation: reveal-in 0.3s ease-out both;
+}
+.dia-chip:hover { background: color-mix(in srgb, var(--c-insight) 26%, transparent); }
+.dia-chip-ico { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--c-insight); border-right-color: transparent; }
 
 /* ================================================================== small screens */
 @media (max-width: 420px) {

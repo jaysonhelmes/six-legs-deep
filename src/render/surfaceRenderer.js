@@ -78,6 +78,32 @@ function terrainId(code) {
   return order[code] || 'grass';
 }
 
+const GROUND_IDS = ['grass', 'leaf_litter', 'sand'];
+
+/**
+ * C111: the ground a puddle / garden-path hex is drawn on — its most common grass / leaf-litter / sand neighbour
+ * (ties: that order), grass when it has none. Deterministic from the terrain alone.
+ */
+export function groundUnder(ter, i, n) {
+  const [q, r] = hexQR(i);
+  const c = { grass: 0, leaf_litter: 0, sand: 0 };
+  for (const [dq, dr] of DIRS) {
+    const h = hexIndex(q + dq, r + dr);
+    if (h < 0 || h >= n) continue;
+    const id = terrainId(ter[h]);
+    if (id in c) c[id]++;
+  }
+  let best = 'grass';
+  let bn = 0;
+  for (const id of GROUND_IDS) {
+    if (c[id] > bn) {
+      bn = c[id];
+      best = id;
+    }
+  }
+  return best;
+}
+
 /** 2-D value noise in [0, 1] (deterministic). */
 function noise2(x, y, seed = 0) {
   const xi = Math.floor(x);
@@ -453,10 +479,18 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     if (!g) return;
     g.setTransform(gm.scale, 0, 0, gm.scale, gm.wx * gm.scale, gm.wy * gm.scale);
     const n = countInRadius(Math.min(HEX.maxRadius, R + 1));
+    const ter = surf.terrain || [];
+    // C111: puddle and garden-path hexes sit on the ground around them (their dominant grass / sand / leaf-litter
+    // neighbour); the pool / path is then drawn once over the union of linked hexes (paintPaths / paintPools)
+    const under = new Map();
+    for (let i = 0; i < n; i++) {
+      const id = terrainId(ter[i]);
+      if (id === 'puddle' || id === 'garden_path') under.set(i, groundUnder(ter, i, n));
+    }
     // base fill, slightly enlarged to hide seams
     for (let i = 0; i < n; i++) {
       const [x, y] = hexToPixel(i, SIZE);
-      const id = terrainId(surf.terrain ? surf.terrain[i] : 0);
+      const id = under.get(i) || terrainId(ter[i]);
       const [base, detail] = terrainColor(season, id);
       const nz = noise2(x / 70, y / 70, 3);
       g.fillStyle = mix(base, detail, nz * 0.45 + (hash01(i, 5) - 0.5) * 0.08);
@@ -466,9 +500,244 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
     for (let i = 0; i < n; i++) {
       const [x, y] = hexToPixel(i, SIZE);
-      const id = terrainId(surf.terrain ? surf.terrain[i] : 0);
+      const id = under.get(i) || terrainId(ter[i]);
       paintTerrainDetail(g, id, season, i, x, y);
     }
+    paintPaths(g, season, linkSet(ter, n, 'garden_path'));
+    paintPools(g, season, linkSet(ter, n, 'puddle'), under);
+  }
+
+  /**
+   * C111 linked terrain: the hexes of one terrain id in [0, n) with, per hex, its same-id neighbours in DIRS order
+   * (-1 where the neighbour differs), so adjacent hexes draw as one body.
+   * @returns {{ hexes: number[], nb: Map<number, number[]> }}
+   */
+  function linkSet(ter, n, id) {
+    const hexes = [];
+    const nb = new Map();
+    for (let i = 0; i < n; i++) if (terrainId(ter[i]) === id) hexes.push(i);
+    const isIn = new Set(hexes);
+    for (const i of hexes) {
+      const [q, r] = hexQR(i);
+      const row = [];
+      for (let k = 0; k < 6; k++) {
+        const h = hexIndex(q + DIRS[k][0], r + DIRS[k][1]);
+        row.push(h >= 0 && isIn.has(h) ? h : -1);
+      }
+      nb.set(i, row);
+    }
+    return { hexes, nb };
+  }
+
+  /** A closed polygon (flat x,y list) added with positive (canvas-clockwise) winding, matching arc()/ellipse(). */
+  function polyOn(g, pts) {
+    let a = 0;
+    const m = pts.length;
+    for (let j = 0; j < m; j += 2) {
+      const k = (j + 2) % m;
+      a += pts[j] * pts[k + 1] - pts[k] * pts[j + 1];
+    }
+    const at = (j) => (a < 0 ? m - 2 - j : j);
+    g.moveTo(pts[at(0)], pts[at(0) + 1]);
+    for (let j = 2; j < m; j += 2) g.lineTo(pts[at(j)], pts[at(j) + 1]);
+    g.closePath();
+  }
+
+  /**
+   * Pool outline (one path, uniform winding, so a single fill is the union): a rounded blob per hex, a band to each
+   * linked neighbour and the triangle between three mutually linked hexes. `k` scales the shape, `pad` grows it.
+   */
+  function poolPath(g, set, k, pad) {
+    g.beginPath();
+    for (const i of set.hexes) {
+      const [x, y] = hexToPixel(i, SIZE);
+      const row = set.nb.get(i);
+      const lone = row.every((h) => h < 0);
+      const rx = SIZE * (lone ? 0.8 : 0.84 + 0.1 * hash01(i, 41)) * k + pad;
+      const ry = SIZE * (lone ? 0.6 : 0.74 + 0.08 * hash01(i, 43)) * k + pad;
+      const rot = hash01(i * 13 + 2, 17);
+      g.moveTo(x + rx * Math.cos(rot), y + rx * Math.sin(rot));
+      g.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2);
+      for (let d = 0; d < 6; d++) {
+        const h = row[d];
+        if (h < i) continue;
+        const [hx, hy] = hexToPixel(h, SIZE);
+        const len = Math.hypot(hx - x, hy - y) || 1;
+        const w = SIZE * (0.6 + 0.12 * hash01(i * 97 + h, 7)) * k + pad;
+        const vx = (-(hy - y) / len) * w;
+        const vy = ((hx - x) / len) * w;
+        polyOn(g, [x + vx, y + vy, hx + vx, hy + vy, hx - vx, hy - vy, x - vx, y - vy]);
+        const h2 = row[(d + 1) % 6];
+        if (k >= 1 && h2 > i) {
+          const [x2, y2] = hexToPixel(h2, SIZE);
+          polyOn(g, [x, y, hx, hy, x2, y2]);
+        }
+      }
+    }
+  }
+
+  /** Midpoints (and edge angles) between linked hexes, each pair once. */
+  function linkMids(set) {
+    const out = [];
+    for (const i of set.hexes) {
+      const [x, y] = hexToPixel(i, SIZE);
+      for (const h of set.nb.get(i)) {
+        if (h < i) continue;
+        const [hx, hy] = hexToPixel(h, SIZE);
+        out.push({ x: (x + hx) / 2, y: (y + hy) / 2, ang: Math.atan2(hy - y, hx - x), seed: i * 97 + h });
+      }
+    }
+    return out;
+  }
+
+  /** C111: puddles — one pool over the union of linked puddle hexes, shore only on its outer edge, even ripples. */
+  function paintPools(g, season, set, under) {
+    if (!set.hexes.length) return;
+    const [base] = terrainColor(season, 'puddle');
+    const groundOf = (i) => terrainColor(season, under.get(i) || 'grass')[0];
+    const ground = groundOf(set.hexes[0]);
+    const mids = linkMids(set);
+    const stations = set.hexes.map((i) => {
+      const [x, y] = hexToPixel(i, SIZE);
+      return { x, y, seed: i };
+    }).concat(mids);
+    if (season === 'summer') {
+      // dried bed: cracked mud over the same outline
+      g.fillStyle = rgba(mix(base, ground, 0.25), 0.92);
+      poolPath(g, set, 1, 0);
+      g.fill();
+      g.save();
+      poolPath(g, set, 1, -1);
+      g.clip();
+      g.strokeStyle = 'rgba(70,55,35,0.5)';
+      g.lineWidth = 1;
+      g.beginPath();
+      for (const st of stations) {
+        const r = (k) => hash01(st.seed * 13 + k, k * 7 + 3);
+        for (let k = 0; k < 4; k++) {
+          g.moveTo(st.x + (r(k) - 0.5) * SIZE, st.y + (r(k + 5) - 0.5) * SIZE * 0.8);
+          g.lineTo(st.x + (r(k + 9) - 0.5) * SIZE, st.y + (r(k + 13) - 0.5) * SIZE * 0.8);
+        }
+      }
+      g.stroke();
+      g.restore();
+      return;
+    }
+    const winter = season === 'winter';
+    const water = winter ? '#cfe2ef' : mix(base, '#2d5f86', 0.25);
+    // shore: the union grown a little, only visible beyond the water's outer edge
+    g.fillStyle = winter ? mix(ground, '#ffffff', 0.45) : mix(ground, '#3a2c1c', 0.45);
+    poolPath(g, set, 1, SIZE * 0.1);
+    g.fill();
+    g.fillStyle = water;
+    poolPath(g, set, 1, 0);
+    g.fill();
+    // deeper middle, merged along the links too
+    g.fillStyle = winter ? mix(water, '#9fc2da', 0.45) : shade(water, -0.12);
+    poolPath(g, set, 0.55, 0);
+    g.fill();
+    // ripples / ice streaks: one direction across the whole pool, clipped to the water
+    g.save();
+    poolPath(g, set, 1, -SIZE * 0.06);
+    g.clip();
+    g.strokeStyle = winter ? 'rgba(255,255,255,0.75)' : 'rgba(220,240,255,0.6)';
+    g.lineWidth = 1.2;
+    g.beginPath();
+    for (const st of stations) {
+      const r = (k) => hash01(st.seed * 31 + k, k * 5 + 9);
+      for (let k = 0; k < 2; k++) {
+        const px = st.x + (r(k) - 0.5) * SIZE * 0.9;
+        const py = st.y + (r(k + 3) - 0.5) * SIZE * 0.7;
+        if (winter) {
+          g.moveTo(px - SIZE * 0.22, py + SIZE * 0.12);
+          g.lineTo(px + SIZE * 0.22, py - SIZE * 0.12);
+        } else {
+          const rx = SIZE * (0.2 + 0.12 * r(k + 6));
+          g.moveTo(px + rx * Math.cos(Math.PI * 1.15 - 0.25), py + rx * 0.35 * Math.sin(Math.PI * 1.15 - 0.25));
+          g.ellipse(px, py, rx, rx * 0.35, -0.25, Math.PI * 1.15, Math.PI * 1.85);
+        }
+      }
+    }
+    g.stroke();
+    g.restore();
+  }
+
+  /** C111: garden paths — continuous strips from each path hex centre to each linked neighbour, rounded ends. */
+  function paintPaths(g, season, set) {
+    if (!set.hexes.length) return;
+    const [base, detail] = terrainColor(season, 'garden_path');
+    const strip = (width, color) => {
+      g.strokeStyle = color;
+      g.fillStyle = color;
+      g.lineWidth = width;
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
+      g.beginPath();
+      for (const i of set.hexes) {
+        const [x, y] = hexToPixel(i, SIZE);
+        for (const h of set.nb.get(i)) {
+          if (h < i) continue;
+          const [hx, hy] = hexToPixel(h, SIZE);
+          g.moveTo(x, y);
+          g.lineTo(hx, hy);
+        }
+      }
+      g.stroke();
+      // lone hexes and strip ends as discs (a zero-length segment's cap is not drawn everywhere)
+      g.beginPath();
+      for (const i of set.hexes) {
+        const links = set.nb.get(i).filter((h) => h >= 0).length;
+        if (links > 1) continue;
+        const [x, y] = hexToPixel(i, SIZE);
+        g.moveTo(x + width / 2, y);
+        g.arc(x, y, width / 2, 0, Math.PI * 2);
+      }
+      g.fill();
+    };
+    strip(SIZE * 1.26, shade(base, -0.32));
+    strip(SIZE * 1.12, mix(base, shade(base, -0.25), 0.55));
+    // gravel speckle
+    const stations = set.hexes.map((i) => {
+      const [x, y] = hexToPixel(i, SIZE);
+      const first = set.nb.get(i).find((h) => h >= 0);
+      let ang = 0;
+      if (first !== undefined) {
+        const [hx, hy] = hexToPixel(first, SIZE);
+        ang = Math.atan2(hy - y, hx - x);
+      }
+      return { x, y, ang, seed: i };
+    }).concat(linkMids(set));
+    g.fillStyle = rgba(shade(base, -0.4), 0.55);
+    for (const st of stations) {
+      for (let k = 0; k < 5; k++) {
+        const a = hash01(st.seed * 7 + k, 51) * Math.PI * 2;
+        const d = hash01(st.seed * 7 + k, 53) * SIZE * 0.45;
+        g.fillRect(st.x + Math.cos(a) * d, st.y + Math.sin(a) * d, 1, 1);
+      }
+    }
+    // flagstones: two abreast at every hex centre and link midpoint, laid along the strip
+    for (const st of stations) {
+      const r = (k) => hash01(st.seed * 13 + k, k * 7 + 3);
+      const ux = Math.cos(st.ang);
+      const uy = Math.sin(st.ang);
+      for (let k = 0; k < 2; k++) {
+        const side = (k ? 1 : -1) * SIZE * (0.22 + 0.04 * r(k + 20));
+        const along = (r(k) - 0.5) * SIZE * 0.25;
+        const sx = st.x - uy * side + ux * along;
+        const sy = st.y + ux * side + uy * along;
+        const rot = st.ang + (r(k + 3) - 0.5) * 0.6;
+        g.fillStyle = 'rgba(0,0,0,0.18)';
+        g.beginPath();
+        g.ellipse(sx + 0.8, sy + 1.2, SIZE * 0.24, SIZE * 0.18, rot, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = mix(detail, base, 0.15 + 0.4 * r(k + 9));
+        g.beginPath();
+        g.ellipse(sx, sy, SIZE * 0.24, SIZE * 0.18, rot, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    g.lineCap = 'butt';
+    g.lineJoin = 'miter';
   }
 
   function paintTerrainDetail(g, id, season, i, x, y) {
@@ -542,21 +811,6 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         }
         break;
       }
-      case 'garden_path': {
-        g.fillStyle = rgba(shade(base, -0.25), 0.5);
-        g.beginPath();
-        hexPathOn(g, x, y, SIZE * 0.98);
-        g.fill();
-        for (let k = 0; k < 3; k++) {
-          const sx = x + (k - 1) * SIZE * 0.55 + (r(k) - 0.5) * 3;
-          const sy = y + (r(k + 5) - 0.5) * SIZE * 0.6;
-          g.fillStyle = mix(detail, '#ffffff', r(k + 9) * 0.15);
-          g.beginPath();
-          g.ellipse(sx, sy, SIZE * 0.3, SIZE * 0.24, r(k + 3), 0, Math.PI * 2);
-          g.fill();
-        }
-        break;
-      }
       case 'tree_root': {
         g.strokeStyle = shade(detail, -0.2);
         g.lineWidth = 4;
@@ -598,29 +852,6 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         g.moveTo(x - SIZE * 0.2, y + SIZE * 0.05);
         g.lineTo(x + SIZE * 0.1, y + SIZE * 0.15);
         g.stroke();
-        break;
-      }
-      case 'puddle': {
-        if (season === 'summer') {
-          g.strokeStyle = 'rgba(70,55,35,0.5)';
-          g.lineWidth = 1;
-          g.beginPath();
-          for (let k = 0; k < 4; k++) {
-            g.moveTo(x + (r(k) - 0.5) * SIZE, y + (r(k + 5) - 0.5) * SIZE * 0.8);
-            g.lineTo(x + (r(k + 9) - 0.5) * SIZE, y + (r(k + 13) - 0.5) * SIZE * 0.8);
-          }
-          g.stroke();
-        } else {
-          g.fillStyle = season === 'winter' ? '#dbeaf4' : mix(base, '#2d5f86', 0.25);
-          g.beginPath();
-          g.ellipse(x, y, SIZE * 0.78, SIZE * 0.55, r(2), 0, Math.PI * 2);
-          g.fill();
-          g.strokeStyle = season === 'winter' ? 'rgba(160,190,210,0.8)' : 'rgba(220,240,255,0.65)';
-          g.lineWidth = 1.2;
-          g.beginPath();
-          g.ellipse(x - SIZE * 0.15, y - SIZE * 0.12, SIZE * 0.3, SIZE * 0.12, r(2), Math.PI * 1.1, Math.PI * 1.8);
-          g.stroke();
-        }
         break;
       }
       case 'log': {

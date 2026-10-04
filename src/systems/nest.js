@@ -6,7 +6,7 @@
 
 import { GRID, CELL, CLAMP_MAX } from '../data/balance.js';
 import { MICRO, DIG, GEOM, ADVISOR } from '../data/strata.js';
-import { CHAMBERS, CHAMBER_RULES } from '../data/chambers.js';
+import { CHAMBERS, CHAMBER_RULES, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
 import { CACHES, MOLE } from '../data/soilFeatures.js';
 import { FROST } from '../data/seasons.js';
 import { MOUND } from '../data/surface.js';
@@ -249,6 +249,7 @@ function rebuild(s, d) {
       inReach: minEnt >= 0 && minEnt <= GEOM.raidReach,
       adj,
       hygiene: false,
+      hygieneBy: 0,
       cellsDug: dug,
       cellsTotal: ch.w * ch.h,
       minDist,
@@ -259,7 +260,10 @@ function rebuild(s, d) {
     if (chs[j].type !== 'midden' || !contributes(chs[j])) continue;
     for (const m of nearChambers(dn, cellLists[j], GEOM.hygienePath, j)) {
       const t = chs[m].type;
-      if (t === 'nursery' || t === 'fungus_garden') out[m].hygiene = true;
+      if (t === 'nursery' || t === 'fungus_garden') {
+        if (!out[m].hygiene) out[m].hygieneBy = chs[j].uid; // C109: the Midden named in the link badge
+        out[m].hygiene = true;
+      }
     }
   }
   dn.chambers = out;
@@ -746,6 +750,7 @@ export function tick(s, d, dt, env) {
   if (left > 0) nest.maint = Math.min(CLAMP_MAX, num(nest.maint) + left);
   const g2 = ensureGeom(s, d);
   revealWater(s, g2);
+  if (step > 0) bpTick(s, d, env);
   fillQueueInfo(s, d);
 }
 
@@ -1540,6 +1545,11 @@ function minOver(arr, r) {
 export function validatePlacement(s, d, type, x, y, { route = null, relocateUid = 0, shaftCol = null } = {}) {
   const P = planPlacement(s, d, type, x, y, { route, relocateUid, shaftCol });
   const mods = P.rect ? placementMods(s, d, type, P, relocateUid || 0) : [];
+  // C109: which chambers the ghost would link to (and, when relocating, the links it would lose).
+  const r = P.rect;
+  const inBounds = !!r && isInt(r.x) && isInt(r.y) && r.x >= 0 && r.y >= 0 && r.x + r.w <= COLS && r.y + r.h <= ROWS;
+  const links = inBounds && CHAMBERS[type] ? ghostLinks(s, d, type, P, relocateUid || 0) : [];
+  const lost = relocateUid && inBounds ? chamberLinks(s, d, relocateUid).filter((c) => !links.some((l) => l.rule === c.rule && l.uid === c.uid)) : [];
   const penalty = mods.some((m) => m.key === 'hygiene' || m.key === 'frostExposed' || m.key === 'floodZone' || m.key === 'raidReach'
     || m.key === 'royalRoom');
   const W = Math.max(0, num(d && d.stats && d.stats.digW));
@@ -1556,6 +1566,8 @@ export function validatePlacement(s, d, type, x, y, { route = null, relocateUid 
     // C99: the row rule and the footprint, so a refusal can say "Must be at depth 24 or deeper (you are at 17)".
     rows: placementRows(s, d, type),
     rect: P.rect ? { ...P.rect } : null,
+    links,
+    lost,
   };
 }
 
@@ -1615,6 +1627,268 @@ export function levelInfo(s, d, uid) {
   for (const k of Object.keys(P.dirRects)) dirRects[k] = P.dirRects[k] ? { ...P.dirRects[k] } : null;
   return { cost: P.cost, grows: P.grows, dirs: { ...P.dirs }, dirRects, rect: P.rect ? { ...P.rect } : null, work: P.work,
     blocked: P.grows && P.blocked, max: P.max, royalRoom: P.grows && !P.max && P.royalRoom };
+}
+
+/** Contributing chamber of a type among the adjacency partners (≤ adjPathMax path cells) of chamber index j, or null. */
+function partnerOf(s, dn, j, type) {
+  const chs = s.run.nest.chambers;
+  for (const u of dn.chambers[j].adj || []) {
+    const p = chs.find((c) => c.uid === u);
+    if (p && p.type === type && contributes(p)) return p;
+  }
+  return null;
+}
+
+/** Implied multiplier of a derived stat over its nest base (colony scale, research), else the colony scale. */
+function impliedMult(d, stat, base) {
+  const st = (d && d.stats) || {};
+  const v = num(st[stat]);
+  if (v > 0 && base > 0) return v / base;
+  const cs = num(d && d.meta && d.meta.colonyScale) || num(st.colonyScale);
+  return cs > 0 ? cs : 1;
+}
+
+/**
+ * [q] What the next level of a chamber gives (C107; DESIGN §7.6 "Effect per level"): one line per stat with the
+ * chamber's own value at its level L and at L + 1, with its layer modifier, adjacency, current effect multiplier
+ * (frost, ventilation, hygiene, aquifer, events) and, for housing / slots / berths / gardener slots, the colony
+ * multiplier the stats pass applies, so the numbers match what the colony gains.
+ * Line: { stat, from, to, kind: 'count'|'num'|'rate'|'pct'|'mult'|'time'|'flag', sign?: −1 (a reduction), cap?: combined cap }.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} uid
+ * @returns {null | { type: string, from: number, to: number, max: boolean, eff: number, layer: string, layerMult: number,
+ *   lines: Array<Object> }}
+ */
+export function levelGain(s, d, uid) {
+  const f = findChamber(s, uid);
+  if (!f) return null;
+  const ch = f.ch;
+  const def = CHAMBERS[ch.type];
+  if (!def) return null;
+  const dn = ensureGeom(s, d);
+  const info = dn.chambers[f.j] || {};
+  const L0 = Math.max(0, Math.floor(num(ch.level)));
+  const L1 = L0 + 1;
+  const maxL = effMaxL(s, def);
+  const out = { type: ch.type, from: L0, to: L1, max: (maxL > 0 && L0 >= maxL) || !levelCost(s, ch), eff: 1, layer: '', layerMult: 1, lines: [] };
+  if (out.max) return out;
+  const fx = def.fx;
+  const eff = Number.isFinite(info.eff) ? info.eff : 1;
+  const layer = info.layer || G.rectLayer(ch);
+  out.eff = eff;
+  out.layer = layer;
+  const agg = (dn.agg) || {};
+  const line = (stat, fn, kind, extra = {}) => out.lines.push({ stat, from: fn(L0), to: fn(L1), kind, ...extra });
+  const pos = (L) => Math.max(0, L);
+  switch (ch.type) {
+    case 'royal_chamber':
+      line('lay', (L) => fx.lay ** Math.max(0, L - 1), 'mult');
+      if (L1 === (num(FLIGHT.royalLevel) || fx.flightLevel)) out.lines.push({ stat: 'flight', from: 0, to: 1, kind: 'flag' });
+      break;
+    case 'gallery': {
+      const lm = layer === 'loam' ? fx.loam : 1;
+      out.layerMult = lm;
+      const m = impliedMult(d, 'housing', num(agg.housingBase));
+      line('housing', (L) => galleryHousing(fx, pos(L)) * lm * eff * m, 'count');
+      break;
+    }
+    case 'nursery': {
+      let cap = 0;
+      for (const g of agg.broodGroups || []) if (g) cap += Math.max(0, num(g.cap));
+      const m = impliedMult(d, 'broodSlots', cap);
+      line('broodSlots', (L) => fx.slots * pos(L) * m, 'count');
+      break;
+    }
+    case 'granary': {
+      const lm = fx.layer[layer] || 1;
+      out.layerMult = lm;
+      const seed = G.hasAch(s, 'ach_seed_bank') ? CHAMBER_RULES.seedBankMult : 1;
+      line('granaryCap', (L) => (L >= 1 ? fx.cap * fx.capGrowth ** (L - 1) * lm * eff * seed : 0), 'num');
+      break;
+    }
+    case 'scent_library': {
+      const deep = G.layerIndex(layer) >= G.layerIndex(def.deepFrom) ? fx.deep : 1;
+      const adjM = partnerOf(s, dn, f.j, 'royal_chamber') ? fx.royalAdj : 1;
+      out.layerMult = deep;
+      line('insight', (L) => fx.insight * pos(L) * deep * adjM * eff, 'rate');
+      break;
+    }
+    case 'midden':
+      line('disease', (L) => fx.disease * pos(L) * eff, 'pct', { sign: -1, cap: fx.diseaseMax });
+      line('output', (L) => fx.output * pos(L) * eff, 'pct', { cap: fx.outputMax });
+      break;
+    case 'barracks': {
+      const m = impliedMult(d, 'berths', num(agg.berthsBase));
+      line('berths', (L) => fx.berths * pos(L) * eff * m, 'count');
+      line('atk', (L) => fx.atk * pos(L) * eff, 'pct', { cap: fx.atkMax });
+      break;
+    }
+    case 'root_aphid_pen':
+      line('honeydew', (L) => fx.honeydew * pos(L) * eff, 'rate');
+      break;
+    case 'fungus_garden': {
+      const m = impliedMult(d, 'gardenerSlots', num(agg.gardenerSlots));
+      line('gardeners', (L) => fx.gardeners * pos(L) * m, 'count');
+      line('leafCap', (L) => fx.leafCap * pos(L), 'num');
+      line('fungusCap', (L) => fx.fungusCap * pos(L), 'num');
+      break;
+    }
+    case 'repletion_hall': {
+      const m = impliedMult(d, 'repleteBerths', num(agg.repleteBerthsBase));
+      line('repleteBerths', (L) => fx.berths * pos(L) * eff * m, 'count');
+      break;
+    }
+    case 'hibernaculum': {
+      let cap = 0;
+      for (const g of agg.broodGroups || []) if (g) cap += Math.max(0, num(g.cap));
+      const m = impliedMult(d, 'broodSlots', cap);
+      line('shelter', (L) => fx.shelter * pos(L) * eff * m, 'count');
+      line('upkeep', (L) => fx.upkeep * pos(L), 'pct', { sign: -1, cap: fx.upkeepMax });
+      break;
+    }
+    case 'thermal_chimney':
+      line('winterForage', (L) => fx.winterForage * pos(L) * eff, 'pct', { sign: -1, cap: fx.max });
+      break;
+    case 'gate':
+      line('gateHp', (L) => fx.hp * pos(L) * eff, 'pct');
+      line('theft', (L) => fx.theft * pos(L) * eff, 'pct', { sign: -1 });
+      break;
+    case 'nuptial_chamber': {
+      const max = G.traitLevel(s, 'royal_court') > 0 ? fx.cellsMaxCourt : fx.cellsMax;
+      line('alateCells', (L) => (L >= 1 ? Math.min(max, fx.cellsBase + fx.cellsPer * (L - 1)) : 0), 'count');
+      break;
+    }
+    case 'deep_vault':
+      line('offline', (L) => fx.offlineSec * pos(L) * eff, 'time');
+      line('alates', (L) => fx.alates * pos(L) * eff, 'pct');
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+/**
+ * [q] The instance of a chamber type with the lowest next level-up cost (food, then soil, then uid) that can level now
+ * apart from cost and queue room: active, unlocked, not at max, not blocked (C108; Build panel "Level cheapest",
+ * Shift+L). null when none can.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} type
+ * @returns {null | { uid: number, level: number, cost: Object, count: number }} count = instances of the type
+ */
+export function cheapestLevel(s, d, type) {
+  if (!CHAMBERS[type]) return null;
+  ensureGeom(s, d);
+  let best = null;
+  let count = 0;
+  for (const ch of s.run.nest.chambers) {
+    if (ch.type !== type) continue;
+    count++;
+    if (ch.status !== 'active') continue;
+    const P = planLevel(s, d, ch, null, { ignoreQueue: true, ignoreCost: true });
+    if (P.reason || !P.cost) continue;
+    const fo = num(P.cost.food);
+    const so = num(P.cost.soil);
+    if (!best || fo < best.fo || (fo === best.fo && (so < best.so || (so === best.so && ch.uid < best.ch.uid)))) best = { ch, cost: P.cost, fo, so };
+  }
+  return best ? { uid: best.ch.uid, level: best.ch.level, cost: { ...best.cost }, count } : null;
+}
+
+/** Adjacency partner list of rule r for chamber type t: 'self' (t receives) / 'partner' (t gives) / null. */
+function ruleRole(r, t) {
+  const bs = Array.isArray(r.b) ? r.b : [r.b];
+  if (r.a === t) return r.id === 'hyg_midden' ? 'partner' : 'self';
+  if (bs.includes(t)) return r.id === 'hyg_midden' ? 'self' : r.id === 'adj_granary_repletion' ? 'self' : 'partner';
+  return null;
+}
+
+/**
+ * [q] Adjacency links a chamber has right now (C109; DESIGN §7.7, data ADJACENCY): [{ rule, uid (partner, 0 for an
+ * entrance), partner (type | 'entrance'), text, good, receiver: 'self'|'partner' }]. receiver 'self' = this chamber
+ * receives the bonus (a Nursery next to the Royal Chamber), 'partner' = it gives one (the Royal Chamber). Only
+ * contributing chambers link (as in derive); the Midden's hygiene hit is good: false. One entry per rule and partner.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} uid
+ * @returns {Array<Object>}
+ */
+export function chamberLinks(s, d, uid) {
+  const f = findChamber(s, uid);
+  if (!f || !contributes(f.ch)) return [];
+  const dn = ensureGeom(s, d);
+  const info = dn.chambers[f.j];
+  if (!info) return [];
+  const chs = s.run.nest.chambers;
+  const out = [];
+  const t = f.ch.type;
+  for (const id of ADJACENCY_ORDER) {
+    const r = ADJACENCY[id];
+    const role = ruleRole(r, t);
+    if (!role) continue;
+    if (r.b === 'entrance') {
+      if (info.minEntPath >= 0 && info.minEntPath <= r.path) out.push({ rule: id, uid: 0, partner: 'entrance', text: r.text, good: true, receiver: 'self' });
+      continue;
+    }
+    if (id === 'hyg_midden') {
+      if (role === 'self' && info.hygiene) {
+        const m = chs.find((c) => c.uid === info.hygieneBy);
+        out.push({ rule: id, uid: m ? m.uid : 0, partner: 'midden', text: r.text, good: false, receiver: 'self' });
+      } else if (role === 'partner') {
+        for (let k = 0; k < chs.length; k++) {
+          if (dn.chambers[k] && dn.chambers[k].hygieneBy === f.ch.uid) out.push({ rule: id, uid: chs[k].uid, partner: chs[k].type, text: r.text, good: false, receiver: 'partner' });
+        }
+      }
+      continue;
+    }
+    const want = r.a === t ? (Array.isArray(r.b) ? r.b : [r.b]) : [r.a];
+    for (const u of info.adj || []) {
+      const p = chs.find((c) => c.uid === u);
+      if (!p || !want.includes(p.type) || !contributes(p)) continue;
+      out.push({ rule: id, uid: p.uid, partner: p.type, text: r.text, good: true, receiver: role });
+    }
+  }
+  return out;
+}
+
+/**
+ * Links a footprint `rect` of type `type` would have (ghost preview, C109): partners of each ADJACENCY rule within its
+ * path, through open cells (the auto-route not counted). Same entry shape as chamberLinks.
+ */
+function ghostLinks(s, d, type, P, relUid) {
+  const r0 = P.rect;
+  const geo = G.getGeom(s, d);
+  const ghost = G.rectCells(r0.x, r0.y, r0.w, r0.h);
+  const chs = s.run.nest.chambers;
+  const fields = new Map();
+  const field = (path) => {
+    if (!fields.has(path)) fields.set(path, G.gapField(geo, ghost, path));
+    return fields.get(path);
+  };
+  const out = [];
+  for (const id of ADJACENCY_ORDER) {
+    const r = ADJACENCY[id];
+    const role = ruleRole(r, type);
+    if (!role) continue;
+    if (r.b === 'entrance') {
+      const e = estPath(geo, geo.entDist, P);
+      if (e >= 0 && e <= r.path) out.push({ rule: id, uid: 0, partner: 'entrance', text: r.text, good: true, receiver: 'self' });
+      continue;
+    }
+    const bs = Array.isArray(r.b) ? r.b : [r.b];
+    const want = r.a === type ? bs : [r.a];
+    const fld = field(r.path);
+    for (const ch of chs) {
+      if (ch.uid === relUid || !want.includes(ch.type)) continue;
+      // Bonuses the ghost receives need a working partner (derive); effects it gives land on any partner.
+      if (role === 'self' && id !== 'hyg_midden' && !contributes(ch)) continue;
+      if (id === 'hyg_midden' && role === 'self' && !contributes(ch)) continue;
+      if (!G.rectNear(fld, ch)) continue;
+      out.push({ rule: id, uid: ch.uid, partner: ch.type, text: r.text, good: id !== 'hyg_midden', receiver: role });
+    }
+  }
+  return out;
 }
 
 /**
@@ -1860,41 +2134,74 @@ function planShaftCells(s, geo, col) {
 }
 
 /**
- * [x] WP7 at run start: queue the active blueprint (era.blueprints[activeBlueprint]). Tunnels and chambers are queued
- * in BFS order from the open nest (a chamber's job follows the tunnels that reach it), bypassing the queue limit;
- * blueprint jobs dig ×3 (×5 with blueprint_memory) and chambers cost 50 % placement food, paid now.
- * ARCH-R: chambers that are locked, invalid on this run's soil, or unaffordable at queue time are skipped (and the
- * tunnels behind them stay unreached); chambers are placed at their L1 footprint at the saved top-left corner.
- * @param {import('../core/types.js').State} s
- * @param {import('../core/types.js').Derived} d
- * @returns {number} jobs queued
+ * Placement refusals that can never clear during this run for a pending blueprint chamber (C106): the spot is out
+ * of bounds or breaks the row rule, sits on water or another chamber, the run's hardship forbids it, or a seeded rule
+ * (root, row 0, entrance shaft) fails; 'max' only when no instance bonus is left to raise the limit. Everything else
+ * (locked, cost, queued / backfilling cells, stone or a locked layer, the Royal room, an unrevealed water pocket)
+ * waits.
  */
-export function applyBlueprint(s, d) {
-  const era = s.era;
-  const bi = era.activeBlueprint;
-  if (!isInt(bi) || bi < 0 || !Array.isArray(era.blueprints) || !era.blueprints[bi]) return 0;
-  const bp = era.blueprints[bi];
+const BP_PERMANENT = new Set(['invalid', 'invalid:bounds', 'invalid:row', 'invalid:row0', 'invalid:shaft', 'invalid:root',
+  'blocked:water', 'blocked:chamber', 'hardship']);
+
+function bpPermanent(s, type, reason) {
+  if (BP_PERMANENT.has(reason)) return true;
+  if (reason === 'max') {
+    const def = CHAMBERS[type];
+    if (!def || def.maxInst === 'perPocket') return false;
+    return !(def.instBonus || []).some((b) => !bonusOwned(s, b));
+  }
+  return false;
+}
+
+/** Try to place one blueprint chamber (half price, fast dig, no queue limit; C66 Royal room kept). Reason or null. */
+function bpPlace(s, d, sp, opts) {
+  const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, ...opts });
+  if (P.reason) return P.reason;
+  // C66: a blueprint never boxes the queen in (a saved layout may have been boxed in before Royal L5).
+  if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) return 'blocked:royalRoom';
+  return executePlacement(s, d, sp.type, P, null, true) ? null : 'cantAfford';
+}
+
+/**
+ * One blueprint pass (run start, then each pending re-check; C106). BFS from the open, connected nest through open
+ * cells, queued dig cells and the blueprint's tunnel cells: tunnel cells are queued in groups (blueprint jobs), and a
+ * chamber spot is placed when reached (its tunnels follow it). A chamber that cannot be placed blocks the BFS and stays
+ * pending, unless its refusal is permanent (dropped). Spots the BFS never reaches and that no blueprint tunnel or spot
+ * touches are tried once with the auto-route.
+ * @returns {{ jobs: number, pending: Array<{type: string, x: number, y: number}>, tunnels: number[],
+ *   dropped: Array<{type: string, x: number, y: number, reason: string}> }}
+ */
+function bpPass(s, d, specList, tunnelList) {
   const nest = s.run.nest;
   let geo = ensureGeom(s, d);
   const tunnel = new Uint8Array(N);
-  for (const c of Array.isArray(bp.tunnels) ? bp.tunnels : []) {
-    if (isCell(c) && nest.cells[c] === CELL.SOIL && geo.chamberAt[c] < 0 && G.isDiggable(s, c)) tunnel[c] = 1;
+  const later = [];
+  for (const c of tunnelList) {
+    if (!isCell(c) || geo.chamberAt[c] >= 0 || geo._queued[c]) continue;
+    const code = nest.cells[c];
+    if (code !== CELL.SOIL && code !== CELL.STONE) continue;
+    if (G.isDiggable(s, c) && code === CELL.SOIL) tunnel[c] = 1;
+    else later.push(c); // stone / a locked layer: wait for acid_excavation or the layer
   }
   const specs = [];
+  const dropped = [];
   const specAt = new Int16Array(N).fill(-1);
-  for (const sp of Array.isArray(bp.chambers) ? bp.chambers : []) {
+  for (const sp of specList) {
     if (!sp || !CHAMBERS[sp.type] || !isInt(sp.x) || !isInt(sp.y)) continue;
     const fp = G.footprint(sp.type, 1);
-    if (sp.x < 0 || sp.y < 0 || sp.x + fp.w > COLS || sp.y + fp.h > ROWS) continue;
+    if (sp.x < 0 || sp.y < 0 || sp.x + fp.w > COLS || sp.y + fp.h > ROWS) {
+      dropped.push({ type: sp.type, x: sp.x, y: sp.y, reason: 'invalid:bounds' });
+      continue;
+    }
     const rc = G.rectCells(sp.x, sp.y, fp.w, fp.h);
     if (rc.some((c) => specAt[c] >= 0)) continue;
     const k = specs.length;
     for (const c of rc) { specAt[c] = k; tunnel[c] = 0; }
-    specs.push({ type: sp.type, x: sp.x, y: sp.y, cells: rc, state: 0 });
+    specs.push({ type: sp.type, x: sp.x, y: sp.y, cells: rc, state: 0, reason: null });
   }
   const visited = new Uint8Array(N);
   const q = [];
-  for (let i = 0; i < N; i++) if (geo.open[i] && geo.entDist[i] >= 0) { visited[i] = 1; q.push(i); }
+  for (let i = 0; i < N; i++) if (geo.open[i] && geo.entDist[i] >= 0 && !geo._backfill[i]) { visited[i] = 1; q.push(i); }
   let group = [];
   let jobs = 0;
   const flush = () => {
@@ -1903,6 +2210,11 @@ export function applyBlueprint(s, d) {
     nest.rev++;
     jobs++;
     group = [];
+    geo = ensureGeom(s, d);
+  };
+  const placed = (sp) => {
+    sp.state = 1;
+    jobs += nest.queue.length && nest.queue[nest.queue.length - 1].kind === 'shaft' ? 2 : 1;
     geo = ensureGeom(s, d);
   };
   let head = 0;
@@ -1917,27 +2229,150 @@ export function applyBlueprint(s, d) {
       } else if (specAt[n] >= 0 && specs[specAt[n]].state === 0) {
         const sp = specs[specAt[n]];
         flush();
-        const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, assumeConnected: true, seedCells: [c] });
-        // C66: a blueprint never boxes the queen in (a saved layout may have been boxed in before Royal L5).
-        const boxes = !P.reason && blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null });
-        if (!P.reason && !boxes && executePlacement(s, d, sp.type, P, null, true)) {
-          sp.state = 1;
-          jobs += P.shaft ? 2 : 1;
-          geo = ensureGeom(s, d);
+        sp.reason = bpPlace(s, d, sp, { assumeConnected: true, seedCells: [c] });
+        if (!sp.reason) {
+          placed(sp);
           for (const k of sp.cells) if (!visited[k]) { visited[k] = 1; q.push(k); }
         } else {
           sp.state = 2;
           for (const k of sp.cells) visited[k] = 1;
         }
-      } else if (geo.open[n] && !geo._backfill[n]) {
+      } else if ((geo.open[n] && !geo._backfill[n]) || geo._queued[n]) {
         visited[n] = 1;
         q.push(n);
       }
     }
   }
   flush();
+  // Unreached spots that nothing in the layout leads to: one auto-routed try (DESIGN §7.2 A* route).
+  for (const sp of specs) {
+    if (sp.state !== 0) continue;
+    const fp = G.footprint(sp.type, 1);
+    const linked = G.perimeter({ x: sp.x, y: sp.y, w: fp.w, h: fp.h }).some((p) => tunnel[p] || (specAt[p] >= 0 && specs[specAt[p]] !== sp));
+    if (linked) continue;
+    sp.reason = bpPlace(s, d, sp, {});
+    if (!sp.reason) placed(sp);
+  }
+  const pending = [];
+  for (const sp of specs) {
+    if (sp.state === 1) continue;
+    if (sp.reason && bpPermanent(s, sp.type, sp.reason)) dropped.push({ type: sp.type, x: sp.x, y: sp.y, reason: sp.reason });
+    else pending.push({ type: sp.type, x: sp.x, y: sp.y });
+  }
+  const tunnels = later.slice();
+  for (let i = 0; i < N; i++) if (tunnel[i] && !visited[i]) tunnels.push(i);
+  tunnels.sort((a, b) => a - b);
   if (jobs) rebuild(s, d);
-  return jobs;
+  return { jobs, pending, tunnels, dropped };
+}
+
+/**
+ * [x] WP7 at run start: queue the active blueprint (era.blueprints[activeBlueprint]). Tunnels and chambers are queued
+ * in BFS order from the open nest (a chamber's job follows the tunnels that reach it), bypassing the queue limit;
+ * blueprint jobs dig ×3 (×5 with blueprint_memory) and chambers cost 50 % placement food, paid now.
+ * C106: chambers that are locked, unaffordable or otherwise not placeable yet are kept as pending blueprint chambers
+ * (s.run.nest.bpPending, with the tunnels behind them in bpTunnels) and queue themselves later (see bpTick); spots that
+ * can never be used this run (water, out of bounds, a seeded rule) are dropped. Chambers go in at their L1 footprint
+ * at the saved top-left corner.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {number} jobs queued
+ */
+export function applyBlueprint(s, d) {
+  const era = s.era;
+  const bi = era.activeBlueprint;
+  if (!isInt(bi) || bi < 0 || !Array.isArray(era.blueprints) || !era.blueprints[bi]) return 0;
+  const bp = era.blueprints[bi];
+  const nest = s.run.nest;
+  const r = bpPass(s, d, Array.isArray(bp.chambers) ? bp.chambers : [], Array.isArray(bp.tunnels) ? bp.tunnels : []);
+  nest.bpPending = r.pending;
+  nest.bpTunnels = r.pending.length ? r.tunnels : [];
+  return r.jobs;
+}
+
+/** Pending re-check bookkeeping per nest object (not saved): last check time, unlock count, last idle signature. */
+const bpMemo = new WeakMap();
+const BP_CHECK_SEC = 1;
+
+/** Pending spot ready to try: unlocked, below the instance limit, blueprint price affordable. */
+function bpReady(s, d, sp) {
+  const def = CHAMBERS[sp.type];
+  if (!def) return false;
+  if (def.unlock && !s.run.unlocked[def.unlock]) return false;
+  if (countType(s, sp.type) >= instLimit(s, d, sp.type)) return false;
+  const cost = placementCost(s, sp.type);
+  if (!cost) return false;
+  return canAfford(s, cost.food !== undefined ? { ...cost, food: cost.food * DIG.blueprintPlaceMult } : cost);
+}
+
+/**
+ * Pending blueprint chambers (C106): every BP_CHECK_SEC of run time, or at once when the unlock count changes, drop
+ * spots that another chamber or water now covers, and when some spot is ready (bpReady) and the nest, unlocks or the
+ * ready set changed since the last idle pass, run a blueprint pass over the pending spots and tunnels. Emits
+ * blueprintDropped { chamberType, x, y, reason } per dropped spot.
+ */
+function bpTick(s, d, env) {
+  const nest = s.run.nest;
+  const pend = nest.bpPending;
+  if (!Array.isArray(pend) || !pend.length) {
+    if (Array.isArray(nest.bpTunnels) && nest.bpTunnels.length) nest.bpTunnels = [];
+    return;
+  }
+  let m = bpMemo.get(nest);
+  if (!m) { m = { t: -Infinity, u: -1, sig: '' }; bpMemo.set(nest, m); }
+  const t = num(s.run.time);
+  let u = 0;
+  for (const k in s.run.unlocked) if (s.run.unlocked[k]) u++;
+  if (u === m.u && t - m.t < BP_CHECK_SEC && t >= m.t) return;
+  m.t = t;
+  m.u = u;
+  const geo = ensureGeom(s, d);
+  const keep = [];
+  let ready = '';
+  for (const sp of pend) {
+    const def = sp && CHAMBERS[sp.type];
+    if (!def || !isInt(sp.x) || !isInt(sp.y)) continue;
+    const fp = G.footprint(sp.type, 1);
+    let why = null;
+    if (sp.x < 0 || sp.y < 0 || sp.x + fp.w > COLS || sp.y + fp.h > ROWS) why = 'invalid:bounds';
+    else {
+      for (const c of G.rectCells(sp.x, sp.y, fp.w, fp.h)) {
+        if (nest.cells[c] === CELL.WATER) { why = 'blocked:water'; break; }
+        if (geo.chamberAt[c] >= 0) { why = 'blocked:chamber'; break; }
+      }
+    }
+    if (why) {
+      emit(env, 'blueprintDropped', { chamberType: sp.type, x: sp.x, y: sp.y, reason: why });
+      continue;
+    }
+    keep.push(sp);
+    ready += bpReady(s, d, sp) ? '1' : '0';
+  }
+  if (keep.length !== pend.length) nest.bpPending = keep;
+  if (!keep.length || ready.indexOf('1') < 0) return;
+  const sig = nest.rev + '|' + u + '|' + ready;
+  if (sig === m.sig) return;
+  const r = bpPass(s, d, keep, Array.isArray(nest.bpTunnels) ? nest.bpTunnels : []);
+  nest.bpPending = r.pending;
+  nest.bpTunnels = r.pending.length ? r.tunnels : [];
+  for (const x of r.dropped) emit(env, 'blueprintDropped', { chamberType: x.type, x: x.x, y: x.y, reason: x.reason });
+  m.sig = r.jobs ? '' : nest.rev + '|' + u + '|' + ready;
+}
+
+/**
+ * [q] Pending blueprint chambers (C106) for the nest view's "planned" outlines: [{ type, x, y, w, h }] at the L1
+ * footprint (empty when none).
+ * @param {import('../core/types.js').State} s
+ * @returns {Array<{ type: string, x: number, y: number, w: number, h: number }>}
+ */
+export function plannedChambers(s) {
+  const out = [];
+  for (const sp of Array.isArray(s.run.nest.bpPending) ? s.run.nest.bpPending : []) {
+    if (!sp || !CHAMBERS[sp.type] || !isInt(sp.x) || !isInt(sp.y)) continue;
+    const fp = G.footprint(sp.type, 1);
+    out.push({ type: sp.type, x: sp.x, y: sp.y, w: fp.w, h: fp.h });
+  }
+  return out;
 }
 
 /**

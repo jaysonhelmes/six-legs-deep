@@ -598,7 +598,8 @@ export function createPanel(root, { game, ui, bridge }) {
     const src = sourceBy(s, t.src);
     const dt = dmap.get(t.uid) || {};
     setText(r.name, src ? nameOf('source', src.type) : 'Trail');
-    setText(r.meta, fmtCount(num(t.len)) + ' hex' + (num(t.len) === 1 ? '' : 'es'));
+    setText(r.meta, fmtCount(num(t.len)) + ' hex' + (num(t.len) === 1 ? '' : 'es') + (dt.priority ? ' · chitin priority' : ''));
+    r.meta.title = dt.priority ? 'Chitin is short for soldier eggs: free foragers fill this trail first.' : '';
     const res = trailRes(t.job);
     const out = num(dt.out);
     setText(r.yieldEl, '+' + fmtRate(out).replace('/s', ' ' + (RES_NAMES[res] || res).toLowerCase() + '/s'));

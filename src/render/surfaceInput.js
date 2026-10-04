@@ -209,7 +209,10 @@ export function attachSurfaceInput(canvas, renderer, { game, ui, bridge } = {}) 
     const hex = renderer.hexAt(p.x, p.y);
     let mode = 'pan';
     if (tool && tool.kind === 'reroute') mode = 'reroute';
-    else if (!tool && hex >= 0 && origins().includes(hex) && (!target || target.kind === 'entrance' || target.kind === 'hex' || target.kind === 'trail')) mode = 'originCandidate';
+    // C110: a press on a trail origin is always an origin candidate, whatever is picked on top of it (an event object
+    // such as the myrmecophile guest / wandering queen / footstep / army column sitting on the entrance, a gift, the
+    // beetle, a party marker…): a drag past DRAG_PX draws a trail; a release without a drag still runs click() on it.
+    else if (!tool && hex >= 0 && origins().includes(hex)) mode = 'originCandidate';
     down = { x: p.x, y: p.y, lx: p.x, ly: p.y, target, hex, mode, moved: false, visited: [hex], id: e.pointerId };
     if (e.pointerType === 'touch' && typeof setTimeout === 'function') {
       longTimer = setTimeout(() => {

@@ -7,7 +7,8 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../do
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
 import { nameOf, JOB_TIPS, CASTE_TIPS, ADAPT_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
-import { broodSummary, housingBrood } from '../../systems/population.js';
+import { broodSummary, housingBrood, chitinReserve } from '../../systems/population.js';
+import { canAfford } from '../../core/wallet.js';
 import { idleMinors, jobCap, withTarget, effectiveTargets } from '../../systems/jobs.js';
 import { cost as adaptCost, isAvailable as adaptAvailable } from '../../systems/adaptations.js';
 import { eggCost } from '../../systems/stats.js';
@@ -35,6 +36,49 @@ const STEPS = [1, 10, 100, 'max'];
 /** Slider limits (DESIGN §5.1 egg reserve ≤ 90 % of the food cap, §5.5 caste targets sum ≤ 90 %). */
 const RESERVE_MAX = num(SLIDERS && SLIDERS.eggReserveMax, 0.9);
 const CASTE_SUM_MAX = num(SLIDERS && SLIDERS.casteSumMax, 0.9);
+
+/** C104 chitin reserve ladder (absolute chitin per slider step). */
+const CHITIN_STEPS = Array.isArray(SLIDERS && SLIDERS.chitinReserveSteps) && SLIDERS.chitinReserveSteps.length ? SLIDERS.chitinReserveSteps : [0];
+
+/**
+ * C104: the ladder index shown for a stored chitin reserve (the largest step ≤ amount).
+ * @param {number} amount
+ * @returns {number}
+ */
+export function chitinStepIndex(amount) {
+  let k = 0;
+  for (let i = 0; i < CHITIN_STEPS.length; i++) if (CHITIN_STEPS[i] <= num(amount) + 1e-9) k = i;
+  return k;
+}
+
+/**
+ * C105 bulk Adaptation buying: the cost of the next 10 levels (null when past MAX / the cap) and whether it is
+ * affordable now, and the most levels affordable now (n, with their total cost; n = 0 when not even one is).
+ * @param {Object} s
+ * @param {string} id
+ * @param {(s: Object, id: string, n: number) => Object|null} [costFn] adaptations.cost
+ * @returns {{ c10: Object|null, ok10: boolean, n: number, cMax: Object|null }}
+ */
+export function adaptBulk(s, id, costFn = adaptCost) {
+  const c = (n) => q(() => costFn(s, id, n), null);
+  const fits = (n) => {
+    const x = c(n);
+    return !!x && canAfford(s, x);
+  };
+  const c10 = c(10);
+  let n = 0;
+  if (fits(1)) {
+    let lo = 1;
+    let hi = 2;
+    while (hi <= 4096 && fits(hi)) { lo = hi; hi *= 2; }
+    while (hi - lo > 1) {                         // lo fits, hi does not (or is past the search bound)
+      const mid = Math.floor((lo + hi) / 2);
+      if (fits(mid)) lo = mid; else hi = mid;
+    }
+    n = lo;
+  }
+  return { c10, ok10: !!c10 && canAfford(s, c10), n, cMax: n > 0 ? c(n) : null };
+}
 
 /** Ratio-target step of one +/− click or chip drag in auto mode (C94). */
 const TARGET_STEP = num(TARGET_UI && TARGET_UI.step, 0.05);
@@ -160,6 +204,11 @@ export function createPanel(root, { game, ui, bridge }) {
     casteSliders[c] = sl;
     casteSliderBox.appendChild(sl.el);
   }
+  // C104 chitin reserve: soldier / supermajor eggs only spend chitin above it (Adaptations and the Gate ignore it).
+  const chitinRes = sliderRow('Chitin reserve', { min: 0, max: CHITIN_STEPS.length - 1, step: 1,
+    tip: 'Soldier and supermajor eggs only spend chitin above this; minors are laid instead. Adaptations and the Gate ignore it.' },
+  (v) => act('setChitinReserve', { amount: CHITIN_STEPS[Math.max(0, Math.min(CHITIN_STEPS.length - 1, Math.round(v)))] }, null, chitinRes.input));
+  casteSliderBox.appendChild(chitinRes.el);
   const retireBox = h('div', { class: 'retire' });
   const retireRows = {};
   for (const c of ['soldier', 'supermajor']) {
@@ -381,12 +430,19 @@ export function createPanel(root, { game, ui, bridge }) {
       on: { click: (ev) => act('buyAdaptation', { id, n: 1 }, ev, buy) } });
     const buy10 = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: '×10',
       on: { click: (ev) => act('buyAdaptation', { id, n: 10 }, ev, buy10) } });
+    const cost10 = h('span', { class: 'cost cost-bulk' });
+    const buyMax = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Max',
+      on: { click: (ev) => {
+        const n = adaptBulk(game.s, id).n;
+        if (n > 0) act('buyAdaptation', { id, n }, ev, buyMax);
+      } } });
+    const bulkRow = h('span', { class: 'btn-row' }, cost10, buy10, buyMax);
     const lockHint = h('span', { class: 'locked-hint' });
     const row = h('div', { class: 'buy-row', dataset: { id } }, // the description is on the row: no duplicate tooltip
       h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('adaptation', id) }), lvl,
         h('span', { class: 'buy-desc', text: ADAPT_TIPS[id] || '' }), lockHint),
-      h('div', { class: 'buy-side' }, costEl, h('span', { class: 'btn-row' }, buy, buy10)));
-    row.__r = { lvl, costEl, buy, buy10, lockHint };
+      h('div', { class: 'buy-side' }, costEl, h('span', { class: 'btn-row' }, buy), bulkRow));
+    row.__r = { lvl, costEl, buy, buy10, lockHint, cost10, buyMax, bulkRow };
     return row;
   }
 
@@ -403,9 +459,24 @@ export function createPanel(root, { game, ui, bridge }) {
     setProp(r.buy, 'disabled', !avail || c === null);
     setText(r.buy, c === null ? 'Max' : 'Buy');
     setText(r.lockHint, avail ? '' : s.run.hardship === 'claustral_founding' && id === 'royal_feeding' ? 'Not allowed in this Hardship.' : '');
-    const c10 = q(() => adaptCost(s, id, 10), null);
-    show(r.buy10, avail && c10 !== null && L > 0);
+    // C105 bulk buying: ×10 with its total cost (green affordable, red not) and Max (n) = every level affordable now.
+    const bulk = adaptBulk(s, id);
+    const c10 = bulk.c10;
+    const showBulk = avail && c !== null && (L > 0 || bulk.n >= 2);
+    show(r.bulkRow, showBulk);
+    show(r.buy10, c10 !== null);
+    show(r.cost10, c10 !== null);
+    if (showBulk && c10 !== null) {
+      setCost(r.cost10, c10, s);
+      const col = bulk.ok10 ? 'var(--good)' : 'var(--danger)';
+      for (const part of Array.from(r.cost10.children)) part.style.color = col;
+      r.cost10.title = (bulk.ok10 ? 'Affordable: ' : 'Not affordable yet: ') + 'total for 10 levels';
+    }
+    setProp(r.buy10, 'disabled', !bulk.ok10);
     r.buy10.title = c10 ? 'Buy 10 levels' : '';
+    setText(r.buyMax, 'Max (' + fmtCount(bulk.n) + ')');
+    setProp(r.buyMax, 'disabled', !(bulk.n > 0));
+    r.buyMax.title = bulk.n > 0 ? 'Buy ' + fmtCount(bulk.n) + ' level' + (bulk.n === 1 ? '' : 's') + ': everything you can afford now' : 'Not even one level is affordable';
     toggleClass(row, 'glow', ui.getUI().glow === 'adapt:' + id);
   }
 
@@ -474,6 +545,15 @@ export function createPanel(root, { game, ui, bridge }) {
           const pacifistBlock = s.run.hardship === 'pacifist' && k !== 'replete';
           casteSliders[k].set(Math.round(num(t[k]) * 100), { disabled: s.run.hardship === 'monomorphic' || pacifistBlock,
             text: fmtPct(num(t[k]), { signed: false }), fmt: (v) => fmtPct(v / 100, { signed: false }) });
+        }
+        // C104 chitin reserve
+        const milVis = isShown(s, casteKey('soldier')) || isShown(s, casteKey('supermajor'));
+        show(chitinRes.el, milVis);
+        if (milVis) {
+          const amt = q(() => chitinReserve(s), num(c.chitinReserve));
+          const label = (v) => fmtCount(CHITIN_STEPS[Math.max(0, Math.min(CHITIN_STEPS.length - 1, Math.round(v)))]) + ' chitin';
+          chitinRes.set(chitinStepIndex(amt), { disabled: s.run.hardship === 'monomorphic' || s.run.hardship === 'pacifist',
+            text: fmtCount(amt) + ' chitin', fmt: label });
         }
         const g = obj(d && d.combat && d.combat.garrison);
         let anyRetire = false;

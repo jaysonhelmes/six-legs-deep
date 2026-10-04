@@ -70,7 +70,7 @@ export const CHAMBERS = freeze({
     w0: 2, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
     place: { food: 200 }, placeGrowth: 2.5,
     f0: 50, s0: 75, g: 1.60, levelExtra: null, maxL: 8, maxLBonus: null, frostImmune: false,
-    fx: { disease: 0.10, diseaseMax: 0.8, output: 0.02, outputMax: 0.2, hygiene: 0.8 },
+    fx: { disease: 0.10, diseaseMax: 0.8, output: 0.02, outputMax: 0.2, hygiene: 0.8, chitin: 0.05 }, // chitin: C103 /s per effective level
   },
   barracks: {
     id: 'barracks', name: 'Barracks', unlock: 'chamber_barracks',

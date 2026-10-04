@@ -4,7 +4,7 @@
 // no DOM. Owner: WP9.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ribbonInfo, ribbonText, activeThreats, EVENT_THREAT } from '../src/ui/hud.js';
+import { ribbonInfo, ribbonText, activeThreats, EVENT_THREAT, diapauseInfo, diapauseTip } from '../src/ui/hud.js';
 import { introStep, isIntro, firstHatchEta, adultsEta, broodTime, CRUMB_CLICKS } from '../src/ui/intro.js';
 import { createState } from '../src/core/state.js';
 import { createDerived } from '../src/core/derived.js';
@@ -156,4 +156,29 @@ test('warning chips: timed effects (flood, drought), surface objects, and nothin
   assert.deepEqual(by.antlion.locate, { view: 'surface', hex: 14 });
   for (const id of Object.values(EVENT_THREAT)) assert.equal(typeof id, 'string');
   assert.deepEqual(activeThreats(null), []);
+});
+
+test('diapause info (C112): speed, time left, drain and cap follow core/game.js and offline.js', () => {
+  const { s, d } = world();
+  s.meta.diapause = { bank: 840, active: true };
+  let x = diapauseInfo(s, d);
+  assert.equal(x.speed, 2);
+  assert.equal(x.running, true);
+  assert.equal(x.endsIn, 840, '2×: the bank drains 1 s per real second');
+  assert.equal(x.capSec, 14400);
+  const tip = diapauseTip(x);
+  assert.match(tip, /^Diapause 2×/);
+  assert.match(tip, /14m 00s banked, ends in 14m 00s/);
+  assert.match(tip, /income, upkeep, laying, brood, digging/);
+  assert.match(tip, /Seasons, events and raids stay real-time/);
+  assert.match(tip, /Uses 1 s of bank per second/);
+  assert.match(tip, /10% of offline time beyond the 4h 00m cap/);
+  s.era.federation.diapause_mastery = 1;
+  x = diapauseInfo(s, d);
+  assert.equal(x.speed, 3);
+  assert.equal(x.endsIn, 420, '3×: 2 s of bank per real second');
+  s.meta.diapause.active = false;
+  x = diapauseInfo(s, d);
+  assert.equal(x.running, false);
+  assert.match(diapauseTip(x), /Spend to run 3×/);
 });

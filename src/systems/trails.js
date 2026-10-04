@@ -1,6 +1,8 @@
 // Trails: routing (A*), strength, escort and worker allocation, the per-trail yield formula into the ledger, finite-stock
 // depletion, loose foraging, pheromone abilities (Mark, Rally, Frenzy, Mass Recruit, hive_mind auto-Mark).
 // Owner: WP4. Contract: ARCHITECTURE §8.3 (trails.js), §5 (d.surface.trails, d.ledger labels); DESIGN §8.4, §8.5, §12.1, §21.4.
+// C104: while population.chitinNeed(s, d).needed, the forager auto-fill saturates chitin-yielding trails first;
+//   d.surface.trails[i].priority and d.surface.chitinPriority report it.
 
 import { TRAIL, ABILITIES, TERRAIN, TERRAIN_ORDER, TERRITORY } from '../data/surface.js';
 import { SOURCES } from '../data/sources.js';
@@ -371,6 +373,11 @@ function clampEscorts(s, d, T) {
   T.forEach((t, i) => { t.escorts = fl[i]; });
 }
 
+/** C104: a trail whose source yields chitin (primary or secondary yield), e.g. dead insects, termite swarms. */
+function chitinTrail(p) {
+  return !!p && !p.lyc && ((p.res === 'chitin' && p.y1 > 0) || (p.res2 === 'chitin' && p.y2 > 0));
+}
+
 /**
  * yieldAt(p, n, S, escorts).out without building the result object: the allocator's inner loop (F24 perf). The
  * arithmetic is yieldAt's, operation for operation, so the numbers are identical.
@@ -392,8 +399,10 @@ function yieldOut(p, n, S, escorts) {
  * Perf (F24): a trail's candidate (room, add, next yield, marginal) only changes when the chunk size changes, when it
  * took the last chunk, or when its source group's herder-cap room did, so candidates are cached in per-pool typed
  * arrays and refreshed for exactly those trails: the same choices and numbers as re-evaluating every trail every chunk.
+ * C104 chitin priority: while chitinNeeded (population.chitinNeed), unsaturated chitin-yielding trails (res or res2
+ * chitin) take chunks before every other trail, up to cEff; then the usual order.
  */
-function allocate(s, T, parts) {
+function allocate(s, T, parts, chitinNeeded = false) {
   const n = new Array(T.length).fill(0);
   for (let i = 0; i < T.length; i++) if (!parts[i] || parts[i].lyc || !POOLS.includes(T[i].job)) T[i].workers = 0;
   for (const job of POOLS) {
@@ -436,6 +445,7 @@ function allocate(s, T, parts) {
     const Sj = new Float64Array(m);
     const esc = new Array(m);
     const cur = new Float64Array(m);
+    const prio = new Uint8Array(m);
     for (let j = 0; j < m; j++) {
       const i = idx[j];
       const uid = parts[i].src.uid;
@@ -454,6 +464,7 @@ function allocate(s, T, parts) {
       Sj[j] = num(T[i].S);
       esc[j] = T[i].escorts;
       cur[j] = yieldOut(parts[i], nj[j], Sj[j], esc[j]);
+      prio[j] = chitinNeeded && chitinTrail(parts[i]) ? 1 : 0;
     }
     const cAdd = new Float64Array(m);
     const cNext = new Float64Array(m);
@@ -481,14 +492,17 @@ function allocate(s, T, parts) {
       let best = -1;
       let bestM = -Infinity;
       let bestUnsat = false;
+      let bestPrio = false;
       for (let j = 0; j < m; j++) {
         if (!(cAdd[j] > 0)) continue;
         const mj = cM[j];
         const unsat = nj[j] < cE[j] && mj > 0;
-        if ((unsat && !bestUnsat) || (unsat === bestUnsat && mj > bestM)) {
+        const pr = unsat && prio[j] === 1;
+        if ((pr && !bestPrio) || (pr === bestPrio && ((unsat && !bestUnsat) || (unsat === bestUnsat && mj > bestM)))) {
           best = j;
           bestM = mj;
           bestUnsat = unsat;
+          bestPrio = pr;
         }
       }
       if (best < 0) break;
@@ -530,7 +544,8 @@ export function tick(s, d, dt, env) {
   const ctx = partsCtx(s, d);
   const parts = T.map((t) => yieldParts(s, d, t, ctx));
   clampEscorts(s, d, T);
-  const n = allocate(s, T, parts);
+  const chit = population.chitinNeed(s, d);
+  const n = allocate(s, T, parts, chit.needed);
 
   // Strength: online exponential approach to S_eq (exact solution of dS/dt = (S_eq − S)·ln2/t½); offline at equilibrium.
   const sMax = sMaxFor(s);
@@ -591,7 +606,8 @@ export function tick(s, d, dt, env) {
     let safe = Array.isArray(t.path) && t.path.length > 0;
     if (safe) for (const h of t.path) if (!isHex(h) || d.surface.owned[h] === 0) { safe = false; break; }
     entries.push({ uid: t.uid, dEff: p.dEff, rich: p.rich, eff: p.eff, cEff: p.cEff, nEff: y.nEff, workers: n[i],
-      sat: p.cEff > 0 ? n[i] / p.cEff : 0, res: p.res, out, res2: p.res2, out2, escorted: y.escorted, safe });
+      sat: p.cEff > 0 ? n[i] / p.cEff : 0, res: p.res, out, res2: p.res2, out2, escorted: y.escorted, safe,
+      priority: chit.needed && POOLS.includes(t.job) && chitinTrail(p) });
   }
 
   const hasForager = T.some((t) => t.job === 'forager');
@@ -605,6 +621,7 @@ export function tick(s, d, dt, env) {
   }
   const alive = new Set(T.map((t) => t.uid));
   d.surface.trails = entries.filter((e) => alive.has(e.uid));
+  d.surface.chitinPriority = chit.needed;   // C104: auto-fill favours chitin trails right now
 
   // hive_mind: auto-Mark the weakest trail whenever pheromone is full (online; respects the Mark cooldown).
   if (!env.offline && owns(s, 'hive_mind') && T.length > 0 && num(S.cd.mark) <= 0) {

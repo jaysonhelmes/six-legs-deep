@@ -196,6 +196,8 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     shafts: [{ kind: 'main', col: GRID.mainCol, open: true, ref: -1 }],
     maint: 0,
     deepestRow: r0.y + r0.h - 1,
+    bpPending: [],
+    bpTunnels: [],
   };
 }
 

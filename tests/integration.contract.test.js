@@ -103,7 +103,7 @@ const DATA = {
 /** §8 handler keys per system module (= the §9 catalogue minus the core handlers). */
 const HANDLERS = {
   'systems/economy.js': ['clickForage'],
-  'systems/population.js': ['setCasteTargets', 'setEggReserve', 'setFungalBrood', 'rearAlate', 'groomBrood', 'clickQueen', 'retireAdults'],
+  'systems/population.js': ['setCasteTargets', 'setEggReserve', 'setChitinReserve', 'setFungalBrood', 'rearAlate', 'groomBrood', 'clickQueen', 'retireAdults'],
   'systems/jobs.js': ['shiftJob', 'setJobs', 'setJobTargets', 'setAutoJobs', 'setThresholdJobs', 'saveJobPreset', 'applyJobPreset'],
   'systems/adaptations.js': ['buyAdaptation'],
   'systems/nest.js': ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill', 'reorderQueue',

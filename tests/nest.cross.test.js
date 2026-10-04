@@ -205,6 +205,8 @@ test('applyBlueprint queues tunnels then chambers in BFS order at −50 % placem
   nest.derive(s, d3);
   assert.equal(nest.applyBlueprint(s, d3), 3, 'gallery locked → two tunnel jobs + nursery only');
   assert.equal(s.run.nest.chambers.filter((c) => c.type === 'gallery').length, 0);
+  // C106: the locked gallery is kept as a pending blueprint chamber (it queues itself once unlocked).
+  assert.deepEqual(s.run.nest.bpPending, [{ type: 'gallery', x: 24, y: 12 }]);
   s.era.activeBlueprint = -1;
   assert.equal(nest.applyBlueprint(s, d3), 0);
 });

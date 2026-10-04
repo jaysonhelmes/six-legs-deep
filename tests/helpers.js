@@ -232,6 +232,7 @@ export const COMMAND_ARGS = {
   clickForage: { src: 'sourceUid' },
   setCasteTargets: { soldier: 'frac', supermajor: 'frac', replete: 'frac' },
   setEggReserve: { frac: 'frac' },
+  setChitinReserve: { amount: 'count' },
   setFungalBrood: { on: 'bool' },
   rearAlate: { n: 'count' },
   groomBrood: { chamber: 'chamberUid' },

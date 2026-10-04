@@ -19,7 +19,8 @@ const NAME_MAX = 40;
  * render/surfaceInput.js) for the Settings reference list. View keys act on the view you clicked last.
  */
 export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
-  ['R', 'Rally the selected trail'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
+  ['R', 'Rally the selected trail; relocate the selected chamber'],
+  ['L / Shift + L', 'Level the selected chamber / the cheapest of its type'], ['G', 'Pick the growth side of the selected chamber'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
   ['+ / −', 'Zoom the clicked view in or out'], ['0 / Home', 'Nest view: frame the queen'],
   ['Crown button', 'Frame the queen (nest view, top-right, beside − and +)'], ['Arrows, PgUp / PgDn', 'Pan or scroll the clicked view'],

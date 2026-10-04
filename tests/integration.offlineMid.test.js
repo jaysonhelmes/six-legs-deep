@@ -44,6 +44,10 @@ test('F23: 20 min offline at 100 % efficiency matches 20 min online on a cap-bou
   // No harmful event effects in play (C68 lifts them offline only, which would be a different comparison).
   g.s.run.events.objects = g.s.run.events.objects.filter((o) => o.kind !== 'mold');
   g.s.effects = (g.s.effects || []).filter((e) => !(typeof e.id === 'string' && e.id.startsWith('mold:')));
+  // C103: no Adaptation autobuyer. Passive chitin makes a chitin-gated level (Serrated Mandibles: 800 food + 40 chitin)
+  // affordable inside the last 60 s offline step, so the end-of-run food store would compare a purchase's timing, not
+  // the laying pipeline this test is about.
+  if (g.s.meta.automation && g.s.meta.automation.autobuy) g.s.meta.automation.autobuy.adaptations = false;
   const base = snapshot(g.s);
 
   const online = install(base);

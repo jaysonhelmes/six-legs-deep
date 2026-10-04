@@ -17,7 +17,7 @@
 
 import { GRID, CELL } from '../data/balance.js';
 import { LAYER_ORDER, LAYERS, GEOM, DIG } from '../data/strata.js';
-import { CHAMBERS } from '../data/chambers.js';
+import { CHAMBERS, ADJACENCY } from '../data/chambers.js';
 import { BROOD } from '../data/economy.js';
 import { FLIGHT } from '../data/prestige.js';
 import * as nestSys from '../systems/nest.js';
@@ -53,6 +53,8 @@ const FROST_IMMUNE_FALLBACK = new Set(['royal_chamber', 'gate', 'thermal_chimney
 const CPP_STEPS = [6, 8, 10, 12, 14, 16, 18, 20, 24, 28];
 /** Decorative soil columns cached either side of the grid (mirrored beyond that). */
 const MARGIN_COLS = 24;
+/** Tallest mound above the surface line, in cells (the camera shows 2 rows of sky at most: camera topRow −2). */
+const MOUND_MAX_CELLS = 1.7;
 /** Passage rim thickness and the floor-light inset (cell units). */
 const RIM = 0.11;
 /** Doorway bits (geo.door): from a cell toward its left / right / upper / lower neighbour. */
@@ -87,6 +89,22 @@ function layerBand(id) {
 }
 
 /** Display name of a chamber type. */
+/**
+ * An adjacency link (nest.chamberLinks / validatePlacement links) as a short canvas label (C109):
+ * "+15% brood speed (next to Royal Chamber)", "Nursery: +15% brood speed"; lost links prefix "Lost: ".
+ * @param {{ rule: string, partner: string, text: string, receiver: string }} l
+ * @param {boolean} [lost=false]
+ * @returns {string}
+ */
+export function linkLabel(l, lost = false) {
+  if (!l) return '';
+  const r = (ADJACENCY && ADJACENCY[l.rule]) || { path: 4 };
+  const near = (Number(r.path) || 4) <= ((GEOM && GEOM.adjPathMax) || 4) ? 'next to' : 'within ' + r.path + ' cells of';
+  const name = l.partner === 'entrance' ? 'an entrance' : chamberName(l.partner);
+  const t = l.receiver === 'partner' ? name + ': ' + l.text : l.text + ' (' + near + ' ' + name + ')';
+  return lost ? 'Lost: ' + t : t;
+}
+
 export function chamberName(type) {
   const def = CHAMBERS && CHAMBERS[type];
   if (def && def.name) return def.name;
@@ -253,6 +271,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   const glows = []; // { uid, t, max }
   const ghostMemo = { key: '', res: null };
   const levelMemo = { key: '', res: null };
+  /** C109: adjacency links per chamber uid (nest.chamberLinks), rebuilt when the nest changes */
+  const linkMemo = { key: '', map: new Map() };
   /** per-chamber static decoration cache (nestDecor.js), at the strata-cache resolution */
   const decorCache = decor.createDecorCache();
 
@@ -1943,6 +1963,84 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
    * name where it fits without touching another label, and the full name + level above the hovered / selected
    * chamber, always on top.
    */
+  /** C109: refresh the per-chamber adjacency links (cheap; only when the nest or its statuses change). */
+  function syncLinks(s, d) {
+    const chs = s.run.nest.chambers || [];
+    let sig = s.run.nest.rev + '|' + chs.length;
+    for (const c of chs) sig += c ? c.status[0] : '';
+    if (linkMemo.key === sig) return;
+    linkMemo.key = sig;
+    linkMemo.map = new Map();
+    for (const c of chs) {
+      if (!c) continue;
+      const l = safe(() => nestSys.chamberLinks(s, d, c.uid), []);
+      if (l && l.length) linkMemo.map.set(c.uid, l);
+    }
+  }
+
+  /** A small chain-link badge: two interlocked rings (green = bonus, red = penalty, amber ring = both). */
+  function drawLinkBadge(ctx, x, y, r, bad, good) {
+    ctx.fillStyle = 'rgba(18,10,5,0.82)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    const col = bad && good ? '#f0b43c' : bad ? NEST.ghostBad : NEST.ghostOk;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(1, r * 0.22);
+    ctx.beginPath();
+    ctx.arc(x, y, r - 0.5, 0, Math.PI * 2);
+    ctx.stroke();
+    const lr = r * 0.32;
+    ctx.lineWidth = Math.max(1, r * 0.2);
+    ctx.beginPath();
+    ctx.ellipse(x - lr * 0.6, y + lr * 0.6, lr, lr * 0.62, -Math.PI / 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(x + lr * 0.6, y - lr * 0.6, lr, lr * 0.62, -Math.PI / 4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  /**
+   * C106: pending blueprint chambers as faint dashed "planned" outlines with the chamber name (they queue themselves
+   * once unlocked and affordable).
+   */
+  function drawPlanned(ctx, s) {
+    const list = safe(() => nestSys.plannedChambers(s), []);
+    if (!list || !list.length) return;
+    const v = view();
+    const ui0 = uiOf(ui);
+    const hov = ui0.hover && ui0.hover.view === 'nest' && ui0.hover.kind === 'planned' ? ui0.hover : null;
+    for (const p of list) {
+      const x = v.ox + p.x * v.cell;
+      const y = v.oy + p.y * v.cell;
+      const w = p.w * v.cell;
+      const hgt = p.h * v.cell;
+      const on = !!(hov && hov.i === p.y * COLS + p.x);
+      ctx.fillStyle = on ? 'rgba(170,210,255,0.16)' : 'rgba(170,210,255,0.07)';
+      ctx.beginPath();
+      art.tracePath(ctx, art.chamberOutline({ uid: 0, x: p.x, y: p.y, w: p.w, h: p.h }), v.ox, v.oy, v.cell);
+      ctx.fill();
+      ctx.strokeStyle = on ? 'rgba(190,225,255,0.9)' : 'rgba(170,210,255,0.55)';
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([5, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (v.cell >= 9) {
+        const fpx = v.cell >= 18 ? 11 : 9;
+        ctx.font = `italic 600 ${fpx}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const text = (w >= 70 ? 'Planned: ' : '') + art.shortName(p.type);
+        ctx.fillStyle = 'rgba(15,8,3,0.55)';
+        const tw = ctx.measureText(text).width;
+        ctx.fillRect(x + w / 2 - tw / 2 - 3, y + hgt / 2 - fpx / 2 - 2, tw + 6, fpx + 4);
+        ctx.fillStyle = 'rgba(200,228,255,0.92)';
+        ctx.fillText(text, x + w / 2, y + hgt / 2 + 0.5);
+        ctx.textAlign = 'left';
+      }
+    }
+  }
+
   function drawLabels(ctx, W) {
     const v = view();
     const u = v.cell;
@@ -1981,6 +2079,13 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
       ctx.fillStyle = '#ffe08a';
       ctx.fillText(L.c.status === 'growing' ? '↑' : String(Math.max(0, L.c.level | 0) || '·'), bx, by + 0.5);
+      // C109: link badge left of the level badge when the chamber receives an adjacency bonus (red: a hygiene hit)
+      const links = (linkMemo.map.get(L.c.uid) || []).filter((l) => l.receiver === 'self');
+      if (links.length && L.box.w >= br * 5.4) drawLinkBadge(ctx, bx - br * 2 - 3, by, br * 0.9, links.some((l) => !l.good), links.some((l) => l.good));
+      ctx.fillStyle = '#ffe08a';
+      ctx.font = `700 ${Math.round(br * 1.25)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
     }
     // short names where there is room
     const fontPx = u >= 18 ? 11 : 10;
@@ -2173,16 +2278,21 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const v = view();
     const season = (d && d.season && d.season.id) || 'spring';
     const [top, bot] = SKY[season] || SKY.spring;
-    if (v.oy > 0) {
-      const g = ctx.createLinearGradient(0, 0, 0, v.oy);
-      g.addColorStop(0, top);
-      g.addColorStop(1, bot);
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, W, v.oy);
-      // mound silhouette over the main shaft
-      const mound = (s.run.surface && s.run.surface.mound) || 0;
+    // C113 (player report): the mound is sized in cells (world units, by its level) and anchored to the surface line, so
+    // it scrolls with the nest. It used to be capped at 90 % of the visible sky band (min(oy × 0.9, …)), so scrolling
+    // squashed it into a sliver (and zooming bloated it into a dome filling the sky) until it vanished at oy = 0.
+    const mound = (s.run.surface && s.run.surface.mound) || 0;
+    const mh = v.cell * Math.min(MOUND_MAX_CELLS, 0.6 + Math.log2(1 + mound) * 0.45);
+    if (v.oy > -mh) {
+      if (v.oy > 0) {
+        const g = ctx.createLinearGradient(0, 0, 0, v.oy);
+        g.addColorStop(0, top);
+        g.addColorStop(1, bot);
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, v.oy);
+      }
+      // mound silhouette over the main shaft (peak at oy − mh)
       const mx = v.ox + (GRID.mainCol + 0.5) * v.cell;
-      const mh = Math.min(v.oy * 0.9, v.cell * (0.6 + Math.log2(1 + mound) * 0.45));
       ctx.fillStyle = '#7a5232';
       ctx.beginPath();
       ctx.moveTo(mx - mh * 2.4, v.oy + 1);
@@ -2659,11 +2769,48 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const lines = [];
     if (!res.ok && res.reason) lines.push({ t: ghostRefusal(res), c: '#ffb3b0' });
     else lines.push({ t: chamberName(g.type), c: '#f6ead2' });
+    // C109: the chambers the ghost would link to: highlighted, joined by a line, and labelled with the bonus (red for a
+    // Midden hygiene hit); when relocating, the links it would lose are listed too.
+    const links = Array.isArray(res.links) ? res.links : [];
+    const lost = Array.isArray(res.lost) ? res.lost : [];
+    const gcx = x + (g.w * v.cell) / 2;
+    const gcy = y + (g.h * v.cell) / 2;
+    for (const l of links) {
+      const pc = l.uid ? chamberByUid(l.uid) : null;
+      if (!pc) continue;
+      const col = l.good ? NEST.ghostOk : NEST.ghostBad;
+      const pr = chamberRectPx(pc);
+      ctx.strokeStyle = rgba(col, 0.9);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(gcx, gcy);
+      ctx.lineTo(pr.x + pr.w / 2, pr.y + pr.h / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      chamberPath(ctx, pc, v, 2);
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+    for (const l of lost) {
+      const pc = l.uid ? chamberByUid(l.uid) : null;
+      if (!pc) continue;
+      ctx.strokeStyle = rgba(NEST.ghostWarn, 0.8);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      chamberPath(ctx, pc, v, 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     const modText = { frostExposed: 'Frost-exposed in winter', floodZone: 'Flood zone', raidReach: 'Within raid reach', haul: 'Haul', layer: 'Layer', adjacency: 'Adjacency', hygiene: 'Hygiene −20%',
       royalRoom: 'Boxes in the Royal Chamber (Flight needs L' + FLIGHT.royalLevel + ')' };
     const WARN = new Set(['frostExposed', 'raidReach', 'hygiene', 'floodZone', 'royalRoom']);
+    for (const l of links) lines.push({ t: linkLabel(l), c: l.good ? '#c8f0c0' : '#ffb3b0' });
+    for (const l of lost) if (l.good) lines.push({ t: linkLabel(l, true), c: '#ffd27a' });
     for (const m of res.mods || []) {
       if (!m || !m.key) continue;
+      // adjacency / hygiene are spelled out by the link lines above (C109)
+      if ((m.key === 'adjacency' || m.key === 'hygiene') && (links.length || lost.length)) continue;
       // raidReach carries the path distance to the nearest entrance; the others are multipliers or bonuses.
       const val = m.key === 'raidReach' && Number.isFinite(m.value) ? ` (${Math.round(m.value)} cells)`
         : Number.isFinite(m.value) ? ` ${m.value > 0 && m.key !== 'haul' ? '+' : ''}${Math.round(m.value * 100) / 100}` : '';
@@ -3256,6 +3403,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
     }
     drawHints(ctx, s, d);
+    syncLinks(s, d);
+    drawPlanned(ctx, s);
     drawChambers(ctx, s, d, unit, W, H);
     drawHousePip(ctx, s, d, unit);
     drawFrost(ctx, d, W);
@@ -3396,6 +3545,12 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     if (k >= 0 && chs[k]) return { view: 'nest', kind: chs[k].type === 'nursery' ? 'nursery' : 'chamber', id: chs[k].uid };
     const hints = hintCells(s, d);
     if (hints.includes(i)) return { view: 'nest', kind: 'cacheHint', i };
+    // C106: a planned (pending blueprint) chamber; i = its top-left cell
+    for (const p of safe(() => nestSys.plannedChambers(s), []) || []) {
+      const cx = i % COLS;
+      const cy = Math.floor(i / COLS);
+      if (cx >= p.x && cx < p.x + p.w && cy >= p.y && cy < p.y + p.h) return { view: 'nest', kind: 'planned', i: p.y * COLS + p.x, chamberType: p.type };
+    }
     if (geo.shaftCells[i]) return { view: 'nest', kind: 'shaft', i };
     return { view: 'nest', kind: 'cell', i };
   }

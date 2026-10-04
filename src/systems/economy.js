@@ -18,6 +18,7 @@
 //   it (and takes it back out of foodWasted).
 // C76: d.rates[res].avg (ledger resources) is an exponential moving average of gross with time constant INCOME_AVG.sec,
 //   advanced by econDt; a derived cache without history starts it at the current gross. wallet.incomeSeconds uses it.
+// C103: ledger chitin.midden = CHAMBERS.midden.fx.chitin × agg.middenL × stats.chitin (Midden recycling).
 
 import { SOFTCAPS } from '../data/balance.js';
 import { JOBS } from '../data/jobs.js';
@@ -191,6 +192,9 @@ export function tick(s, d, dt, env) {
   setLedger(L.insight, 'library', num(agg.libraryInsight) * num(st.insight.library, 1));
   setLedger(L.honeydew, 'pens', fx(CHAMBERS, 'root_aphid_pen', 'honeydew', 0) * num(agg.rootPenL)
     * (winter ? fx(CHAMBERS, 'root_aphid_pen', 'winter', 1) : 1));
+  // C103: Middens recycle chitin from refuse: fx.chitin /s per effective level (agg.middenL already carries the chamber
+  // eff: frost, completion), × the chitin channel (prestige, Hungry).
+  setLedger(L.chitin, 'midden', fx(CHAMBERS, 'midden', 'chitin', 0) * num(agg.middenL) * num(st.chitin, 1));
 
   // 2. fungus gardens: gardeners turn leaves into fungus
   const active = Math.max(0, Math.min(num(col.jobs.gardener), num(st.gardenerSlots)));
