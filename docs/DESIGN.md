@@ -527,6 +527,7 @@ Layer × season modifiers are in §17.2, and the frost line rules are in §17.3.
 Finite stocks are sized at discovery (the moment the source is first visible: at spawn on a revealed hex, otherwise when its hex is revealed) as `max(base, k × gross food/s)` (A), so they stay meaningful all game. Seed patches are the exception: their max is re-evaluated every tick (above). In this table `r` in prey, termite and Lycaenid entries is the source hex's ring.
 
 ### 8.5 Trails (A's economics + B's traffic-driven strength)
+- **One trail per destination:** a source can have only one trail leading to it (C100). To put more ants on it, add workers to that trail.
 **Drawing.**
 - Drag from an origin (any entrance, outpost or satellite; with `trunk_trails`, any node of an existing trail, which makes a fork) to a target hex.
 - A\* auto-routes, and the player can drag waypoints to reroute.

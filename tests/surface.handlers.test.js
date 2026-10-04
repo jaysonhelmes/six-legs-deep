@@ -303,3 +303,14 @@ test('moveAphids moves a colony onto an owned plant hex and re-routes its trails
   assert.equal(t.path[t.path.length - 1], hexIndex(-1, 1));
   assert.equal(t.len, 1);
 });
+
+test('C100: only one trail may lead to a destination (drawTrail, preview, createTrail)', () => {
+  const { s, d } = world();
+  const seed = addSeed(s, hexIndex(2, 0));
+  assert.equal(run(s, d, { type: 'drawTrail', origin: 0, target: seed.hex }).reason, null);
+  const before = s.run.surface.trails.length;
+  assert.equal(run(s, d, { type: 'drawTrail', origin: 0, target: seed.hex }).reason, 'duplicate');
+  assert.equal(trails.previewTrail(s, d, 0, seed.hex).reason, 'duplicate');
+  assert.equal(trails.createTrail(s, d, 0, seed.uid), 0);
+  assert.equal(s.run.surface.trails.length, before);
+});

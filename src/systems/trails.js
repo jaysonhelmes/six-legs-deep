@@ -645,6 +645,11 @@ function waypointsOf(w) {
  * @param {number[]} [waypoints=[]]
  * @returns {{ ok: boolean, reason: (string|null), path: number[], len: number, dEff: number, perWorker: number, cap: number, cEff: number }}
  */
+/** [q] True if a trail already leads to this source (C100: one trail per destination). */
+export function hasTrailTo(s, srcUid) {
+  return s.run.surface.trails.some((t) => t.src === srcUid);
+}
+
 export function previewTrail(s, d, origin, target, waypoints = []) {
   const res = { ok: false, reason: null, path: [], len: 0, dEff: 0, perWorker: 0, cap: 0, cEff: 0 };
   const wps = waypointsOf(waypoints);
@@ -659,6 +664,10 @@ export function previewTrail(s, d, origin, target, waypoints = []) {
   const src = targetSource(s, target);
   if (!src || src.hex === origin) {
     res.reason = 'invalid:target';
+    return res;
+  }
+  if (hasTrailTo(s, src.uid)) {
+    res.reason = 'duplicate';
     return res;
   }
   const r = routeTrail(s, d, origin, src.hex, wps);
@@ -865,6 +874,7 @@ export function createTrail(s, d, originHex, srcUid, { S = 0 } = {}) {
   const def = src ? SOURCES[src.type] : null;
   if (!def || !def.job || (src.data && (src.data.dormant || src.data.unsized))) return 0;
   if (sf.trails.length >= surface.trailSlots(s)) return 0;
+  if (hasTrailTo(s, src.uid)) return 0;
   const r = routeTrail(s, d, originHex, src.hex, [], true);
   if (!r || r.path.length < 2) return 0;
   const uid = sf.nextUid++;
@@ -909,6 +919,7 @@ export const handlers = {
       if (!trailOrigins(s, d).includes(cmd.origin)) return 'invalid:origin';
       const src = targetSource(s, cmd.target, cmd.src);
       if (!src || src.hex === cmd.origin) return 'invalid:target';
+      if (hasTrailTo(s, src.uid)) return 'duplicate'; // one trail per destination (C100)
       if (s.run.surface.trails.length >= surface.trailSlots(s)) return 'noSlot:trail';
       const r = routeTrail(s, d, cmd.origin, src.hex, wps);
       if (!r || r.path.length < 2) return 'blocked';

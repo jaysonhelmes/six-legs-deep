@@ -203,6 +203,7 @@ export const REASON_DETAILS = Object.freeze({
   'invalid:revealed': 'Already explored.',
   'invalid:origin': 'Trails start at an entrance.',
   'invalid:target': 'Draw the trail onto a food source.',
+  duplicate: 'A trail already goes there. Add workers to it instead.',
   'invalid:waypoints': 'Too many waypoints.',
   'invalid:job': 'This trail carries no workers.',
   'invalid:count': 'Not that many available.',
