@@ -24,7 +24,7 @@ export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab'], ['Space', 'Hand
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
   ['+ / −', 'Zoom the clicked view in or out'], ['0 / Home', 'Nest view: frame the queen'],
   ['Crown button', 'Frame the queen (nest view, top-right, beside − and +)'], ['Arrows, PgUp / PgDn', 'Pan or scroll the clicked view'],
-  ['Drag empty ground', 'Pan the map']].map(Object.freeze));
+  ['Drag empty ground', 'Pan the map'], ['H / ?', 'Open or close the Manual']].map(Object.freeze));
 
 /**
  * Compose a Photo Mode PNG: the given canvases stacked, plus a stat card. Returns a data URL or null.

@@ -224,9 +224,9 @@ function report(ctx, res) {
   return false;
 }
 
-const FLIGHT_RESETS = ['Run resources, ants and brood', 'Chambers, tunnels and the dig queue', 'Adaptations and non-Innate research',
+export const FLIGHT_RESETS = ['Run resources, ants and brood', 'Chambers, tunnels and the dig queue', 'Adaptations and non-Innate research',
   'Territory, the map and rivals'];
-const FLIGHT_KEEPS = ['Alates and lifetime counters', 'Bloodline traits and Innate research', 'Achievements, Field Guide and stats',
+export const FLIGHT_KEEPS = ['Alates and lifetime counters', 'Bloodline traits and Innate research', 'Achievements, Field Guide and stats',
   'Blueprints, Diapause, the season clock and settings'];
 
 /**

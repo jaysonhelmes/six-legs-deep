@@ -21,6 +21,8 @@ import {
 } from './modals.js';
 import { createEventCard } from './eventCard.js';
 import { openColonyHistory } from './history.js';
+import { openManual, toggleManual } from './manual.js';
+import { MANUAL_KEYS } from './manualContent.js';
 import { openWelcome } from './welcome.js';
 import { createOnboarding } from './onboarding.js';
 import { isClickableSource } from './panels/map.js';
@@ -179,7 +181,10 @@ export function mountUI(root, game, opts = {}) {
     hardReset: () => openHardReset(mctx, () => afterReset()),
     importSave: (str, cb) => openImportConfirm(mctx, str, cb),
     history: () => openColonyHistory(mctx),   // C130: Colony History gallery (Prestige tab)
+    manual: (o) => openManual(manualCtx, o),  // C131: the Manual (book button, H / ?)
   };
+  /** Manual context (C131): tab buttons inside entries open a revealed tab. */
+  const manualCtx = { ...mctx, openTab: (id, sub) => openTab(id, sub), tabShown: (id) => tabVisible(id) };
 
   // ------------------------------------------------------------------ bridge
   const bridge = {
@@ -341,6 +346,11 @@ export function mountUI(root, game, opts = {}) {
     tabBtns[id] = b;
     tabsEl.appendChild(b);
   });
+  // C131: the Manual (book icon) beside the utility tabs, visible from the start; not a tab (it opens a modal)
+  const manualBtn = h('button', { type: 'button', class: 'tab util manual-btn', dataset: { manual: '1', tip: 'Manual: chambers, ants, resources and prestige. Key H.' },
+    attrs: { 'aria-label': 'Manual', 'aria-keyshortcuts': 'H' }, on: { click: () => toggleManual(manualCtx) } },
+  h('span', { class: 'tab-ico', attrs: { 'aria-hidden': 'true' } }));
+  tabsEl.appendChild(manualBtn);
   tabsEl.setAttribute('role', 'tablist');
   const panelHosts = {};
   const panelInst = {};
@@ -846,6 +856,14 @@ export function mountUI(root, game, opts = {}) {
       const lay = getUI().layout;
       if (lay === 'medium' && drawerOpen) { setDrawer(false); refresh(true); return; }
       if (lay === 'narrow' && sheet !== 'peek') { setSheet('peek'); refresh(true); return; }
+      return;
+    }
+    // C131: H or ? opens / closes the Manual (not while typing, nor over another dialog)
+    if (!typing && !ev.ctrlKey && !ev.metaKey && !ev.altKey && MANUAL_KEYS.includes(ev.key)) {
+      if (!modals.isOpen() || modals.top() === modals.find('manual')) {
+        toggleManual(manualCtx);
+        ev.preventDefault();
+      }
       return;
     }
     if (typing || modals.isOpen() || ev.ctrlKey || ev.metaKey || ev.altKey) return;

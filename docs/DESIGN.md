@@ -1934,6 +1934,7 @@ The first calibration pass (which excluded combat, events, honeydew, fungus and 
 | Field Guide | Entries by category | First entry (new game) |
 | Stats | Run and lifetime statistics: largest battle, deepest tunnel, longest trail, fastest flight, per-layer timings | Always |
 | Settings | Save/export/import, number format, reduced motion, sound, `harsh_nature`, Photo Mode, colony and queen names, keyboard and view controls reference, hard reset | Always |
+| Manual (book icon after the utility icons; opens a modal, full screen on phones) | Index of ten sections (Getting started, Resources, Ant types & jobs, Chambers & nest, Surface, Combat & rivals, Seasons & events, Research, Prestige, Controls & hotkeys) and a search box. Each entry is built from the live data tables, so its numbers match the game, with the player's current values and links to related entries and tabs. Only unlocked or seen content appears; nothing unrevealed is named (ARCHITECTURE §18 C131) | Always |
 
 ### 25.4 Canvas interactions
 See §7.12 (Below) and §8.10 (Above). Clicking a rival nest, prey or the termite mound opens its war panel; dragging from an entrance onto one of them opens the war-party chooser, so attacks start on the map. Both canvases support hover tooltips, right-click or long-press for context actions, and keyboard shortcuts:
@@ -1943,7 +1944,8 @@ See §7.12 (Below) and §8.10 (Above). Clicking a rival nest, prey or the termit
 - `R`: Rally the selected trail; with a chamber selected in the nest, Relocate it;
 - `L` / `Shift+L`: level the selected chamber / the cheapest chamber of its type; `G`: pick its growth side;
 - `Tab`: switch view on medium and narrow layouts;
-- `Esc`: cancel a tool, deselect, then close the drawer or lower the panel sheet.
+- `Esc`: cancel a tool, deselect, then close the drawer or lower the panel sheet;
+- `H` or `?`: open or close the Manual.
 
 Camera controls on the canvas the player clicked last: wheel (Above: zoom; Below: scroll, Shift + wheel pans), Ctrl + wheel or pinch (zoom the Below view), `+` / `−` (zoom), `0` / `Home` and the crown button (frame the queen), arrows and PgUp / PgDn (pan or scroll), dragging empty ground (pan the map). Settings lists them all under "Keyboard and view controls".
 
