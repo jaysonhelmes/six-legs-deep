@@ -11,6 +11,34 @@ export const PK = Object.freeze({ rain: 1, snow: 2, leaf: 3, pellet: 4, glint: 5
 const LEAF_COLORS = ['#c9782a', '#b5552a', '#d8a23a', '#8f6a2a', '#a4442a'];
 const SPARK_COLORS = ['#fff6c2', '#ffd447', '#ffffff'];
 
+/** Weather kinds in spawn order. */
+const WEATHER_KINDS = Object.freeze(['rain', 'snow', 'leaves']);
+/** Weather particles per 100,000 CSS px² of view at intensity 1. */
+export const WEATHER_DENSITY = Object.freeze({ rain: 60, snow: 22, leaves: 6 });
+
+/**
+ * Target weather population per kind for a view (pure; scaled down together to fit `room`).
+ * @param {{ rain?: number, snow?: number, leaves?: number }} mixIn intensities 0..1
+ * @param {{ w: number, h: number }} bounds
+ * @param {boolean} reduced
+ * @param {number} room
+ * @returns {{ rain: number, snow: number, leaves: number }}
+ */
+export function weatherTargets(mixIn, bounds, reduced, room) {
+  const area = Math.max(0.4, ((bounds && bounds.w) * (bounds && bounds.h)) / 100000 || 0);
+  const out = { rain: 0, snow: 0, leaves: 0 };
+  let sum = 0;
+  for (const k of WEATHER_KINDS) {
+    const v = Number(mixIn && mixIn[k]);
+    const it = v > 0 ? Math.min(1, v) : 0;
+    out[k] = WEATHER_DENSITY[k] * it * area * (reduced ? 0.25 : 1);
+    sum += out[k];
+  }
+  const scale = sum > room && sum > 0 ? Math.max(0, room) / sum : 1;
+  for (const k of WEATHER_KINDS) out[k] = Math.round(out[k] * scale);
+  return out;
+}
+
 /**
  * Create a particle pool.
  * @param {number} [max=MAX_PARTICLES]
@@ -125,7 +153,67 @@ export function createParticles(max = MAX_PARTICLES) {
   }
 
   /**
-   * Emit weather particles over `bounds` (screen space) at `intensity` 0..1 for this frame.
+   * One weather particle of `kind` over `bounds`: at the top edge (steady state) or anywhere in the view
+   * (`spread`: pre-warming, so a fresh view does not start empty and fill as one band from the top).
+   * @returns {number} index or −1
+   */
+  function spawnWeather(kind, bounds, spread, k) {
+    const x = bounds.x + Math.random() * (bounds.w + 60) - 30;
+    if (kind === 'rain') {
+      const vy = 420 + Math.random() * 120;
+      const y = spread ? bounds.y + Math.random() * bounds.h : bounds.y - 10 - Math.random() * 20;
+      return spawn(PK.rain, x, y, -40, vy, (bounds.y + bounds.h + 20 - y) / vy + 0.2, { size: 8 + Math.random() * 6 });
+    }
+    if (kind === 'snow') {
+      const vy = 22 + Math.random() * 26;
+      const y = spread ? bounds.y + Math.random() * bounds.h : bounds.y - 4 - Math.random() * 16;
+      return spawn(PK.snow, x, y, -6 + Math.random() * 12, vy, (bounds.y + bounds.h + 20 - y) / vy + 4,
+        { size: 1 + Math.random() * 1.8, tx: Math.random() * 6 });
+    }
+    const vy = 26 + Math.random() * 20;
+    const y = spread ? bounds.y + Math.random() * bounds.h : bounds.y - 6 - Math.random() * 16;
+    return spawn(PK.leaf, x, y, -10 + Math.random() * 20, vy, (bounds.y + bounds.h + 20 - y) / vy + 4,
+      { size: 3 + Math.random() * 2.5, tx: Math.random() * 6, rot: Math.random() * 6, color: LEAF_COLORS[k % LEAF_COLORS.length] });
+  }
+
+  /**
+   * Weather (C123): keep a target population of each kind over `bounds` (screen space), proportional to its intensity
+   * (0..1) and the view area. A particle that falls out is replaced at the top edge, so intensities that ramp up or down
+   * across a season transition fade the weather in and out instead of popping. `fill` (load, import, the view shown
+   * again, a resize) tops every kind up at once, spread over the whole view.
+   * @param {{ rain?: number, snow?: number, leaves?: number }} mixIn
+   * @param {{ x: number, y: number, w: number, h: number }} bounds
+   * @param {number} dt
+   * @param {boolean} reduced
+   * @param {boolean} [fill=false]
+   */
+  function weatherMix(mixIn, bounds, dt, reduced, fill = false) {
+    if (!bounds || !(bounds.w > 0) || !(bounds.h > 0)) return;
+    const targets = weatherTargets(mixIn || {}, bounds, reduced, Math.floor(cap * 0.66));
+    let nR = 0;
+    let nS = 0;
+    let nL = 0;
+    for (let i = 0; i < p.n; i++) {
+      const k = p.kind[i];
+      if (k === PK.rain) nR++;
+      else if (k === PK.snow) nS++;
+      else if (k === PK.leaf) nL++;
+    }
+    const have = { rain: nR, snow: nS, leaves: nL };
+    let room = Math.floor(cap * 0.66) - p.n;
+    let k = 0;
+    for (const kind of WEATHER_KINDS) {
+      let need = targets[kind] - have[kind];
+      if (need <= 0) continue;
+      // steady state: replace at most what a fully saturated stream would emit this frame (no bursts at the top)
+      if (!fill) need = Math.min(need, Math.max(1, Math.ceil(targets[kind] * dt * (kind === 'rain' ? 2 : 0.25))));
+      need = Math.min(need, room);
+      for (let j = 0; j < need; j++) if (spawnWeather(kind, bounds, fill, k++) >= 0) room--;
+    }
+  }
+
+  /**
+   * Compatibility: one weather kind at `intensity` (other kinds fade out as they fall).
    * @param {'rain'|'snow'|'leaves'|null} kind
    * @param {number} intensity
    * @param {{ x: number, y: number, w: number, h: number }} bounds
@@ -133,27 +221,20 @@ export function createParticles(max = MAX_PARTICLES) {
    * @param {boolean} reduced
    */
   function weather(kind, intensity, bounds, dt, reduced) {
-    if (!kind || !(intensity > 0) || !bounds) return;
-    const area = (bounds.w * bounds.h) / 100000;
-    const rate = (kind === 'rain' ? 140 : kind === 'snow' ? 45 : 3) * intensity * Math.max(0.4, area) * (reduced ? 0.25 : 1);
-    p.weatherAcc += rate * dt;
-    let budget = Math.floor(p.weatherAcc);
-    p.weatherAcc -= budget;
-    // keep a third of the pool free for gameplay particles
-    const room = Math.floor(cap * 0.66) - p.n;
-    if (budget > room) budget = Math.max(0, room);
-    for (let k = 0; k < budget; k++) {
-      const x = bounds.x + Math.random() * (bounds.w + 60) - 30;
-      if (kind === 'rain') {
-        spawn(PK.rain, x, bounds.y - 10, -40, 420 + Math.random() * 120, 3, { size: 8 + Math.random() * 6 });
-      } else if (kind === 'snow') {
-        spawn(PK.snow, x, bounds.y - 6, -6 + Math.random() * 12, 22 + Math.random() * 26, 30,
-          { size: 1 + Math.random() * 1.8, tx: Math.random() * 6 });
-      } else {
-        spawn(PK.leaf, x, bounds.y - 8, -10 + Math.random() * 20, 26 + Math.random() * 20, 30,
-          { size: 3 + Math.random() * 2.5, tx: Math.random() * 6, rot: Math.random() * 6, color: LEAF_COLORS[k % LEAF_COLORS.length] });
-      }
+    if (!kind || !(intensity > 0)) return;
+    weatherMix({ [kind]: intensity }, bounds, dt, reduced);
+  }
+
+  /** Live weather counts by kind. */
+  function weatherCounts() {
+    const out = { rain: 0, snow: 0, leaves: 0 };
+    for (let i = 0; i < p.n; i++) {
+      const k = p.kind[i];
+      if (k === PK.rain) out.rain++;
+      else if (k === PK.snow) out.snow++;
+      else if (k === PK.leaf) out.leaves++;
     }
+    return out;
   }
 
   /** Soil pellet arcing from (x0, y0) to (x1, y1). */
@@ -304,7 +385,7 @@ export function createParticles(max = MAX_PARTICLES) {
     p.weatherAcc = 0;
   }
 
-  Object.assign(p, { spawn, update, weather, pellet, sparkle, dust, glint, ripple, scent, float, draw, clear });
+  Object.assign(p, { spawn, update, weather, weatherMix, weatherCounts, pellet, sparkle, dust, glint, ripple, scent, float, draw, clear });
   /** Live particle count. */
   Object.defineProperty(p, 'count', { get: () => p.n, enumerable: true });
   return p;

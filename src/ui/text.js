@@ -21,6 +21,7 @@ import { UNLOCKS } from '../data/unlocks.js';
 import { LAYERS, GEOM } from '../data/strata.js';
 import { TERRAIN } from '../data/surface.js';
 import { YEAR } from '../data/seasons.js';
+import { DRAINAGE } from '../data/soilFeatures.js';
 import { fmt, fmtTime, fmtCount, fmtRate, fmtPct, fmtMult } from './format.js';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -155,10 +156,31 @@ const SAT_MIN_DIST = num0(SAT_FX.minDist, 3);
 const SAT_COL_GAP = num0(SAT_FX.colGap, 4);
 const ROYAL_LEVEL = num0(FLIGHT.royalLevel, 5);
 const SHAFT_GAP = num0(GEOM.shaftGap, 3);
+const DRAIN_ROWS = num0(DRAINAGE && DRAINAGE.moveRows, 12);
 const nameOr = (table, id, fb) => (table[id] && table[id].name) || fb;
 
 function num0(v, fb) {
   return typeof v === 'number' && Number.isFinite(v) ? v : fb;
+}
+
+/**
+ * Toast for a blueprintDropped event (C106; C119 notes): a dropped spot, the Royal Chamber moved to (or kept off) its
+ * planned spot, a Water Well moved next to this run's water, or dropped because no pocket has room.
+ * @param {{ chamberType?: string, reason?: string }} e
+ * @returns {{ text: string, kind: string, priority: string }}
+ */
+export function blueprintNote(e) {
+  const r = String((e && e.reason) || '');
+  if (r === 'royal:moved') return { text: 'Blueprint: the Royal Chamber is dug at its planned spot.', kind: 'good', priority: 'low' };
+  if (r.startsWith('royal:kept')) {
+    const why = r.slice('royal:kept:'.length);
+    const detail = why ? reasonText(why, 'placeChamber').replace(/\.$/, '') : '';
+    return { text: 'Blueprint: the Royal Chamber stays at the usual spot' + (detail ? ' (planned spot: ' + detail.charAt(0).toLowerCase() + detail.slice(1) + ')' : '') + '.',
+      kind: 'info', priority: 'high' };
+  }
+  if (r === 'well:moved') return { text: 'Blueprint: the Water Well goes next to this run\'s water pocket.', kind: 'info', priority: 'low' };
+  if (r === 'well:none') return { text: 'Blueprint: no water pocket on this soil has room for the Water Well, so it is left out.', kind: 'info', priority: 'high' };
+  return { text: 'Blueprint: the ' + nameOf('chamber', e && e.chamberType) + ' spot can no longer be used.', kind: 'info', priority: 'low' };
 }
 
 /** Player text for known "code:detail" reasons (every detail a system validator can return; ARCHITECTURE §7.4). */
@@ -190,6 +212,9 @@ export const REASON_DETAILS = Object.freeze({
   'invalid:cell': 'Only tunnel cells can be backfilled.',
   'invalid:pending': 'Already being backfilled.',
   'invalid:dir': 'It cannot grow that way.',
+  // C117: moving a water pocket
+  'blocked:open': 'Water can only move into plain, undug soil.',
+  'blocked:cache': 'Something is buried there: dig it up first.',
   'invalid:rule': 'Placement rule not met.',
   // surface: claims, flags, trails, aphids, satellites
   'blocked:rival': 'A rival colony holds that hex.',
@@ -255,7 +280,18 @@ export const REASON_BY_COMMAND = Object.freeze({
   levelChamber: { blocked: 'No room to grow: relocate it or clear space around it.', busy: 'Finish digging before the next level.' },
   demolishChamber: { blocked: 'The Royal Chamber cannot be demolished.', busy: 'Wait until it finishes digging.' },
   relocateChamber: { invalid: 'Pick a new spot for it.', busy: 'Wait until it finishes digging.' },
-  cancelJob: { blocked: 'Relocations and shafts cannot be cancelled.' },
+  cancelJob: { blocked: 'Relocations, shafts and pocket moves cannot be cancelled.' },
+  // C117–C121
+  cancelPlanned: { notFound: 'That planned chamber is gone.', invalid: 'Pick a planned chamber.' },
+  backfillUnneeded: { 'invalid:empty': 'No unneeded tunnels: every tunnel keeps something connected.' },
+  drainPocket: { locked: 'Needs ' + nameOr(RESEARCH, 'drainage', 'Drainage') + ' research.', busy: 'Already being drained or moved.',
+    notFound: 'Pick a revealed water pocket.', 'blocked:route': 'No tunnel route reaches that pocket.' },
+  relocatePocket: { locked: 'Needs ' + nameOr(RESEARCH, 'drainage', 'Drainage') + ' research.', busy: 'Already being drained or moved.',
+    notFound: 'Pick a revealed water pocket.', 'invalid:row': 'Too far: keep it within ' + DRAIN_ROWS + ' rows of where it is.',
+    'blocked:royalRoom': 'That would wall in the Royal Chamber.' },
+  growRoot: { locked: 'Needs ' + nameOr(RESEARCH, 'root_cultivation', 'Root Cultivation') + ' research.',
+    max: 'Root limit reached: higher Mound levels allow more.', 'invalid:root': 'A root already grows in that column.',
+    'blocked:shaft': 'A shaft runs down that column.', blocked: 'Something blocks the top of that column.' },
   launchParty: { invalid: 'Send at least one soldier or supermajor.' },
   reinforce: { invalid: 'No soldiers at home to send.' },
   tournament: { invalid: 'Send at least one ant.' },
@@ -584,7 +620,7 @@ export const RESEARCH_TIPS = Object.freeze({
   load_chains: 'Tunnels cost half the work; +2 queue slots.',
   clay_masonry: 'Clay is easier to dig.',
   mound_building: 'Mound levels 6 and above.',
-  drainage: 'No floods; drought penalties halved.',
+  drainage: 'No floods; drought penalties halved. Drain or move water pockets.',
   ventilation_shafts: 'All chambers ×1.10; clay granaries stop spoiling.',
   thermoregulation: 'Frost line 5 rows shallower; no summer overheat.',
   gallery_arches: '+2 Galleries allowed; housing ×1.25.',
@@ -605,6 +641,7 @@ export const RESEARCH_TIPS = Object.freeze({
   aphid_shepherding: 'Move aphid colonies; herder capacity ×2.',
   fungiculture: 'Fungus Gardens, gardeners, Nutrition and Fungal Brood.',
   lycaenid_clients: 'Lycaenid caterpillars appear for honeydew.',
+  root_cultivation: 'Grow your own roots down into the nest for Root Aphid Pens.',
   sugar_economy: 'Honeydew ×2.',
   weeder_ants: 'Blight far rarer; fungus ×1.5.',
   fungal_symbiosis: 'Nutrition bonus doubled.',
@@ -903,7 +940,7 @@ export const CHOICE_TIPS = Object.freeze({
 // ---------------------------------------------------------------------------------------------------------------
 
 /** Dig job kinds. */
-export const DIG_KIND_NAMES = Object.freeze({ tunnel: 'Tunnel', chamber: 'Dig', grow: 'Enlarge', shaft: 'Shaft', relocate: 'Relocate' });
+export const DIG_KIND_NAMES = Object.freeze({ tunnel: 'Tunnel', chamber: 'Dig', grow: 'Enlarge', shaft: 'Shaft', relocate: 'Relocate', drain: 'Drain' });
 /** War party kinds. */
 export const PARTY_NAMES = Object.freeze({ raid: 'Raid', assault: 'Assault', hunt: 'Hunt', termite: 'Termite raid', guard: 'Guard', reinforce: 'Reinforcements' });
 /** Battle kinds. */
@@ -1021,7 +1058,7 @@ export function eventToast(e, s = null) {
     case 'hungryEnd': return { text: 'The colony is fed again.', kind: 'good', priority: 'low' };
     case 'winterSoon': return { text: 'Winter in ' + fmtTime(Number(YEAR && YEAR.forecastSec) || 60) + ': shallow brood will freeze.', kind: 'info', priority: 'high' };
     case 'seasonChanged': return { text: (SEASON_NAMES[e.id] || humanize(e.id)) + ': ' + (SEASON_TIPS[e.id] || ''), kind: 'season', priority: 'low' };
-    case 'blueprintDropped': return { text: 'Blueprint: the ' + nameOf('chamber', e.chamberType) + ' spot can no longer be used.', kind: 'info', priority: 'low' };
+    case 'blueprintDropped': return blueprintNote(e);
     case 'chamberActivated': return { text: chamberName(e.uid, e.chamberType) + ' complete.', kind: 'good', priority: 'low' };
     case 'cacheFound': return { text: 'Found a ' + humanize(e.kind) + ': +' + fmt(e.amount || 0) + ' ' + (RES_NAMES[e.res] || '').toLowerCase() + '.', kind: 'good', priority: 'low' };
     case 'softcapHit': return { text: (RES_NAMES[e.stat] || humanize(e.stat)) + ' production is now softcapped.', kind: 'info', priority: 'low' };

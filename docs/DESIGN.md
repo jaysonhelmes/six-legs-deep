@@ -335,6 +335,7 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 - **Backfill:** select open tunnel cells → filled for free over 10 s. Not allowed if it would disconnect a chamber from every entrance.
   - The Backfill tool (Build panel, or `B` over the nest) paints a box: it fills every tunnel cell in it that can go, skips soil and chambers, and keeps open (red, with the reason) the shaft cells and the cells a chamber still needs. The tool stays on for the next stroke.
   - Cells being backfilled are drawn hatched, filling up from the floor as their 10 s run out.
+  - **Backfill unneeded** (Build panel) backfills, after a confirm with the count, every tunnel cell that no chamber, dig job, shaft, entrance or planned blueprint chamber needs to stay connected.
 - **Relocate a chamber:** pick a new valid spot.
   - Cost: 50% of the dig work of the new footprint. The level is kept.
   - The chamber is inactive until its new cells are dug. The old cells become tunnel.
@@ -418,10 +419,10 @@ Path cells are measured by BFS over open cells, starting from the row-0 cell of 
 ### 7.9 Soil features (seeded per run, from D and B)
 | id | Count | Where | Effect |
 |---|---|---|---|
-| `root_line` | 6–10 | Hangs down from surface plants (flower patch, leaf plant, aphid colony) within ring 3. Column = the plant hex's x mapped to the 40 columns; reaches row 6–25. | `root_aphid_pen` must touch one. Drawn as pale roots. |
+| `root_line` | 6–10 | Hangs down from surface plants (flower patch, leaf plant, aphid colony) within ring 3. Column = the plant hex's x mapped to the 40 columns; reaches row 6–25. | `root_aphid_pen` must touch one. Drawn as pale roots. **Cultivated roots** (`root_cultivation`): the player picks a column; a root grows from row 1 at 2 rows/s down to row 30, stopping above a chamber, stone, water or shaft. Cost 120 honeydew + 800 food, ×1.6 per cultivated root this run; at most 3 (+1 per 5 Mound levels, up to +3). They count as root lines and are drawn slightly greener. |
 | `stone` | 4–8 | 3×3 boulders, rows 8–55 | Undiggable until `acid_excavation` (then ×3 work per cell). |
 | `cache` | 8–12 | Single cells, rows 5–60 | `seed_cache`: food = 90 s (min 50). `beetle_husk`: chitin = max(25, 60 s of chitin income). `fossil`: insight = max(50, 60 s of insight income). `amber_bead` (1 per map, bedrock only): spawns a Golden Beetle immediately and unlocks the Field Guide entry `fg_amber`. **Hint:** the cell shows as discoloured soil when any open cell is within 4 cells (Chebyshev). Collected when dug. Clicking a hint queues a tunnel to it. |
-| `water_pocket` | 2–3 | 2×2 to 3×3, rows 40–70 | Cannot be dug. `water_well` must touch one. Revealed like caches: shown when any open cell is within 4 cells. |
+| `water_pocket` | 2–3 | 2×2 to 3×3, rows 40–70 | Cannot be dug. `water_well` must touch one. Revealed like caches: shown when any open cell is within 4 cells. With `drainage`, a revealed pocket can be **drained** (dig work 2 × layer work and 120 soil per water cell; the cells become diggable soil) or **moved** to plain soil of the same size within 12 rows (1.5 × layer work per water cell). A Water Well left touching no pocket is removed and its placement food refunded in full. |
 
 ### 7.10 Microclimate and frost
 Layer × season modifiers are in §17.2, and the frost line rules are in §17.3. The ghost tooltip and the **Climate overlay** (toggle) preview both, so the player sees why a nursery belongs at row 26 and a granary at row 6.
@@ -450,6 +451,8 @@ Layer × season modifiers are in §17.2, and the frost line rules are in §17.3.
 | Mold spot | Scrape it off (Mold Bloom event). |
 | Flood water | Bail: −5 s of flood time per click. |
 | Cache hint | Queue a tunnel to it. |
+| Water pocket | Inspect: drain or move it (with `drainage`). |
+| Planned blueprint chamber | Inspect: cancel it for this run (the Blueprints section also cancels all). |
 | Queue chips | Reorder or cancel (cancel refunds 100% of placement food; dug cells stay dug). |
 | Overlay buttons | `climate` (season and frost), `raid_reach`, `haul`, `adjacency`. |
 
@@ -876,7 +879,7 @@ Only trail raids offer a **Dispatch garrison** button; against a nest raid the g
 | `load_chains` | Load Chains | 80 | coordinated_digging | Tunnel work −50%. Dig queue +2 slots. |
 | `clay_masonry` | Clay Masonry | 300 | load_chains | Clay work 10 → 7.2 |
 | `mound_building` | Mound Building | 400 | coordinated_digging | Mound levels 6+ |
-| `drainage` | Drainage | 800 | clay_masonry | Immune to floods. Drought penalties halved. |
+| `drainage` | Drainage | 800 | clay_masonry | Immune to floods. Drought penalties halved. Water pockets can be drained or moved (§7.9). |
 | `ventilation_shafts` | Ventilation Shafts | 1,200 | clay_masonry | All chamber effects ×1.10. Clay granaries stop spoiling. Unlocks Thermal Chimney. |
 | `thermoregulation` | Thermoregulation | 2,000 | ventilation_shafts | Frost line −5 rows. No summer topsoil overheat. |
 | `gallery_arches` | Gallery Arches | 3,000 | ventilation_shafts | +2 Gallery instances. Housing ×1.25. |
@@ -905,6 +908,7 @@ Only trail raids offer a **Dispatch garrison** button; against a nest raid the g
 | `aphid_shepherding` | Aphid Shepherding | 700 | aphid_husbandry | Move aphid colonies onto owned plant hexes. Herder cap ×2. |
 | `fungiculture` | Fungiculture | 900 | leafcutting | Fungus Garden, gardeners, Nutrition and the Fungal Brood toggle (§6.4) |
 | `lycaenid_clients` | Lycaenid Clients | 1,200 | aphid_shepherding | Lycaenid caterpillars spawn |
+| `root_cultivation` | Root Cultivation | 1,500 | aphid_husbandry | Grow your own root lines into the nest (§7.9) |
 | `sugar_economy` | Sugar Economy | 2,000 | aphid_shepherding | Honeydew ×2 |
 | `weeder_ants` | Weeder Ants | 3,000 | fungiculture | Fungal Blight chance −75%. Fungus ×1.5. |
 | `fungal_symbiosis` | Fungal Symbiosis | 6,000 | weeder_ants | Nutrition multiplier `1 + 0.5φ` → `1 + 1.0φ` |
@@ -1159,7 +1163,7 @@ Run-1 rows are medians of the balance simulation (Balance Verification). Conques
 | `founding_stores` | Founding Stores | 1 × 3^L (1, 3, 9) | 3 | Start each run with 500 / 5,000 / 50,000 food (may exceed the cap until spent) and 100 / 1,000 / 10,000 soil |
 | `nanitic_vigor` | Nanitic Vigor | 2 | 1 | The first 25 eggs are nanitics. The first 50 workers produce ×3. |
 | `remembered_paths` | Remembered Paths | 2 | 1 | Runs start with trails drawn to the 2 best revealed sources, at 50% strength |
-| `ancestral_blueprint` | Ancestral Blueprint | 3 | 1 | Save your nest layout. After each flight it auto-queues; blueprint cells dig at 3× speed; blueprint chambers cost −50% placement food. Chambers that are still locked or unaffordable at run start stay **planned** (faint dashed outlines) and queue themselves, at the same price and dig speed, as soon as they unlock and can be paid for; a spot that can never be used this run (water, another chamber, a seeded rule) is dropped with a notice (ARCHITECTURE §18 C106). |
+| `ancestral_blueprint` | Ancestral Blueprint | 3 | 1 | Save your nest layout. After each flight it auto-queues; blueprint cells dig at 3× speed; blueprint chambers cost −50% placement food. Chambers that are still locked or unaffordable at run start stay **planned** (faint dashed outlines) and queue themselves, at the same price and dig speed, as soon as they unlock and can be paid for; a spot that can never be used this run (water, another chamber, a seeded rule) is dropped with a notice (ARCHITECTURE §18 C106). The Royal Chamber starts at its saved spot when that spot works on the new soil (else at the usual spot, with a notice). Water Wells follow the new run's water: each takes the free spot nearest its saved one that touches a revealed water pocket, or is left out when no pocket has room (C119). |
 | `automaton_instincts` | Automaton Instincts | 5 | 1 | `age_polyethism` and `response_thresholds` innate; Adaptation autobuyer; dig queue +2 |
 | `hardy_workers` | Hardy Workers | 5 × 3.5^L | 12 | Forager, herder and leafcutter output ×1.4 |
 | `deep_diggers` | Deep Diggers | 5 × 3.5^L | 12 | Dig work ×1.4 |
@@ -1920,11 +1924,11 @@ The first calibration pass (which excluded combat, events, honeydew, fungus and 
 ### 25.3 Panels (right-hand tabs)
 | Tab | Contents | Reveal |
 |---|---|---|
-| Colony | Brood pipeline (eggs, larvae and pupae counts; lay rate; egg reserve slider); caste slider; Retire to workers (§6.1); job chips with +/− and presets; Adaptations; alate rearing | First worker |
+| Colony | Brood pipeline (eggs, larvae and pupae counts; lay rate; egg reserve slider); caste slider; Retire to workers (§6.1); job chips with +/− and presets; Adaptations (alate rearing lives on the Prestige tab, Flight view) | First worker |
 | Build | Chamber list (locked items greyed with their unlock condition), dig queue chips, Mound, blueprint save/load | First housing cap |
 | Map | Trails list (workers, strength, yield, escorts, Mark/Rally), territory and claim cost, rivals list and war panel, hunts | Second trail or first claim (after trail slots are revealed) |
-| Research | Tier grid by branch, Innate badges, refinements | First insight |
-| Prestige | Sub-tabs: Flight · Bloodline · Hardships · Supercolony · Federation · Edicts · Speciation · Genome · Species, each revealed per §23 | `f_run ≥ 2e7` or `nuptial_preparation` researched |
+| Research | Tier grid by branch, Innate badges, refinements, "Hide completed" toggle (remembered per browser) | First insight |
+| Prestige | Sub-tabs: Flight (checklist, alate rearing, projection) · Bloodline · Hardships · Supercolony · Federation · Edicts · Speciation · Genome · Species, each revealed per §23 | `f_run ≥ 2e7` or `nuptial_preparation` researched |
 | Achievements | List, Next Goals, secret placeholders | 3 achievements |
 | Field Guide | Entries by category | First entry (new game) |
 | Stats | Run and lifetime statistics: largest battle, deepest tunnel, longest trail, fastest flight, per-layer timings | Always |

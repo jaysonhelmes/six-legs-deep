@@ -39,8 +39,8 @@ test('tooltip copy is at most 12 words (DESIGN §25.6 rule 4)', () => {
   }
 });
 
-test('research copy covers all 57 nodes of DESIGN §11 and every Adaptation, chamber and job', () => {
-  assert.equal(Object.keys(T.RESEARCH_TIPS).length, 57);
+test('research copy covers all 58 nodes of DESIGN §11 and every Adaptation, chamber and job', () => {
+  assert.equal(Object.keys(T.RESEARCH_TIPS).length, 58);
   assert.equal(Object.keys(T.ADAPT_TIPS).length, 10);
   assert.equal(Object.keys(T.CHAMBER_TIPS).length, 16);
   for (const j of ['forager', 'digger', 'nurse', 'scout', 'herder', 'leafcutter', 'gardener']) assert.ok(T.JOB_TIPS[j], j);

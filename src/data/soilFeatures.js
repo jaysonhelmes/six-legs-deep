@@ -43,3 +43,22 @@ export const MOLE = freeze({ lenMin: 6, lenMax: 12, rowMin: 1, rowMax: 60, attem
  * and the shaft, Royal Chambers and each other, and the tunnel gap between pre-dug Royal Chambers (fire ants).
  */
 export const GEN = freeze({ attempts: 300, margin: 1, royalGap: 2 });
+
+/**
+ * Drainage abilities (DESIGN §7.9; research `drainage`, ARCHITECTURE §18 C117). A revealed water pocket can be
+ * drained (each water cell costs drainWork × its layer's cell work in dig work and drainSoil soil, paid when queued;
+ * the cells become diggable soil) or relocated to a same-size spot of plain soil within moveRows rows of it (moveWork ×
+ * layer work per water cell, no soil). A Water Well left touching no pocket is removed with its placement food refunded
+ * in full.
+ */
+export const DRAINAGE = freeze({ research: 'drainage', drainWork: 2, drainSoil: 120, moveWork: 1.5, moveRows: 12 });
+
+/**
+ * Cultivated roots (research `root_cultivation`, ARCHITECTURE §18 C118): a player-grown root line from row y0 down a
+ * chosen column, rowsPerSec rows per second, to maxRow at most (it stops above a chamber, stone, water or shaft cell).
+ * Cost cost × growth^n (n = cultivated roots this run). Cap: cap + 1 per moundPer Mound levels (at most +moundMax).
+ */
+export const ROOT_CULT = freeze({
+  research: 'root_cultivation', cost: { honeydew: 120, food: 800 }, growth: 1.6, cap: 3, moundPer: 5, moundMax: 3,
+  rowsPerSec: 2, y0: 1, maxRow: 30,
+});

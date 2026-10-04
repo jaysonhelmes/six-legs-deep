@@ -327,3 +327,133 @@ export function hatchPattern(ctx, kind, color, alpha = 0.55, size = 10) {
   per.set(key, pat);
   return pat;
 }
+
+// ----------------------------------------------------------------------------------------------------------------
+// Gradual seasons (C123): every seasonal colour blends toward the next season over the last BLEND_SEC of a season
+// ----------------------------------------------------------------------------------------------------------------
+
+/** Seconds before a season boundary over which visuals blend into the next season (capped at 30 % of the season). */
+export const SEASON_BLEND_SEC = 60;
+
+/** Whole-view wash per season as [r, g, b, a] (SEASON_WASH as numbers; spring has no wash). */
+export const SEASON_WASH_RGBA = Object.freeze({
+  spring: Object.freeze([255, 255, 255, 0]), summer: Object.freeze([255, 214, 140, 0.06]),
+  autumn: Object.freeze([255, 160, 70, 0.08]), winter: Object.freeze([205, 228, 255, 0.14]),
+});
+
+/** Weather particle intensity per season (0..1); winter snow is halved in the mild year-0 winter. */
+export const SEASON_WEATHER = Object.freeze({
+  spring: Object.freeze({ snow: 0, leaves: 0 }), summer: Object.freeze({ snow: 0, leaves: 0 }),
+  autumn: Object.freeze({ snow: 0, leaves: 0.6 }), winter: Object.freeze({ snow: 0.8, leaves: 0 }),
+});
+
+function smooth01(x) {
+  const u = x < 0 ? 0 : x > 1 ? 1 : x;
+  return u * u * (3 - 2 * u);
+}
+
+function seasonKey(id) {
+  return typeof id === 'string' && SKY[id] ? id : 'spring';
+}
+
+/**
+ * Visual season blend from d.season: `from` (the current season) eases into `to` (the next one, d.season.forecast.next)
+ * over the last `win` seconds before the boundary (d.season.toNext, which includes a held extra spring). Outside that
+ * window t = 0 (the pure current season). The value approaches 1 as toNext → 0, and right after the boundary the new
+ * season starts at t = 0 — the same colours — so the blend is continuous across the boundary.
+ * @param {{ id?: string, toNext?: number, len?: number, forecast?: { next?: string } }|null|undefined} ds d.season
+ * @param {number} [win=SEASON_BLEND_SEC]
+ * @returns {{ from: string, to: string, t: number }}
+ */
+export function seasonBlend(ds, win = SEASON_BLEND_SEC) {
+  const from = seasonKey(ds && ds.id);
+  const nx = ds && ds.forecast && ds.forecast.next;
+  const to = typeof nx === 'string' && SKY[nx] ? nx : from;
+  if (to === from) return { from, to, t: 0 };
+  const len = ds && ds.len > 0 ? ds.len : 360;
+  const w = Math.max(1, Math.min(win, len * 0.3));
+  const left = ds && Number.isFinite(ds.toNext) ? ds.toNext : Infinity;
+  if (!(left < w)) return { from, to, t: 0 };
+  return { from, to, t: smooth01(1 - Math.max(0, left) / w) };
+}
+
+/**
+ * Quantise a blend to `steps` levels (cache keys for layers that are rebuilt per step).
+ * @param {{ from: string, to: string, t: number }} b
+ * @param {number} steps
+ * @returns {{ from: string, to: string, t: number }}
+ */
+export function quantizeBlend(b, steps) {
+  const n = Math.max(1, Math.floor(steps));
+  return { from: b.from, to: b.to, t: Math.round(b.t * n) / n };
+}
+
+/**
+ * Blend a per-season colour table ({ spring: '#…', … }) by a season blend.
+ * @param {Record<string, string>} table
+ * @param {{ from: string, to: string, t: number }} b
+ * @returns {string}
+ */
+export function blendSeasonColor(table, b) {
+  const a = table[b.from] || table.spring;
+  if (!(b.t > 0) || b.to === b.from) return a;
+  return mix(a, table[b.to] || table.spring, b.t);
+}
+
+/**
+ * Sky gradient [top, bottom] for a season blend.
+ * @param {{ from: string, to: string, t: number }} b
+ * @returns {string[]}
+ */
+export function blendSky(b) {
+  const a = SKY[b.from] || SKY.spring;
+  if (!(b.t > 0) || b.to === b.from) return a;
+  const c = SKY[b.to] || SKY.spring;
+  return [mix(a[0], c[0], b.t), mix(a[1], c[1], b.t)];
+}
+
+/**
+ * Terrain colours [base, detail] for a terrain id under a season blend.
+ * @param {{ from: string, to: string, t: number }} b
+ * @param {string} terrain
+ * @returns {string[]}
+ */
+export function blendTerrainColor(b, terrain) {
+  const a = terrainColor(b.from, terrain);
+  if (!(b.t > 0) || b.to === b.from) return a;
+  const c = terrainColor(b.to, terrain);
+  return [mix(a[0], c[0], b.t), mix(a[1], c[1], b.t)];
+}
+
+/**
+ * Whole-view wash for a season blend as a CSS colour, or null when fully transparent.
+ * @param {{ from: string, to: string, t: number }} b
+ * @returns {string|null}
+ */
+export function blendWash(b) {
+  const a = SEASON_WASH_RGBA[b.from] || SEASON_WASH_RGBA.spring;
+  const c = SEASON_WASH_RGBA[b.to] || SEASON_WASH_RGBA.spring;
+  const t = b.to === b.from ? 0 : b.t;
+  const al = a[3] + (c[3] - a[3]) * t;
+  if (!(al > 0.001)) return null;
+  // colour weighted by alpha so a fade from / to the clear spring wash keeps its hue instead of greying out
+  const wa = a[3] * (1 - t);
+  const wc = c[3] * t;
+  const ws = wa + wc || 1;
+  const ch = (k) => Math.round((a[k] * wa + c[k] * wc) / ws);
+  return `rgba(${ch(0)},${ch(1)},${ch(2)},${Math.round(al * 1000) / 1000})`;
+}
+
+/**
+ * Weather intensities { snow, leaves } (0..1) for a season blend; a mild (year-0) winter snows at half strength.
+ * @param {{ from: string, to: string, t: number }} b
+ * @param {boolean} [mild=false]
+ * @returns {{ snow: number, leaves: number }}
+ */
+export function blendWeather(b, mild = false) {
+  const a = SEASON_WEATHER[b.from] || SEASON_WEATHER.spring;
+  const c = SEASON_WEATHER[b.to] || SEASON_WEATHER.spring;
+  const t = b.to === b.from ? 0 : b.t;
+  const snowK = mild ? 0.5 : 1;
+  return { snow: (a.snow + (c.snow - a.snow) * t) * snowK, leaves: a.leaves + (c.leaves - a.leaves) * t };
+}

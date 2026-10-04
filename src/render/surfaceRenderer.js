@@ -20,8 +20,8 @@ import { createLayer, createOffscreen, pageHidden, nowMs, reducedMotion } from '
 import { createSurfaceCamera } from './camera.js';
 import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, sampleSpline, arcTable, pointAtArc, distToPolyline, SQRT3 } from './geom.js';
 import {
-  terrainColor, SURFACE, SEASON_WASH, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
-  rivalPatternKind,
+  terrainColor, SURFACE, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
+  rivalPatternKind, seasonBlend, blendWash, blendWeather,
 } from './palette.js';
 import { getAtlas } from './atlas.js';
 import { BUDGET, REALLOC_SEC, createPool, reconcile, allocAbove, KIND } from './sprites.js';
@@ -184,7 +184,14 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   /** satellite placement tint (tool 'placeSatellite'): world-space offscreen cache + per-hex reasons */
   const satCache = { canvas: null, ctx: null, key: '', scale: 1, R: 0, ox: 0, oy: 0, reasons: [], valid: 0, global: null };
 
-  const terrainCache = { canvas: null, key: '', scale: 1, R: 0, ox: 0, oy: 0 };
+  /** C123: terrain caches by key (one per season; ≤ 2 live: the current season and, during the last
+   *  SEASON_BLEND_SEC of a season, the next one, cross-faded over it). */
+  const terrainCaches = new Map();
+  /** last terrain build time in ms (perf probe, getPerf) */
+  let terrainBuildMs = 0;
+  /** C123: pre-warm weather on the next frame (load, import, run start, view shown again, resize, long gap) */
+  let weatherFill = true;
+  let lastRenderAt = 0;
   const landCache = { canvas: null, key: '', scale: 1, R: 0, ox: 0, oy: 0 };
   /** Fallback territory when d.surface is not derived yet. */
   const terr = { key: '', owned: new Uint8Array(HEX_COUNT), border: new Uint8Array(HEX_COUNT), rival: new Int16Array(HEX_COUNT), frontier: [] };
@@ -293,15 +300,13 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     const r = s && s.run && s.run.surface ? s.run.surface.radius : 8;
     return clamp(Math.floor(r > 0 ? r : 8), 1, HEX.maxRadius);
   }
-  function seasonOf(d) {
-    return (d && d.season && d.season.id) || 'spring';
-  }
   function visiblePt(p, m = 40) {
     return p.x > -m && p.y > -m && p.x < layer.cssW + m && p.y < layer.cssH + m;
   }
 
   function dropCaches() {
-    terrainCache.key = '';
+    terrainCaches.clear();
+    weatherFill = true;
     landCache.key = '';
     terr.key = '';
     trailGeo.clear();
@@ -324,6 +329,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   function ensureViewport(s) {
     if (layer.version !== layerVersion || cam.w !== layer.cssW || cam.h !== layer.cssH) {
       layerVersion = layer.version;
+      weatherFill = true;
       cam.setViewport(layer.cssW, layer.cssH);
       // until the player moves the camera, every layout change (boot, the view being switched in, rotation)
       // re-applies the default framing for the real canvas size
@@ -461,13 +467,33 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     return h;
   }
 
-  function syncTerrain(s, d) {
+  /**
+   * The terrain cache of `season` for the current map, built on first use. Keeps the caches still in use this frame
+   * (`keep`: keys) and drops the others, so a season transition holds two canvases at most.
+   * @returns {{ canvas: any, key: string, scale: number, R: number, ox: number, oy: number }}
+   */
+  function terrainFor(s, season, keep) {
     const surf = s.run.surface;
     const R = radiusOf(s);
-    const season = seasonOf(d);
     const key = `${surf.terrain && surf.terrain.length}|${terrainChecksum(surf.terrain || [])}|${season}|${R}|${s.run.seed}`;
-    if (key === terrainCache.key && terrainCache.canvas) return;
-    terrainCache.key = key;
+    if (keep) keep.push(key);
+    let terrainCache = terrainCaches.get(key);
+    if (terrainCache && terrainCache.canvas) return terrainCache;
+    const t0 = nowMs();
+    terrainCache = { canvas: null, key, scale: 1, R: 0, ox: 0, oy: 0 };
+    terrainCaches.set(key, terrainCache);
+    buildTerrain(s, season, R, terrainCache);
+    terrainBuildMs = nowMs() - t0;
+    return terrainCache;
+  }
+
+  function pruneTerrain(keep) {
+    if (terrainCaches.size <= keep.length) return;
+    for (const k of [...terrainCaches.keys()]) if (!keep.includes(k)) terrainCaches.delete(k);
+  }
+
+  function buildTerrain(s, season, R, terrainCache) {
+    const surf = s.run.surface;
     const gm = cacheGeom(R);
     const off = createOffscreen(gm.W * gm.scale, gm.H * gm.scale);
     terrainCache.canvas = off.canvas;
@@ -895,7 +921,9 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       ownedSum += T.owned[i] * (i + 1);
       rivalSum += T.rival[i] * (i + 3);
     }
-    const key = `${surf.rev}|${R}|${revCount}|${ownedSum}|${rivalSum}`;
+    let sightSum = 0;
+    for (const rv of s.run.rivals.list || []) if (rv && rivalVisible(s, rv)) sightSum += rv.uid * 7 + 1;
+    const key = `${surf.rev}|${R}|${revCount}|${ownedSum}|${rivalSum}|${sightSum}`;
     if (key === landCache.key && landCache.canvas) return;
     landCache.key = key;
     const gm = cacheGeom(R);
@@ -926,9 +954,14 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     g.fill();
     // rival land: tint + hatch, per rival
     const byRival = new Map();
+    // C124: a rival's land shows only where it can be known — on revealed hexes, or everywhere once its nest is sighted
+    // (the fog is not fully opaque, so unsighted hatching used to show faintly through it on a fresh map)
+    const seen = new Set();
+    for (const rv of s.run.rivals.list || []) if (rv && rivalVisible(s, rv)) seen.add(rv.uid);
     for (let i = 0; i < n; i++) {
       const u = T.rival[i];
       if (!u) continue;
+      if (!rev[i] && !seen.has(u)) continue;
       if (!byRival.has(u)) byRival.set(u, []);
       byRival.get(u).push(i);
     }
@@ -1774,12 +1807,19 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     });
   }
 
+  /**
+   * Daughter colonies (DESIGN §14.6, `cycle.daughters`): allied nests founded by earlier Flights, shown beyond the map
+   * edge. C124 (player report "enemy anthills through the fog"): they used to be bare gold mounds that read as unscouted
+   * rival nests; they now carry wings, a dashed allied ring in the player's colour and a "Daughter colony" label.
+   */
   function drawDaughters(ctx, s) {
     const pos = daughterPositions(s);
     if (!pos.length) return;
+    const list = ((s.cycle && s.cycle.daughters) || []).slice(-((RESET && RESET.daughtersMax) || 8));
     const budding = !!(s.cycle && s.cycle.traits && s.cycle.traits.budding > 0);
     const z = curView.zoom;
-    for (const p of pos) {
+    for (let k = 0; k < pos.length; k++) {
+      const p = pos[k];
       const sp = w2s(p.x, p.y);
       if (budding) {
         const end = w2s(p.x * 0.55, p.y * 0.55);
@@ -1794,6 +1834,14 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       }
       if (!visiblePt(sp)) continue;
       const r = SIZE * z * 0.45;
+      // allied ring (dashed, player amber) so it never reads as a rival nest
+      ctx.strokeStyle = rgba(SURFACE.player, 0.75);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, r * 1.55, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
       ctx.fillStyle = 'rgba(0,0,0,0.25)';
       ctx.beginPath();
       ctx.ellipse(sp.x + 2, sp.y + 2, r * 1.05, r * 0.72, 0, 0, Math.PI * 2);
@@ -1809,6 +1857,29 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       ctx.beginPath();
       ctx.ellipse(sp.x, sp.y - r * 0.1, r * 0.25, r * 0.17, 0, 0, Math.PI * 2);
       ctx.fill();
+      // a pair of alate wings above the mound: the colony a Flight founded
+      ctx.fillStyle = 'rgba(232,242,255,0.85)';
+      ctx.strokeStyle = 'rgba(60,70,90,0.6)';
+      ctx.lineWidth = 0.8;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse(sp.x + side * r * 0.42, sp.y - r * 0.95, r * 0.42, r * 0.17, side * -0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+      const dg = list[k];
+      const label = z >= 0.8 && dg && dg.alates > 0 ? `Daughter colony · ${compactInt(dg.alates)} alates` : 'Daughter colony';
+      ctx.font = `600 ${Math.max(9, Math.round(10 * Math.sqrt(z)))}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(label).width + 8;
+      const ly = sp.y + r * 1.55 + 9;
+      // kept inside the canvas: the colonies sit beyond the map edge, often near the canvas border
+      const lx = layer.cssW > tw + 8 ? clamp(sp.x, tw / 2 + 4, layer.cssW - tw / 2 - 4) : sp.x;
+      ctx.fillStyle = 'rgba(20,14,6,0.72)';
+      ctx.fillRect(lx - tw / 2, ly - 7, tw, 14);
+      ctx.fillStyle = SURFACE.daughter;
+      ctx.fillText(label, lx, ly);
     }
   }
 
@@ -2079,12 +2150,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     return false;
   }
 
-  function drawWeather(ctx, s, d, dt, W, H) {
-    const season = seasonOf(d);
+  /**
+   * Weather intensities for this frame (C123): snow and leaves follow the season blend (ramping in and out over the
+   * transition window); a rainstorm replaces them while it lasts.
+   * @returns {{ rain: number, snow: number, leaves: number }}
+   */
+  function weatherNow(s, d, sb) {
+    if (raining(s)) return { rain: 1, snow: 0, leaves: 0 };
+    const w = blendWeather(sb || seasonBlend(d && d.season), !!(d && d.season && d.season.mild));
+    return { rain: 0, snow: w.snow, leaves: w.leaves };
+  }
+
+  function drawWeather(ctx, s, d, dt, W, H, sb) {
     const bounds = { x: 0, y: 0, w: W, h: H };
-    if (raining(s)) fxScreen.weather('rain', 1, bounds, dt, reduced);
-    else if (season === 'winter') fxScreen.weather('snow', d && d.season && d.season.mild ? 0.4 : 0.8, bounds, dt, reduced);
-    else if (season === 'autumn') fxScreen.weather('leaves', 0.6, bounds, dt, reduced);
+    // C123 (player report): weather is seeded from the current season on load, import, a new run, the view shown
+    // again and resizes, spread over the whole view, instead of trickling in as a band from the top edge
+    fxScreen.weatherMix(weatherNow(s, d, sb), bounds, dt, reduced, weatherFill);
+    if (W > 0 && H > 0) weatherFill = false;
     fxScreen.update(dt, bounds);
     fxScreen.draw(ctx);
     const drought = ((s.run.events && s.run.events.active) || []).some((a) => a && a.id === 'ev_drought' && !(a.data && a.data.forecast));
@@ -2096,7 +2178,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       ctx.fillStyle = 'rgba(40,60,90,0.16)';
       ctx.fillRect(0, 0, W, H);
     }
-    const wash = SEASON_WASH[season];
+    const wash = blendWash(sb || seasonBlend(d && d.season));
     if (wash) {
       ctx.fillStyle = wash;
       ctx.fillRect(0, 0, W, H);
@@ -2282,6 +2364,9 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     const dt = clamp(Number.isFinite(frameDt) ? frameDt : 0, 0, 0.1);
     time += dt;
     const nowS = nowMs();
+    // C123: back from a hidden tab / hidden view (no frames for a while): re-seed the weather for the current season
+    if (nowS - lastRenderAt > 1500) weatherFill = true;
+    lastRenderAt = nowS;
     if (nowS - reducedAt > 1000) {
       reducedAt = nowS;
       reduced = reducedMotion(s);
@@ -2292,14 +2377,26 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     const H = layer.cssH;
     const T = territory(s, d);
     territoryCache = T;
-    syncTerrain(s, d);
+    // C123: gradual seasons — the next season's terrain cross-fades over the current one in the last
+    // SEASON_BLEND_SEC of a season (two cached canvases, no per-step rebuilds; continuous at the boundary, where the
+    // next season's cache simply becomes the current one)
+    const sb = seasonBlend(d && d.season);
+    const keepT = [];
+    const terrA = terrainFor(s, sb.from, keepT);
+    const terrB = sb.t > 0 && sb.to !== sb.from ? terrainFor(s, sb.to, keepT) : null;
+    pruneTerrain(keepT);
     syncLand(s, d, T);
     for (const p of pulses) p.t += dt;
 
     ctx.setTransform(layer.dpr, 0, 0, layer.dpr, 0, 0);
     ctx.fillStyle = SURFACE.void;
     ctx.fillRect(0, 0, W, H);
-    blit(ctx, terrainCache);
+    blit(ctx, terrA);
+    if (terrB) {
+      ctx.globalAlpha = sb.t;
+      blit(ctx, terrB);
+      ctx.globalAlpha = 1;
+    }
     blit(ctx, landCache);
     const tool0 = uiOf(ui).tool;
     if (tool0 && tool0.kind === 'placeSatellite') {
@@ -2346,7 +2443,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     scentHint(s, d, dt);
     fxWorld.update(dt, null);
     drawWorldFx(ctx);
-    drawWeather(ctx, s, d, dt, W, H);
+    drawWeather(ctx, s, d, dt, W, H, sb);
     const ui0 = uiOf(ui);
     const ov = ui0.overlays || {};
     if (ov.territory || ov.trail_strength || ov.danger || ov.richness) {
@@ -2479,6 +2576,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   }
 
   function setVisible(on) {
+    if (on && !visible) weatherFill = true;
     visible = !!on;
   }
 
@@ -2538,6 +2636,11 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     },
     get spriteCount() {
       return pool.n;
+    },
+    /** C123 test / perf probe: live weather counts, the season blend and the last terrain cache build time (ms). */
+    getWeather() {
+      const d = D();
+      return { counts: fxScreen.weatherCounts(), blend: seasonBlend(d && d.season), terrainCaches: terrainCaches.size, terrainBuildMs };
     },
   };
   registerRenderer(canvas, api);

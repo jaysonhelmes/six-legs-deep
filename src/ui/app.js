@@ -499,15 +499,24 @@ export function mountUI(root, game, opts = {}) {
       items.push({ label: 'Assault…', run: () => bridge.openChooser('war', { kind: 'assault', target: { type: 'rival', uid: t.id } }) });
       items.push(A('bribe', { rival: t.id }, 'Bribe'));
       if (getUI().tool === null) items.push({ label: 'Tournament…', run: () => setUI({ tool: { kind: 'tournament', rival: t.id } }) });
-    } else if (t.kind === 'source') {
-      const src = arr(s.run.surface.sources).find((x) => x && x.uid === t.id);
-      if (src && isClickableSource(src.type)) items.push(A('clickForage', { src: t.id }, 'Hand-forage'));
-      if (src && isClickableSource(src.type)) {
+    } else if (t.kind === 'source' || t.kind === 'eventObject') {
+      // C115: a fallen fruit's event object sits on its source, so right-clicking the fruit offers the source's actions
+      let src = null;
+      if (t.kind === 'eventObject') {
+        const o = arr(s.run.events && s.run.events.objects).find((x) => x && x.uid === t.id);
+        const su = o && o.kind === 'fruit' && o.data ? o.data.src : undefined;
+        src = Number.isInteger(su) ? arr(s.run.surface.sources).find((x) => x && x.uid === su) || null : null;
+      } else {
+        src = arr(s.run.surface.sources).find((x) => x && x.uid === t.id) || null;
+      }
+      if (src && isClickableSource(src.type)) items.push(A('clickForage', { src: src.uid }, 'Hand-forage'));
+      // trails reach every forageable source, Lycaenid caterpillars too (escorted honeydew trails, job 'lycaenid')
+      if (src && (isClickableSource(src.type) || src.type === 'lycaenid_caterpillar')) {
         const main = arr(s.run.surface.entrances).find((e) => e && e.kind === 'main');
         let origin = -1;
         try { origin = bestOrigin(s, game.d, src.hex); } catch { origin = -1; } // C102: nearest/best entrance
         if (origin < 0) origin = main ? main.hex : 0;
-        items.push(A('drawTrail', { origin, target: src.hex }, 'Draw trail from nearest entrance'));
+        items.push(A('drawTrail', { origin, target: src.hex, src: src.uid }, 'Draw trail from nearest entrance'));
       }
       if (src && !isClickableSource(src.type) && src.type !== 'lycaenid_caterpillar') {
         items.push({ label: src.type === 'termite_mound' ? 'Raid mound…' : 'Hunt…',

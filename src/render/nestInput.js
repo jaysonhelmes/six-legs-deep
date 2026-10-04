@@ -192,7 +192,7 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       setUI(ui, { hover: target });
     }
     // While placing or relocating, the ghost draws its own label (layer, haul, frost); a cell tooltip on top would hide it.
-    const ghostTool = tool && (tool.kind === 'placeChamber' || tool.kind === 'relocate');
+    const ghostTool = tool && (tool.kind === 'placeChamber' || tool.kind === 'relocate' || tool.kind === 'movePocket' || tool.kind === 'growRoot');
     call(bridge, 'hover', ghostTool ? null : target, e.clientX, e.clientY);
   }
 
@@ -432,6 +432,16 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
         if (res.ok) setUI(ui, { tool: null });
         return;
       }
+      // C117 / C118: move a water pocket to the ghost spot; grow a cultivated root down the clicked column
+      if ((tool.kind === 'movePocket' || tool.kind === 'growRoot') && dn.cell) {
+        const g = renderer.ghostAt ? renderer.ghostAt(dn.cell.i, tool) : null;
+        if (!g) return;
+        const res = tool.kind === 'growRoot'
+          ? act('growRoot', { col: g.col }, cx, cy)
+          : act('relocatePocket', { pocket: tool.pocket, x: g.x, y: g.y }, cx, cy);
+        if (res.ok) setUI(ui, { tool: null });
+        return;
+      }
       if (tool.kind === 'levelDir') {
         const dir = dirAt(tool.uid, dn.x, dn.y);
         if (!dir) {
@@ -477,6 +487,12 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
         break;
       case 'cacheHint':
         act('digTo', { cell: t.i }, cx, cy);
+        break;
+      // C120 / C117: a planned blueprint chamber (cancel it) or a water pocket (drain / move it) opens the inspect view
+      case 'planned':
+      case 'pocket':
+        call(bridge, 'select', t);
+        call(bridge, 'openTab', 'build', 'inspect');
         break;
       default:
         call(bridge, 'select', t);

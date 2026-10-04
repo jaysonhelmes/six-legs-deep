@@ -1090,3 +1090,31 @@
   .unlock-ribbon { flex-basis: 100%; max-width: none; }
 }
 .view-tab.view-flip { flex: none; min-width: 34px; font-size: 1rem; }
+
+/* C114: Army Ant Column card intel line (column vs your garrison, live odds) */
+.ec-intel { font-size: var(--fs-xs); line-height: 1.4; color: var(--text); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-md, 6px); padding: 5px 8px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.ec-intel:empty, .ec-intel[hidden] { display: none; }
+/* C116: Research "Hide completed" toggle and per-branch hidden count */
+.hide-owned { margin-top: 4px; }
+.hide-owned-count:empty { display: none; }
+.tech-hidden-note { font-size: var(--fs-xs); color: var(--text-3); font-style: italic; margin: 0; padding: 0 2px; }
+.tech-hidden-note:empty { display: none; }
+
+/* C122: compact "Lvl cheapest" button on chamber rows: short label (detail in the tooltip), green when affordable even
+   when the row's own placement is not, quiet when it cannot be paid */
+.chamber-row .btn-cheapest { min-height: 24px; padding: 2px 7px; font-size: 11px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.chamber-row.cant .btn-cheapest.btn-buy:not(.cant) {
+  background: color-mix(in srgb, var(--good) 30%, var(--surface-3));
+  border-color: color-mix(in srgb, var(--good) 70%, transparent);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--good) 45%, transparent);
+}
+.chamber-row .btn-cheapest.cant { color: var(--danger); }
+.btn-cheapest-insp.cant { color: var(--text-3); }
+/* C121 / C120: bulk backfill confirm and the planned (pending blueprint) list */
+.btn-unneeded.armed { color: var(--warn); border-color: var(--warn); }
+.planned-box { margin: 6px 0 8px; padding: 6px 8px; border: 1px dashed color-mix(in srgb, #aad2ff 45%, var(--line-soft)); border-radius: var(--r-md); }
+.planned-list { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.planned-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); color: var(--text-2); }
+.planned-row .btn-icon { min-width: 24px; min-height: 24px; }

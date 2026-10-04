@@ -1,4 +1,4 @@
-// WP5 unit tests: data/research.js and systems/research.js — the 57-node tree (costs, prerequisites, fx contract),
+// WP5 unit tests: data/research.js and systems/research.js — the 58-node tree (costs, prerequisites, fx contract),
 // purchases and their reason codes, refinements (10,000 × 2.5^L, null until the branch is complete), innate grants.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,12 +14,12 @@ function ownAll(s, branch = null) {
   for (const id of RESEARCH_ORDER) if (!branch || RESEARCH[id].branch === branch) s.run.research[id] = 1;
 }
 
-test('the tree has all 57 DESIGN nodes, branch by branch, with valid prerequisites and grid rows', () => {
-  assert.equal(RESEARCH_ORDER.length, 57);
+test('the tree has all 58 DESIGN nodes, branch by branch, with valid prerequisites and grid rows', () => {
+  assert.equal(RESEARCH_ORDER.length, 58);
   assert.deepEqual([...RESEARCH_ORDER].sort(), [...DOC_IDS.research].sort());
   assert.deepEqual(Object.keys(RESEARCH).sort(), [...RESEARCH_ORDER].sort());
   assert.deepEqual(BRANCH_ORDER, ['foraging', 'excavation', 'brood', 'husbandry', 'warfare', 'communication']);
-  const counts = { foraging: 11, excavation: 10, brood: 10, husbandry: 8, warfare: 8, communication: 10 };
+  const counts = { foraging: 11, excavation: 10, brood: 10, husbandry: 9, warfare: 8, communication: 10 };
   for (const b of BRANCH_ORDER) {
     assert.equal(BRANCHES[b].id, b);
     const ids = RESEARCH_ORDER.filter((id) => RESEARCH[id].branch === b);
@@ -57,7 +57,7 @@ test('costs and prerequisites are copied verbatim from DESIGN §11', () => {
     assert.deepEqual(RESEARCH[id].prereq, prereq, id);
   }
   // Per-branch cost sums of the DESIGN §11.1–§11.6 tables.
-  const sums = { foraging: 29725, excavation: 37795, brood: 13885, husbandry: 14250, warfare: 25950, communication: 20600 };
+  const sums = { foraging: 29725, excavation: 37795, brood: 13885, husbandry: 15750, warfare: 25950, communication: 20600 };
   for (const [b, want] of Object.entries(sums)) {
     let total = 0;
     for (const id of RESEARCH_ORDER) if (RESEARCH[id].branch === b) total += RESEARCH[id].cost;
@@ -79,7 +79,7 @@ test('fx keys match the ARCHITECTURE §6.5 contract table', () => {
     age_polyethism: {}, royal_pheromones: { lay: 1.5 }, trophic_eggs: { eggCost: 0.7 }, thermal_brood_shuttling: {},
     nuptial_preparation: {}, response_thresholds: {}, living_larders: {}, spermathecal_reserve: { lay: 2 }, supermajors: {},
     aphid_husbandry: {}, leafcutting: {}, aphid_shepherding: { herderCap: 2 }, fungiculture: {}, lycaenid_clients: {},
-    sugar_economy: { honeydew: 2 }, weeder_ants: { blight: 0.25, fungus: 1.5 }, fungal_symbiosis: { phiCoef: 1.0 },
+    root_cultivation: {}, sugar_economy: { honeydew: 2 }, weeder_ants: { blight: 0.25, fungus: 1.5 }, fungal_symbiosis: { phiCoef: 1.0 },
     polymorphism: {}, formic_acid: { atk: 1.3 }, ritual_tournaments: {}, phalanx: { escortAP: 1.5, retreatLoss: 0.1 },
     field_triage: { frac: 0.3, sec: 60, nurses: 5 }, propaganda_pheromones: { enemyAP: 0.9, convert: 0.05 },
     siege_tactics: { home: 0.5 }, war_chemistry: { ap: 2 }, collective_memory: { insight: 2, offlineSec: 7200 },

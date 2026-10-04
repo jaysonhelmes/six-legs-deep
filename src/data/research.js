@@ -1,4 +1,4 @@
-// Research data: the six branches, all 57 nodes (cost in insight, prerequisites, effect numbers), refinements and
+// Research data: the six branches, all 58 nodes (cost in insight, prerequisites, effect numbers), refinements and
 // innate thresholds. Owner: WP5. Contract: ARCHITECTURE §6.5 (fx key table); DESIGN §11.1–§11.7.
 // `tier` = row in the Research grid (0-based, by cost within the branch; a node never sits above its prerequisite).
 // ARCH-R: warfare's formic_acid (250) is cheaper than its prerequisite polymorphism (300); it is placed one row
@@ -46,6 +46,7 @@ export const RESEARCH = f({
   load_chains: n('load_chains', 'Load Chains', 'excavation', 1, 80, ['coordinated_digging'], { tunnel: 0.5, queue: 2 }),
   clay_masonry: n('clay_masonry', 'Clay Masonry', 'excavation', 2, 300, ['load_chains'], { clayWork: 7.2 }),
   mound_building: n('mound_building', 'Mound Building', 'excavation', 3, 400, ['coordinated_digging']),
+  // C117: also unlocks draining and relocating water pockets (numbers: data/soilFeatures.js DRAINAGE).
   drainage: n('drainage', 'Drainage', 'excavation', 4, 800, ['clay_masonry'], { drought: 0.5 }),
   ventilation_shafts: n('ventilation_shafts', 'Ventilation Shafts', 'excavation', 5, 1200, ['clay_masonry'], { chamber: 1.10 }),
   thermoregulation: n('thermoregulation', 'Thermoregulation', 'excavation', 6, 2000, ['ventilation_shafts'], { frost: 5 }),
@@ -71,9 +72,11 @@ export const RESEARCH = f({
   aphid_shepherding: n('aphid_shepherding', 'Aphid Shepherding', 'husbandry', 2, 700, ['aphid_husbandry'], { herderCap: 2 }),
   fungiculture: n('fungiculture', 'Fungiculture', 'husbandry', 3, 900, ['leafcutting']),
   lycaenid_clients: n('lycaenid_clients', 'Lycaenid Clients', 'husbandry', 4, 1200, ['aphid_shepherding']),
-  sugar_economy: n('sugar_economy', 'Sugar Economy', 'husbandry', 5, 2000, ['aphid_shepherding'], { honeydew: 2 }),
-  weeder_ants: n('weeder_ants', 'Weeder Ants', 'husbandry', 6, 3000, ['fungiculture'], { blight: 0.25, fungus: 1.5 }),
-  fungal_symbiosis: n('fungal_symbiosis', 'Fungal Symbiosis', 'husbandry', 7, 6000, ['weeder_ants'], { phiCoef: 1.0 }),
+  // C118: grow your own root lines down into the nest (numbers: data/soilFeatures.js ROOT_CULT).
+  root_cultivation: n('root_cultivation', 'Root Cultivation', 'husbandry', 5, 1500, ['aphid_husbandry']),
+  sugar_economy: n('sugar_economy', 'Sugar Economy', 'husbandry', 6, 2000, ['aphid_shepherding'], { honeydew: 2 }),
+  weeder_ants: n('weeder_ants', 'Weeder Ants', 'husbandry', 7, 3000, ['fungiculture'], { blight: 0.25, fungus: 1.5 }),
+  fungal_symbiosis: n('fungal_symbiosis', 'Fungal Symbiosis', 'husbandry', 8, 6000, ['weeder_ants'], { phiCoef: 1.0 }),
 
   // ---- §11.5 Warfare ----
   polymorphism: n('polymorphism', 'Polymorphism', 'warfare', 0, 300, []),
@@ -99,7 +102,7 @@ export const RESEARCH = f({
   hive_mind: n('hive_mind', 'Hive Mind', 'communication', 9, 12000, ['collective_memory', 'response_thresholds'], { insight: 1.5 }),
 });
 
-/** All 57 node ids, branch by branch, in DESIGN order. */
+/** All 58 node ids, branch by branch, in DESIGN order. */
 export const RESEARCH_ORDER = f([
   'trail_memory', 'scent_marking', 'tandem_running', 'recruitment_pheromones', 'double_bridge', 'persistent_trails', 'sun_compass',
   'mass_recruitment', 'frenzy_signal', 'trunk_trails', 'odometer_navigation',
@@ -107,7 +110,7 @@ export const RESEARCH_ORDER = f([
   'gallery_arches', 'acid_excavation', 'compact_galleries',
   'brood_care', 'age_polyethism', 'royal_pheromones', 'trophic_eggs', 'thermal_brood_shuttling', 'nuptial_preparation',
   'response_thresholds', 'living_larders', 'spermathecal_reserve', 'supermajors',
-  'aphid_husbandry', 'leafcutting', 'aphid_shepherding', 'fungiculture', 'lycaenid_clients', 'sugar_economy', 'weeder_ants',
+  'aphid_husbandry', 'leafcutting', 'aphid_shepherding', 'fungiculture', 'lycaenid_clients', 'root_cultivation', 'sugar_economy', 'weeder_ants',
   'fungal_symbiosis',
   'polymorphism', 'formic_acid', 'ritual_tournaments', 'phalanx', 'field_triage', 'propaganda_pheromones', 'siege_tactics',
   'war_chemistry',

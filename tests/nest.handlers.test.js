@@ -10,7 +10,9 @@ import * as nest from '../src/systems/nest.js';
 import { idx } from '../src/systems/nestgeom.js';
 
 const TYPES = ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill',
-  'reorderQueue', 'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint'];
+  'reorderQueue', 'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint',
+  // C117–C121
+  'cancelPlanned', 'backfillUnneeded', 'drainPocket', 'relocatePocket', 'growRoot'];
 
 function setup({ digW = 0 } = {}) {
   const s = newState();

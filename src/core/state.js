@@ -98,6 +98,8 @@ export function createRun(seed) {
       // C106: pending blueprint chambers [{ type, x, y }] and the blueprint tunnel cells behind them (nest.applyBlueprint).
       bpPending: [],
       bpTunnels: [],
+      // C119: blueprint notes for the player (Royal Chamber / Water Well), flushed as blueprintDropped events by nest.tick.
+      bpNotes: [],
     },
     surface: {
       rev: 1,

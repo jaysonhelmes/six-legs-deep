@@ -85,7 +85,7 @@ export function nextView(view, layout) {
 
 /** Canvas each tool works on (ARCHITECTURE §14.4 tool kinds). */
 export const TOOL_VIEW = Object.freeze({
-  placeChamber: 'nest', relocate: 'nest', backfill: 'nest', levelDir: 'nest',
+  placeChamber: 'nest', relocate: 'nest', backfill: 'nest', levelDir: 'nest', growRoot: 'nest', movePocket: 'nest',
   claim: 'surface', flag: 'surface', reroute: 'surface', placeSatellite: 'surface', moveAphids: 'surface', tournament: 'surface',
 });
 

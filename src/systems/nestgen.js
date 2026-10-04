@@ -198,6 +198,7 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     deepestRow: r0.y + r0.h - 1,
     bpPending: [],
     bpTunnels: [],
+    bpNotes: [],
   };
 }
 

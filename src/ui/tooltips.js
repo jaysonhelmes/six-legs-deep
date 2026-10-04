@@ -12,7 +12,7 @@ import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
 import { oldRidgeImmunity, frontInfo, frontLabel, satellitesFree, satelliteHexWhy, spanText } from './rules.js';
-import { cellInfo, chamberLinks } from '../systems/nest.js';
+import { cellInfo, chamberLinks, pocketAction } from '../systems/nest.js';
 import { groomText } from './panels/build.js';
 import { ringOf } from '../core/hex.js';
 import { TERRAIN_ORDER } from '../data/surface.js';
@@ -137,7 +137,23 @@ export function tipForTarget(t, s, d) {
       return { title: nameOf('chamber', c.type) + ' L' + fmtCount(num(c.level)), lines: lines.filter(Boolean) };
     }
     // C106: a pending blueprint chamber's planned outline
-    if (k === 'planned') return { title: 'Planned: ' + nameOf('chamber', t.chamberType), lines: ['Planned (blueprint): queues when unlocked and affordable.'] };
+    if (k === 'planned') {
+      return { title: 'Planned: ' + nameOf('chamber', t.chamberType), lines: ['Planned (blueprint): queues when unlocked and affordable.',
+        'Click to inspect it or cancel this planned chamber.'] };
+    }
+    // C117: a revealed water pocket (drain / move with Drainage)
+    if (k === 'pocket') {
+      const p = arr(s.run.nest && s.run.nest.features && s.run.nest.features.water)[num(t.id, -1)];
+      if (!p) return null;
+      const owned = !!(s.run.research && s.run.research.drainage);
+      let info = null;
+      if (owned) { try { info = pocketAction(s, d, num(t.id, -1), null); } catch { info = null; } }
+      const lines = ['Cannot be dug. A Water Well must touch one.'];
+      if (info && info.wells) lines.push('A Water Well uses it.');
+      if (info && info.busy) lines.push('Being drained or moved.');
+      else lines.push(owned ? 'Click to drain it or move it.' : nameOf('research', 'drainage') + ' research lets you drain or move it.');
+      return { title: 'Water pocket · ' + p.w + '×' + p.h, lines };
+    }
     if (k === 'digFace') return { title: 'Dig face', lines: ['Click to help dig.', 'Dig rate ' + fmtRate(num(d && d.stats && d.stats.digW)).replace('/s', ' work/s')] };
     if (k === 'pupa') return { title: 'Golden pupa', lines: ['Click to claim Frenzy or Windfall.'] };
     if (k === 'mold') return { title: 'Mold', lines: ['Halves this chamber. Click to scrape it off.'] };
@@ -154,7 +170,7 @@ export function tipForTarget(t, s, d) {
       if (!info) return null;
       const lines = [];
       if (num(info.work) > 0) lines.push('Dig work ' + fmt(num(info.work)) + ' per cell');
-      if (info.root) lines.push('A root grows down here.');
+      if (info.root) lines.push(info.rootOwn ? 'Cultivated root: grown by your colony. Root Aphid Pens can touch it.' : 'A root grows down here.');
       if (info.water) lines.push('Water pocket: cannot be dug.');
       return { title: nameOf('layer', info.layer) + ' · row ' + Math.floor(num(t.i) / num(GRID && GRID.cols, 40)), lines };
     }

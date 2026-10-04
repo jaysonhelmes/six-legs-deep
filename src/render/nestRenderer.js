@@ -28,7 +28,7 @@ import { effectsFor } from '../core/effects.js';
 import { createLayer, createOffscreen, pageHidden, nowMs, reducedMotion } from './canvas.js';
 import { createNestCamera, FRAME_CELL } from './camera.js';
 import { pxToCell, clamp, hash01, hash2 } from './geom.js';
-import { STRATA, NEST, SKY, GRASS_LINE, ANT, CARRY_CODES, mix, shade, rgba, rivalColor } from './palette.js';
+import { STRATA, NEST, GRASS_LINE, ANT, CARRY_CODES, mix, shade, rgba, rivalColor, seasonBlend, blendSky, blendSeasonColor } from './palette.js';
 import { getAtlas } from './atlas.js';
 import {
   BUDGET, REALLOC_SEC, createPool, reconcile, allocBelow, createFieldCache, stepDown, randomNeighbor, KIND,
@@ -46,6 +46,16 @@ import * as decor from './nestDecor.js';
 const COLS = GRID.cols;
 const ROWS = GRID.rows;
 const NCELL = COLS * ROWS;
+/** C118: cultivated roots are a little greener than wild ones. */
+const ROOT_OWN = '#c4d48e';
+const ROOT_OWN_DARK = '#8fa35c';
+/** C117 / C118: short ghost labels for refused pocket moves and root columns. */
+const REASON_SHORT = Object.freeze({ 'blocked:water': 'Water in the way', 'blocked:stone': 'Stone in the way', 'blocked:open': 'Needs plain soil',
+  'blocked:chamber': 'Chamber in the way', 'blocked:cache': 'Something is buried here', 'blocked:queued': 'Queued for digging',
+  'blocked:backfill': 'Being backfilled', 'invalid:row': 'Too far from the pocket', 'invalid:bounds': 'Off the grid',
+  'blocked:royalRoom': 'Would wall in the queen', 'blocked:route': 'No tunnel reaches it', queueFull: 'Dig queue full', hardship: 'Too deep',
+  'invalid:root': 'A root grows here already', 'blocked:shaft': 'Shaft column', blocked: 'Top cell blocked', max: 'Root limit reached',
+  cantAfford: 'Cannot afford', locked: 'Needs research', busy: 'Already moving' });
 const STAGES = (BROOD && BROOD.stages) || [0.25, 0.75];
 const MAX_BROOD_SPRITES = 30;
 const FROST_IMMUNE_FALLBACK = new Set(['royal_chamber', 'gate', 'thermal_chimney']);
@@ -261,7 +271,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
 
   /** strata cache */
   const cache = { canvas: null, ctx: null, cpp: 0, drawn: new Int8Array(NCELL).fill(-9), rev: -1, cellsRef: null, waterKey: '',
-    fossilKey: '', fossil: null, rootsKey: '', roots: new Uint8Array(NCELL), water: new Uint8Array(NCELL), pristine: null,
+    fossilKey: '', fossil: null, rootsKey: '', roots: new Uint8Array(NCELL), rootOwn: new Uint8Array(NCELL), water: new Uint8Array(NCELL), pristine: null,
     featRev: -1, featRef: null, featStrata: -1, featCpp: 0, force: new Uint8Array(NCELL), grad: null, chamberKeys: new Map() };
   /** decorative soil either side of the grid */
   const margin = { canvas: null, ctx: null, cpm: 0 };
@@ -739,16 +749,19 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     cache.featStrata = strataN;
     cache.featCpp = cache.cpp;
     const roots = f.roots || [];
-    const rk = roots.map((r) => `${r.col},${r.y0},${r.y1}`).join(';');
+    const rk = roots.map((r) => `${r.col},${r.y0},${r.y1}${r.own ? 'c' : ''}`).join(';');
     if (rk !== cache.rootsKey) {
       cache.rootsKey = rk;
       cache.roots.fill(0);
+      cache.rootOwn.fill(0);
       for (const r of roots) {
         if (!r || !(r.col >= 0) || r.col >= COLS) continue;
         const y0 = Math.max(0, r.y0);
         const y1 = Math.min(ROWS - 1, r.y1);
         // store the remaining thickness (255 at the top → ~40 at the tip) so the root tapers with depth
         for (let y = y0; y <= y1; y++) cache.roots[y * COLS + r.col] = Math.round(255 - 215 * ((y - y0) / Math.max(1, y1 - y0 + 1)));
+        // C118: cultivated roots are drawn a little greener
+        if (r.own) for (let y = y0; y <= y1; y++) cache.rootOwn[y * COLS + r.col] = 1;
       }
       cache.drawn.fill(-9);
     }
@@ -1029,7 +1042,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       if (code === CELL.SOIL) {
         const x = i % COLS;
         const y = (i / COLS) | 0;
-        if (cache.roots[i]) rootSegment(g, x, y, x * cs, y * cs, cs, cache.roots[i]);
+        if (cache.roots[i]) rootSegment(g, x, y, x * cs, y * cs, cs, cache.roots[i], cache.rootOwn[i] === 1);
         if (cache.fossil && y >= cache.fossil.y0) fossilCells.push(i);
       } else if (code === CELL.STONE || code === CELL.WATER) {
         paintSolid(g, cells, i, cs, code);
@@ -1114,7 +1127,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   }
 
   /** One cell of a hanging root: a gently meandering, tapering pale line with the odd rootlet. */
-  function rootSegment(g, x, y, px, py, cpp, thick) {
+  function rootSegment(g, x, y, px, py, cpp, thick, own = false) {
     const wob = (yy) => (Math.sin(yy * 0.55 + x * 1.3) * 0.22 + Math.sin(yy * 1.31 + x) * 0.06) * cpp;
     const k = clamp((thick || 255) / 255, 0.15, 1);
     const w = Math.max(1, cpp * (0.07 + 0.13 * k));
@@ -1129,7 +1142,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     g.moveTo(ax, py);
     g.quadraticCurveTo(mx, py + cpp / 2, bx, py + cpp);
     g.stroke();
-    g.strokeStyle = NEST.root;
+    g.strokeStyle = own ? ROOT_OWN : NEST.root;
     g.lineWidth = w;
     g.beginPath();
     g.moveTo(ax, py);
@@ -1138,7 +1151,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     if (hash01(x + 5, y) > 0.72) {
       const side = hash01(y, x) > 0.5 ? 1 : -1;
       g.lineWidth = Math.max(0.8, w * 0.45);
-      g.strokeStyle = NEST.rootDark;
+      g.strokeStyle = own ? ROOT_OWN_DARK : NEST.rootDark;
       g.beginPath();
       g.moveTo(mx, py + cpp / 2);
       g.quadraticCurveTo(mx + side * cpp * 0.3, py + cpp * 0.6, mx + side * cpp * 0.5, py + cpp * 0.95);
@@ -2276,8 +2289,9 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
 
   function drawSky(ctx, s, d, W) {
     const v = view();
-    const season = (d && d.season && d.season.id) || 'spring';
-    const [top, bot] = SKY[season] || SKY.spring;
+    // C123: sky and grass line blend into the next season over its last SEASON_BLEND_SEC (palette.seasonBlend)
+    const sb = seasonBlend(d && d.season);
+    const [top, bot] = blendSky(sb);
     // C113 (player report): the mound is sized in cells (world units, by its level) and anchored to the surface line, so
     // it scrolls with the nest. It used to be capped at 90 % of the visible sky band (min(oy × 0.9, …)), so scrolling
     // squashed it into a sliver (and zooming bloated it into a dome filling the sky) until it vanished at oy = 0.
@@ -2304,7 +2318,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       ctx.ellipse(mx, v.oy - mh * 0.15, v.cell * 0.35, v.cell * 0.22, 0, 0, Math.PI * 2);
       ctx.fill();
       // grass line
-      const grass = GRASS_LINE[season] || GRASS_LINE.spring;
+      const grass = blendSeasonColor(GRASS_LINE, sb);
       ctx.strokeStyle = grass;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -2615,11 +2629,77 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
   }
 
+  /**
+   * C117 / C118 tool ghosts: the moved water pocket (same size, centred on the cursor) or the cultivated root's column
+   * (row y0 down to where it would stop). res = { ok, tint, reason }.
+   */
+  const featMemo = { key: '', res: null };
+  function featureGhost(s, d, cellIdx, tool) {
+    const cx = cellIdx % COLS;
+    const cy = Math.floor(cellIdx / COLS);
+    if (tool.kind === 'growRoot') {
+      const key = 'root|' + cx + '|' + s.run.nest.rev + '|' + JSON.stringify(s.run.res && [s.run.res.food, s.run.res.honeydew]);
+      if (featMemo.key !== key) {
+        featMemo.key = key;
+        featMemo.res = safe(() => nestSys.rootPreview(s, d, cx), null) || { ok: false, reason: 'invalid', y0: 1, y1: 1 };
+      }
+      const r = featMemo.res;
+      return { type: 'root', x: cx, y: r.y0 || 1, w: 1, h: Math.max(1, (r.y1 || 1) - (r.y0 || 1) + 1), col: cx,
+        res: { ok: !!r.ok, tint: r.ok ? 'green' : 'red', reason: r.reason, cost: r.cost } };
+    }
+    const water = (s.run.nest.features && s.run.nest.features.water) || [];
+    const p = water[tool.pocket];
+    if (!p) return null;
+    const x = clamp(cx - Math.floor((p.w - 1) / 2), 0, COLS - p.w);
+    const y = clamp(cy - Math.floor((p.h - 1) / 2), 0, ROWS - p.h);
+    const key = 'pocket|' + tool.pocket + '|' + x + '|' + y + '|' + s.run.nest.rev;
+    if (featMemo.key !== key) {
+      featMemo.key = key;
+      const a = safe(() => nestSys.pocketAction(s, d, tool.pocket, { x, y }), null);
+      featMemo.res = a ? { ok: a.ok, tint: a.ok ? 'green' : 'red', reason: a.reason, work: a.work } : { ok: false, tint: 'red', reason: 'invalid' };
+    }
+    return { type: 'pocket', x, y, w: p.w, h: p.h, res: featMemo.res };
+  }
+
+  /** C117 / C118: draw the pocket-move or grow-root ghost under the cursor. */
+  function drawFeatureGhost(ctx, s, d, tool, v) {
+    const cell = input.hoverCell;
+    if (!(cell >= 0)) return;
+    const g = featureGhost(s, d, cell, tool);
+    if (!g) return;
+    const ok = g.res && g.res.ok;
+    const x = v.ox + g.x * v.cell;
+    const y = v.oy + g.y * v.cell;
+    ctx.fillStyle = g.type === 'pocket' ? (ok ? 'rgba(80,160,220,0.45)' : 'rgba(229,72,77,0.35)') : (ok ? 'rgba(150,200,110,0.35)' : 'rgba(229,72,77,0.3)');
+    ctx.fillRect(x, y, g.w * v.cell, g.h * v.cell);
+    ctx.strokeStyle = ok ? 'rgba(170,230,140,0.9)' : 'rgba(229,72,77,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x + 0.5, y + 0.5, g.w * v.cell - 1, g.h * v.cell - 1);
+    ctx.setLineDash([]);
+    let text = '';
+    if (!ok) text = g.res && g.res.reason ? String(g.res.reason) : 'invalid';
+    else if (g.type === 'root') text = 'Root to row ' + (g.y + g.h - 1);
+    else text = 'Move here' + (g.res && g.res.work > 0 ? ' · ' + Math.round(g.res.work) + ' work' : '');
+    if (!ok) text = REASON_SHORT[text] || 'Cannot go here';
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(text).width;
+    const lx = x + g.w * v.cell + 6;
+    const ly = y + 8;
+    ctx.fillStyle = 'rgba(15,8,3,0.82)';
+    ctx.fillRect(lx - 3, ly - 7, tw + 6, 14);
+    ctx.fillStyle = ok ? '#e8ffd0' : '#ffb4b4';
+    ctx.fillText(text, lx, ly);
+  }
+
   /** Ghost rect for a tool at a cursor cell (shared with nestInput.js). */
   function ghostAt(cellIdx, tool) {
     const s = S();
     const d = D();
     if (!s || !tool || !(cellIdx >= 0)) return null;
+    if (tool.kind === 'movePocket' || tool.kind === 'growRoot') return featureGhost(s, d, cellIdx, tool);
     let type = null;
     let w = 0;
     let h = 0;
@@ -2966,6 +3046,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const tool = uiOf(ui).tool;
     const v = view();
     if (tool && (tool.kind === 'placeChamber' || tool.kind === 'relocate')) drawGhost(ctx, s, d, tool, unit);
+    if (tool && (tool.kind === 'movePocket' || tool.kind === 'growRoot')) drawFeatureGhost(ctx, s, d, tool, v);
     if (input.drag && Array.isArray(input.drag.cells)) {
       previewPassage(ctx, input.drag.cells, input.drag.ok === false ? 'rgba(229,72,77,0.7)' : 'rgba(94,209,122,0.75)', v);
       if (Number.isFinite(input.drag.work) && input.drag.work > 0 && input.drag.cells.length) {
@@ -3550,6 +3631,11 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       const cx = i % COLS;
       const cy = Math.floor(i / COLS);
       if (cx >= p.x && cx < p.x + p.w && cy >= p.y && cy < p.y + p.h) return { view: 'nest', kind: 'planned', i: p.y * COLS + p.x, chamberType: p.type };
+    }
+    // C117: a revealed water pocket (inspect: drain / move); i = the clicked cell, id = its features.water index
+    if (s.run.nest.cells[i] === CELL.WATER) {
+      const k = safe(() => nestSys.pocketAt(s, i), -1);
+      if (k >= 0) return { view: 'nest', kind: 'pocket', i, id: k };
     }
     if (geo.shaftCells[i]) return { view: 'nest', kind: 'shaft', i };
     return { view: 'nest', kind: 'cell', i };

@@ -7,7 +7,9 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../do
 import { fmt, fmtCount, fmtTime, fmtMult, fmtRate } from '../format.js';
 import { nameOf, CHAMBER_TIPS, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
-import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks } from '../../systems/nest.js';
+import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks, unneededTunnels, pocketAction, pocketAt,
+  rootCap, rootCost } from '../../systems/nest.js';
+import { DRAINAGE, ROOT_CULT } from '../../data/soilFeatures.js';
 import { moundCost } from '../../systems/surface.js';
 import { CHAMBER_ORDER, CHAMBERS } from '../../data/chambers.js';
 import { DIG } from '../../data/strata.js';
@@ -17,8 +19,10 @@ import { TRAITS } from '../../data/bloodline.js';
 import { FEDERATION } from '../../data/federation.js';
 import { FLIGHT } from '../../data/prestige.js';
 import { BROOD } from '../../data/economy.js';
-import { CLICK_CAP } from '../../data/balance.js';
+import { CLICK_CAP, GRID } from '../../data/balance.js';
 import { makeAct, note, progressBar, armedButton, subTabStrip } from './common.js';
+
+const GRID_COLS = (GRID && GRID.cols) || 40;
 
 /** Chamber ids when data/chambers.js is still empty (DESIGN §7.6 order). */
 export const CHAMBER_FALLBACK = Object.freeze(['royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks',
@@ -127,6 +131,33 @@ export function cheapestLabel(id, c) {
   const price = food > 0 ? fmt(food) + ' food' : num(c.cost && c.cost.soil) > 0 ? fmt(num(c.cost.soil)) + ' soil' : '';
   if (num(c.count) > 1) return 'Level cheapest (L' + fmtCount(num(c.level)) + ' ' + nameOf('chamber', id) + (price ? ', ' + price : '') + ')';
   return 'Level up (L' + fmtCount(num(c.level)) + ' → L' + fmtCount(num(c.level) + 1) + (price ? ', ' + price : '') + ')';
+}
+
+/**
+ * "Level cheapest" button state (C108; C122). In the inspect panel (compact = false) it shows whenever there are several
+ * instances and one can level — also when the selected chamber is itself the cheapest (then it levels that one); in
+ * the Build list (compact) it shows whenever one can level, with a short label ("Lvl cheapest · 1.20K") and the full
+ * detail in the tooltip. ok = the cost can be paid now (green buy style; quiet otherwise).
+ * @param {Object} s
+ * @param {Object} d
+ * @param {string} type chamber type
+ * @param {{ selectedUid?: number, compact?: boolean }} [opts]
+ * @returns {{ show: boolean, uid: number, label: string, tip: string, ok: boolean, self: boolean }}
+ */
+export function cheapestButton(s, d, type, { selectedUid = 0, compact = false } = {}) {
+  const c = q(() => cheapestLevel(s, d, type), null);
+  if (!c) return { show: false, uid: 0, label: '', tip: '', ok: false, self: false };
+  const many = num(c.count) > 1;
+  const self = !!selectedUid && c.uid === selectedUid;
+  const food = num(c.cost && c.cost.food);
+  const short = food > 0 ? fmt(food) : num(c.cost && c.cost.soil) > 0 ? fmt(num(c.cost.soil)) + ' soil' : '';
+  const g = q(() => levelGain(s, d, c.uid), null);
+  const lines = g && !g.max ? g.lines.map(levelGainText).filter(Boolean) : [];
+  const head = many ? (self ? 'This one is the cheapest to level. ' : 'Levels the cheapest ' + nameOf('chamber', type) + ': ') : '';
+  const tip = head + 'L' + fmtCount(num(c.level)) + ' → L' + fmtCount(num(c.level) + 1) + ': ' + (lines.join('; ') || 'next level')
+    + '. Cost ' + costText(c.cost) + '.' + (many ? ' Key: Shift+L with a ' + nameOf('chamber', type) + ' selected.' : ' Key: L with it selected.');
+  const label = compact ? (many ? 'Lvl cheapest' : 'Lvl up') + (short ? ' · ' + short : '') : 'Level cheapest (Shift+L)';
+  return { show: compact ? true : many, uid: c.uid, label, tip, ok: q(() => canPay(s, c.cost), true), self };
 }
 
 /**
@@ -277,8 +308,27 @@ export function createPanel(root, { game, ui, bridge }) {
   const digRate = h('span', { class: 'muted' });
   const helpBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Help dig', dataset: { tip: 'Add a burst of work to the first job.' },
     on: { click: (ev) => act('helpDig', {}, ev, helpBtn) } });
-  const backfillBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Backfill…', dataset: { tip: 'Fill tunnels back in, free: drag a box over them (key B).' },
+  const backfillBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Backfill… (B)', dataset: { tip: 'Fill tunnels back in, free: drag a box over them (key B).' },
     on: { click: () => { const t = ui.getUI().tool; ui.setUI({ tool: t && t.kind === 'backfill' ? null : { kind: 'backfill' } }); switchToNest(); } } });
+  // C121: one click backfills every tunnel nothing needs; the first click asks with the count, the second confirms.
+  let unneededArmed = 0;
+  const unneededBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost btn-unneeded', text: 'Backfill unneeded…',
+    dataset: { tip: 'Fill in every tunnel no chamber, dig job, shaft, entrance or planned chamber needs. Free, 10 s.' },
+    on: { click: (ev) => {
+      const now = Date.now();
+      if (unneededArmed && now - unneededArmed < 6000) {
+        unneededArmed = 0;
+        unneededBtn.classList.remove('armed');
+        setText(unneededBtn, 'Backfill unneeded…');
+        act('backfillUnneeded', {}, ev, unneededBtn);
+        return;
+      }
+      const n = q(() => unneededTunnels(game.s, game.d).length, 0);
+      if (!n) { act('backfillUnneeded', {}, ev, unneededBtn); return; }
+      unneededArmed = now;
+      unneededBtn.classList.add('armed');
+      setText(unneededBtn, 'Backfill ' + fmtCount(n) + ' unneeded tunnel cell' + (n === 1 ? '' : 's') + '? Click again');
+    } } });
   const queueList = h('div', { class: 'queue' });
   const queueEmpty = note('Nothing queued. Diggers do maintenance and still yield soil.');
   // Queued work with no dig rate never finishes: say why and where to fix it (a new player can place a Gallery before
@@ -287,7 +337,7 @@ export function createPanel(root, { game, ui, bridge }) {
     h('span', { text: 'No diggers: this work will not progress.' }),
     h('button', { type: 'button', class: 'btn btn-small', text: 'Assign diggers', on: { click: () => bridge.openTab('colony') } }));
   const queueSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title' }, 'Dig queue ', queueMeta),
-    h('div', { class: 'row-between' }, digRate, h('span', { class: 'btn-row' }, helpBtn, backfillBtn)), noDiggers, queueList, queueEmpty);
+    h('div', { class: 'row-between' }, digRate, h('span', { class: 'btn-row' }, helpBtn, backfillBtn, unneededBtn)), noDiggers, queueList, queueEmpty);
 
   // --- chambers ---
   const royalRow = h('div', { class: 'buy-row royal-row' });
@@ -311,15 +361,33 @@ export function createPanel(root, { game, ui, bridge }) {
         h('span', { class: 'buy-desc', text: 'Soil heaped at the entrance: defence, territory, warmth.' })),
       h('div', { class: 'buy-side' }, moundCostEl, moundBtn)), moundNote);
 
+  // --- cultivated roots (C118) ---
+  const rootMeta = h('span', { class: 'lvl' });
+  const rootCostEl = h('span', { class: 'cost' });
+  const rootBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Grow a root…',
+    on: { click: () => { const t = ui.getUI().tool; ui.setUI({ tool: t && t.kind === 'growRoot' ? null : { kind: 'growRoot' } }); switchToNest(); } } });
+  const rootNote = h('p', { class: 'note' });
+  const rootSec = h('section', { class: 'sec root-sec' }, h('h3', { class: 'sec-title', text: 'Cultivated roots' }),
+    h('div', { class: 'buy-row' },
+      h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: 'Root line' }), rootMeta,
+        h('span', { class: 'buy-desc', text: 'Pick a column: a root grows down from the surface, ' + fmtCount(num(ROOT_CULT && ROOT_CULT.rowsPerSec, 2))
+          + ' rows a second, to row ' + fmtCount(num(ROOT_CULT && ROOT_CULT.maxRow, 30)) + ' at most. Root Aphid Pens can touch it.' })),
+      h('div', { class: 'buy-side' }, rootCostEl, rootBtn)), rootNote);
+
   // --- blueprints ---
   const bpList = h('div', { class: 'list' });
+  // C120: chambers of the active blueprint still waiting (planned outlines), each cancellable, or all at once.
+  const plannedList = h('div', { class: 'planned-list' });
+  const plannedAll = armedButton('Cancel all planned', (ev, b) => act('cancelPlanned', { all: true }, ev, b));
+  const plannedBox = h('div', { class: 'planned-box' }, h('div', { class: 'row-between' }, h('span', { class: 'sub-title', text: 'Planned (waiting)' }), plannedAll),
+    plannedList);
   const bpSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Blueprints' }),
-    h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster.' }), bpList);
+    h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster.' }), plannedBox, bpList);
 
   // camera help for the nest view (render/nestInput.js; the full list is in Settings → Keyboard and view controls)
   const viewHelp = note('Nest view: wheel scrolls, Ctrl + wheel or pinch zooms, the crown button (top-right) frames the queen.');
   viewHelp.classList.add('view-help');
-  mainView.append(toolBanner, queueSec, chamberSec, moundSec, bpSec, viewHelp);
+  mainView.append(toolBanner, queueSec, chamberSec, moundSec, rootSec, bpSec, viewHelp);
 
   // --- inspect ---
   const inspTitle = h('h3', { class: 'sec-title' });
@@ -349,22 +417,45 @@ export function createPanel(root, { game, ui, bridge }) {
     dirBtns[dir] = b;
     dirRow.appendChild(b);
   }
-  const levelBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Level up',
+  // C122: the chamber hotkeys (C108) are named on the buttons.
+  const levelBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Level up (L)',
     on: { click: (ev) => { const uid = selectedUid(); if (uid) act('levelChamber', { uid }, ev, levelBtn); } } });
-  const pickDirBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Pick edge on map…',
+  const pickDirBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Grow direction… (G)',
+    dataset: { tip: 'Pick the side to grow on the map: click the edge (key G).' },
     on: { click: () => { const uid = selectedUid(); if (uid) { ui.setUI({ tool: { kind: 'levelDir', uid } }); switchToNest(); } } } });
-  const relocateBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Relocate…',
+  const relocateBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Relocate… (R)',
     on: { click: () => { const uid = selectedUid(); if (uid) { ui.setUI({ tool: { kind: 'relocate', uid } }); switchToNest(); } } } });
   const groomBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Groom brood', dataset: { tip: 'Each click adds development to all brood.' },
     on: { click: (ev) => { const uid = selectedUid(); if (uid) act('groomBrood', { chamber: uid }, ev, groomBtn); } } });
-  const cheapInspBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost',
+  const cheapInspBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy btn-cheapest-insp',
     on: { click: (ev) => { const ch = selectedChamber(); const c = ch ? q(() => cheapestLevel(game.s, game.d, ch.type), null) : null; if (c) act('levelChamber', { uid: c.uid }, ev, cheapInspBtn); } } });
   const demolishBtn = armedButton('Demolish', (ev, b) => { const uid = selectedUid(); if (uid) { const r = act('demolishChamber', { uid }, ev, b); if (r.ok) bridge.select(null); } });
   const inspEmpty = note('Click a chamber in the nest to inspect it.');
   const inspSec = h('section', { class: 'sec inspect' }, h('div', { class: 'row-between' }, inspTitle, inspStatus), inspProgress.el, inspKv,
     adjRules, groomNote, h('h4', { class: 'sub-title', text: 'Next level' }), gainList, h('div', { class: 'row-between' }, lvlCost, lvlWork), growNote, lvlMsg, dirRow,
     h('div', { class: 'btn-row' }, levelBtn, pickDirBtn, groomBtn, relocateBtn, cheapInspBtn, demolishBtn));
-  inspectView.append(inspEmpty, inspSec);
+  // C117 / C120: inspect a water pocket or a planned blueprint chamber
+  const featTitle = h('h3', { class: 'sec-title' });
+  const featBadge = h('span', { class: 'badge' });
+  const featText = h('p', { class: 'note' });
+  const featCost = h('span', { class: 'cost' });
+  const featWork = h('span', { class: 'muted' });
+  const featMsg = h('p', { class: 'note' });
+  const drainBtn = armedButton('Drain pocket', (ev, b) => { const k = selectedPocket(); if (k >= 0) act('drainPocket', { pocket: k }, ev, b); }, 'btn-small btn-buy');
+  const moveBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Move pocket…',
+    on: { click: () => { const k = selectedPocket(); if (k >= 0) { ui.setUI({ tool: { kind: 'movePocket', pocket: k } }); switchToNest(); } } } });
+  const cancelPlannedBtn = h('button', { type: 'button', class: 'btn btn-small btn-danger-ghost', text: 'Cancel planned chamber',
+    on: { click: (ev) => { const sel = ui.getUI().selection; if (sel && sel.kind === 'planned') { const r = act('cancelPlanned', { cell: num(sel.i, -1) }, ev, cancelPlannedBtn); if (r.ok) bridge.select(null); } } } });
+  const featSec = h('section', { class: 'sec inspect inspect-feature' }, h('div', { class: 'row-between' }, featTitle, featBadge), featText,
+    h('div', { class: 'row-between' }, featCost, featWork), featMsg, h('div', { class: 'btn-row' }, drainBtn, moveBtn, cancelPlannedBtn));
+  inspectView.append(inspEmpty, inspSec, featSec);
+
+  /** Selected water pocket index (C117), or −1. */
+  function selectedPocket() {
+    const sel = ui.getUI().selection;
+    // by the clicked cell: pocket indices shift when one is drained
+    return sel && sel.view === 'nest' && sel.kind === 'pocket' ? q(() => pocketAt(game.s, num(sel.i, -1)), -1) : -1;
+  }
 
   function switchToNest() {
     const st = ui.getUI();
@@ -394,7 +485,7 @@ export function createPanel(root, { game, ui, bridge }) {
     const adjEl = h('span', { class: 'buy-desc buy-adj', text: adjLines.length ? 'Adjacency: ' + adjLines.join(' ') : '' });
     if (!adjLines.length) adjEl.hidden = true;
     // C108: level the instance with the lowest next cost (tooltip: what that level gives).
-    const cheap = h('button', { type: 'button', class: 'btn btn-small btn-ghost btn-cheapest',
+    const cheap = h('button', { type: 'button', class: 'btn btn-small btn-buy btn-cheapest',
       on: { click: (ev) => { const c = q(() => cheapestLevel(game.s, game.d, id), null); if (c) act('levelChamber', { uid: c.uid }, ev, cheap); } } });
     const place = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Place',
       on: { click: () => {
@@ -438,16 +529,14 @@ export function createPanel(root, { game, ui, bridge }) {
       setText(r.place, active ? 'Cancel' : have >= max ? 'Max' : 'Place');
     }
     // C108: level the cheapest instance of this type (Shift+L in the nest).
-    const cheapC = unlocked && have > 0 ? q(() => cheapestLevel(s, d, id), null) : null;
-    show(r.cheap, !!cheapC && isShown(s, id === 'royal_chamber' ? 'royal_levelup' : key));
-    if (cheapC) {
-      setText(r.cheap, cheapestLabel(id, cheapC));
-      const ok = q(() => canPay(s, cheapC.cost), true);
-      toggleClass(r.cheap, 'cant', !ok);
-      const g = q(() => levelGain(s, d, cheapC.uid), null);
-      const lines = g && !g.max ? g.lines.map(levelGainText).filter(Boolean) : [];
-      r.cheap.dataset.tip = 'L' + fmtCount(num(cheapC.level)) + ' → L' + fmtCount(num(cheapC.level) + 1) + ': ' + (lines.join('; ') || 'next level')
-        + '. Cost ' + costText(cheapC.cost) + '.';
+    // C122: compact ("Lvl cheapest · 1.20K"), green when affordable, quiet when not; the detail is in the tooltip.
+    const cb = unlocked && have > 0 ? cheapestButton(s, d, id, { compact: true }) : null;
+    show(r.cheap, !!cb && cb.show && isShown(s, id === 'royal_chamber' ? 'royal_levelup' : key));
+    if (cb && cb.show) {
+      setText(r.cheap, cb.label);
+      toggleClass(r.cheap, 'cant', !cb.ok);
+      r.cheap.dataset.tip = cb.tip;
+      r.cheap.setAttribute('aria-label', (num(have) > 1 ? 'Level cheapest. ' : 'Level up. ') + cb.tip);
     }
     toggleClass(row, 'glow', ui.getUI().glow === 'build:' + id);
   }
@@ -458,6 +547,7 @@ export function createPanel(root, { game, ui, bridge }) {
     const base = DIG_KIND_NAMES[job.kind] || 'Dig';
     if (job.kind === 'tunnel') return 'Tunnel · ' + fmtCount(arr(job.cells).length) + ' cells';
     if (job.kind === 'shaft') return 'Shaft to the surface';
+    if (job.kind === 'drain') return job.to ? 'Move water pocket' : 'Drain water pocket';
     return base + ' ' + (ch ? nameOf('chamber', ch.type) : '');
   }
 
@@ -537,12 +627,74 @@ export function createPanel(root, { game, ui, bridge }) {
   }
 
   // --- inspect ---
+  /** C117 / C120: the inspect view of a water pocket or a planned blueprint chamber; false when neither is selected. */
+  function updateFeature(s, d) {
+    const sel = ui.getUI().selection;
+    const kind = sel && sel.view === 'nest' ? sel.kind : null;
+    if (kind === 'planned') {
+      const cell = num(sel.i, -1);
+      const sp = arr(s.run.nest.bpPending).find((p) => p && Number.isInteger(p.x) && Number.isInteger(p.y) && p.y * GRID_COLS + p.x === cell);
+      if (!sp) return false;
+      setText(featTitle, 'Planned: ' + nameOf('chamber', sp.type));
+      setText(featBadge, 'Blueprint');
+      const key = chamberKey(sp.type);
+      const open = !key || !!(s.run.unlocked && s.run.unlocked[key]);
+      setText(featText, 'Part of your active blueprint. It queues itself at half price once it is unlocked and you can pay for it.'
+        + (open ? '' : ' Still locked: ' + unlockHint(key)));
+      const c = q(() => placementCost(s, sp.type), null);
+      const half = c && c.food !== undefined ? { ...c, food: c.food * num(DIG && DIG.blueprintPlaceMult, 0.5) } : c;
+      setCost(featCost, half, s);
+      setText(featWork, '');
+      setText(featMsg, 'Cancelling removes it from this run\'s plan (the saved blueprint stays). Its waiting tunnels go with it.');
+      toggleClass(featMsg, 'warn', false);
+      show(drainBtn, false);
+      show(moveBtn, false);
+      show(cancelPlannedBtn, true);
+      return true;
+    }
+    if (kind === 'pocket') {
+      const k = selectedPocket();
+      const p = arr(s.run.nest.features && s.run.nest.features.water)[k];
+      if (!p || !p.revealed) return false;
+      setText(featTitle, 'Water pocket · ' + p.w + '×' + p.h);
+      setText(featBadge, 'Rows ' + p.y + '–' + (p.y + p.h - 1));
+      const info = q(() => pocketAction(s, d, k, null), null);
+      const owned = hasResearch(s, DRAINAGE ? DRAINAGE.research : 'drainage');
+      setText(featText, 'Cannot be dug. A Water Well must touch one.' + (info && info.wells ? ' A Water Well uses this pocket.' : '')
+        + (owned ? ' Drain it (the cells become soil) or move it up to ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows into plain soil.'
+          : ' ' + nameOf('research', 'drainage') + ' research lets you drain or move it.'));
+      show(drainBtn, owned);
+      show(moveBtn, owned);
+      show(cancelPlannedBtn, false);
+      if (drainBtn.__disarm) drainBtn.__disarm();
+      if (!owned || !info) {
+        setCost(featCost, null, s);
+        setText(featWork, '');
+        setText(featMsg, '');
+        return true;
+      }
+      setCost(featCost, info.cost, s);
+      setText(featWork, num(info.work) > 0 ? fmt(num(info.work)) + ' dig work to drain' : '');
+      const msg = info.busy ? 'Already being drained or moved: see the dig queue.'
+        : info.reason && info.reason !== 'cantAfford' ? reasonText(info.reason, 'drainPocket')
+          : info.wells ? 'Draining (or moving) it removes its Water Well, with the placement food refunded in full.' : '';
+      setText(featMsg, msg);
+      toggleClass(featMsg, 'warn', !!msg);
+      toggleClass(drainBtn, 'cant', !info.ok);
+      setProp(moveBtn, 'disabled', !!info.busy);
+      return true;
+    }
+    return false;
+  }
+
   function updateInspect(s, d) {
     const uid = selectedUid();
     const chambers = arr(s.run.nest.chambers);
     const idx = chambers.findIndex((c) => c && c.uid === uid);
     const ch = idx >= 0 ? chambers[idx] : null;
-    show(inspEmpty, !ch);
+    const feat = !ch && updateFeature(s, d);
+    show(featSec, feat);
+    show(inspEmpty, !ch && !feat);
     show(inspSec, !!ch);
     if (!ch) return;
     const dc = obj(arr(d && d.nest && d.nest.chambers)[idx]);
@@ -580,10 +732,10 @@ export function createPanel(root, { game, ui, bridge }) {
     setText(groomNote, gText);
     show(groomNote, !!gText);
     if (gText) groomBtn.dataset.tip = gText;
-    // C108: level the cheapest of this type (shown when that is another instance)
-    const cheapC = q(() => cheapestLevel(s, d, ch.type), null);
-    show(cheapInspBtn, !!cheapC && num(cheapC.count) > 1 && cheapC.uid !== uid);
-    if (cheapC) { setText(cheapInspBtn, cheapestLabel(ch.type, cheapC)); toggleClass(cheapInspBtn, 'cant', !q(() => canPay(s, cheapC.cost), true)); }
+    // C108 / C122: level the cheapest of this type (several instances), also when that is the selected one
+    const cb = cheapestButton(s, d, ch.type, { selectedUid: uid });
+    show(cheapInspBtn, cb.show);
+    if (cb.show) { setText(cheapInspBtn, cb.label); toggleClass(cheapInspBtn, 'cant', !cb.ok); cheapInspBtn.dataset.tip = cb.tip; }
     // C107: what the next level gives
     const gain = q(() => levelGain(s, d, uid), null);
     const gl = gain && !gain.max ? gain.lines.map(levelGainText).filter(Boolean) : [];
@@ -634,12 +786,14 @@ export function createPanel(root, { game, ui, bridge }) {
         return;
       }
       const tool = ui.getUI().tool;
-      const nestTool = tool && ['placeChamber', 'relocate', 'backfill', 'levelDir'].includes(tool.kind);
+      const nestTool = tool && ['placeChamber', 'relocate', 'backfill', 'levelDir', 'growRoot', 'movePocket'].includes(tool.kind);
       show(toolBanner, !!nestTool);
       if (nestTool) {
         setText(toolText, tool.kind === 'placeChamber' ? 'Placing ' + nameOf('chamber', tool.chamber) + ': click in the nest.'
           : tool.kind === 'relocate' ? 'Relocating: click a new spot in the nest.'
             : tool.kind === 'backfill' ? 'Backfill: click or drag a box over tunnels. Red cells stay open (a chamber needs them). B or Esc ends.'
+              : tool.kind === 'growRoot' ? 'Grow a root: click a column in the nest. The preview shows how deep it reaches.'
+                : tool.kind === 'movePocket' ? 'Move the water pocket: click a spot of plain soil within ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows.'
               : 'Click the edge to grow toward: the new row or column is shown.');
         if (tool.kind === 'placeChamber') {
           const rules = chamberRuleText(s, d, tool.chamber);
@@ -657,6 +811,11 @@ export function createPanel(root, { game, ui, bridge }) {
       show(noDiggers, queue.length > 0 && !(num(d && d.stats && d.stats.digW) > 0));
       show(helpBtn, queue.length > 0);
       toggleClass(backfillBtn, 'active', !!(tool && tool.kind === 'backfill'));
+      if (unneededArmed && Date.now() - unneededArmed >= 6000) {
+        unneededArmed = 0;
+        unneededBtn.classList.remove('armed');
+        setText(unneededBtn, 'Backfill unneeded…');
+      }
       // chambers
       const royal = arr(s.run.nest.chambers).find((c) => c && c.uid === 1);
       show(royalRow, isShown(s, 'royal_levelup') && !!royal);
@@ -676,9 +835,40 @@ export function createPanel(root, { game, ui, bridge }) {
         const free = num(MOUND && MOUND.freeMax, 5);
         setText(moundNote, L >= free && !hasResearch(s, 'mound_building') ? 'Levels above ' + free + ' need Mound Building research.' : '');
       }
+      // cultivated roots (C118)
+      const rootsOn = hasResearch(s, ROOT_CULT ? ROOT_CULT.research : 'root_cultivation');
+      show(rootSec, rootsOn);
+      if (rootsOn) {
+        const own = arr(s.run.nest.features && s.run.nest.features.roots).filter((r) => r && r.own).length;
+        const cap = q(() => rootCap(s), 3);
+        setText(rootMeta, fmtCount(own) + ' / ' + fmtCount(cap));
+        const full = own >= cap;
+        const ok = setCost(rootCostEl, full ? null : q(() => rootCost(s), null), s);
+        toggleClass(rootBtn, 'cant', !ok && !full);
+        setProp(rootBtn, 'disabled', full);
+        toggleClass(rootBtn, 'active', !!(tool && tool.kind === 'growRoot'));
+        setText(rootBtn, tool && tool.kind === 'growRoot' ? 'Cancel' : full ? 'Max' : 'Grow a root…');
+        setText(rootNote, full ? 'Root limit reached: +1 every ' + fmtCount(num(ROOT_CULT && ROOT_CULT.moundPer, 5)) + ' Mound levels (up to +'
+          + fmtCount(num(ROOT_CULT && ROOT_CULT.moundMax, 3)) + ').' : '');
+      }
       // blueprints
       const bpOn = traitLevel(s, 'ancestral_blueprint') > 0 || fedLevel(s, 'blueprint_memory') > 0;
-      show(bpSec, bpOn);
+      const pend = arr(s.run.nest.bpPending).filter(Boolean);
+      show(bpSec, bpOn || pend.length > 0);
+      show(plannedBox, pend.length > 0);
+      if (pend.length) {
+        if (plannedAll.__disarm) plannedAll.__disarm();
+        syncList(plannedList, pend, (p) => p.type + '|' + p.x + '|' + p.y + '|' + (p.float ? 'f' : ''), (p0) => {
+          const label = h('span', { class: 'planned-label' });
+          const cell = p0.y * GRID_COLS + p0.x;
+          const btn = h('button', { type: 'button', class: 'btn btn-icon btn-danger-ghost', text: '×', attrs: { 'aria-label': 'Cancel planned chamber' },
+            dataset: { tip: 'Cancel this planned chamber (this run only).' },
+            on: { click: (ev) => act('cancelPlanned', { cell }, ev, btn) } });
+          const row = h('div', { class: 'planned-row' }, label, btn);
+          row.__r = { label };
+          return row;
+        }, (row, p) => setText(row.__r.label, nameOf('chamber', p.type) + (p.float ? ' (waits for a water pocket with room)' : ' · row ' + p.y)));
+      }
       if (bpOn) {
         const slots = Array.from({ length: bpSlots(s) }, (_, i) => i);
         syncList(bpList, slots, (i) => i, createBpRow, (row, i) => updateBpRow(row, i, s));

@@ -1,6 +1,6 @@
 // Colony panel: brood pipeline (eggs / larvae / pupae, lay rate, housing, egg reserve slider, Fungal Brood), caste
 // slider and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets (a target slider per chip; +/− and drags edit targets in auto mode, C94) and
-// presets, Adaptations, alate rearing. Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
+// presets, Adaptations (alate rearing moved to the Prestige tab's Flight view, C116). Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
 // Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, adaptations.cost / isAvailable, stats.eggCost.
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
@@ -269,21 +269,8 @@ export function createPanel(root, { game, ui, bridge }) {
   const adaptList = h('div', { class: 'list adapt-list' });
   const adaptSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Adaptations' }), adaptList);
 
-  // --- alates ---
-  const alateCount = h('dd');
-  const alateCost = h('span', { class: 'cost' });
-  const rear1 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 1', on: { click: (ev) => act('rearAlate', { n: 1 }, ev, rear1) } });
-  const rear5 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 5', on: { click: (ev) => act('rearAlate', { n: 5 }, ev, rear5) } });
-  const autoRear = h('input', { type: 'checkbox', class: 'check' });
-  autoRear.addEventListener('change', (ev) => act('setAutomation', { patch: { autoRear: !!autoRear.checked } }, ev, autoRear));
-  const alateSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Alate rearing' }),
-    h('p', { class: 'note', text: 'Each reared alate adds +2% to your next Nuptial Flight.' }),
-    h('dl', { class: 'kv' }, h('dt', { text: 'Reared / cells' }), alateCount, h('dt', { text: 'Next alate egg' }), h('dd', null, alateCost)),
-    h('div', { class: 'btn-row' }, rear1, rear5),
-    h('label', { class: 'toggle-row', dataset: { tip: 'Rear alates whenever a cell is free.' } }, autoRear, h('span', { text: 'Auto-rear' })));
-
   const empty = note('Your first worker is on the way. The queen tends her first egg.');
-  el.append(empty, broodSec, casteSec, jobsSec, adaptSec, alateSec);
+  el.append(empty, broodSec, casteSec, jobsSec, adaptSec);   // alate rearing: Prestige → Flight (C116)
 
   function setCaste(c, pct) {
     const t = { ...obj(game.s.run.colony.casteTargets) };
@@ -609,16 +596,6 @@ export function createPanel(root, { game, ui, bridge }) {
       show(adaptSec, aIds.length > 0);
       syncList(adaptList, aIds, (id) => id, createAdaptRow, (row, id) => updateAdaptRow(row, id, s));
 
-      // alates
-      const rearing = isShown(s, 'alate_rearing');
-      show(alateSec, rearing);
-      if (rearing) {
-        const alBrood = num(obj(bs.byCaste).alate);
-        setText(alateCount, fmtCount(num(c.alatesReared)) + ' / ' + fmtCount(num(st.alateCells)) + (alBrood > 0 ? ' (+' + fmtCount(alBrood) + ' growing)' : '')
-          + (num(c.rearRequested) > 0 ? ' · ' + fmtCount(c.rearRequested) + ' queued' : ''));
-        setCost(alateCost, q(() => eggCost(s, d, 'alate'), null), s);
-        setProp(autoRear, 'checked', !!(s.meta.automation && s.meta.automation.autoRear));
-      }
     },
     destroy() {
       if (el.parentNode) el.parentNode.removeChild(el);

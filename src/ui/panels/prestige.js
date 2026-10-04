@@ -1,4 +1,4 @@
-// Prestige panel: sub-tabs Flight (checklist, projection, alates/min meter with peak glow) · Bloodline (+ heirlooms) ·
+// Prestige panel: sub-tabs Flight (checklist, alate rearing (C116), projection, alates/min meter with peak glow) · Bloodline (+ heirlooms) ·
 // Hardships · Supercolony · Federation (+ automation, satellites) · Edicts · Speciation · Genome (+ auto-supercolony,
 // chronobiology) · Species, each revealed by its unlock key (teasers greyed). Owner: WP9.
 // Contract: ARCHITECTURE §14.5 (Prestige row), §8.6, §11; DESIGN §13–§15, §23.
@@ -11,6 +11,8 @@ import {
 } from '../text.js';
 import { isShown, traitLevel, fedLevel, genomeLevel, num, arr, obj } from '../reveal.js';
 import { projectAlates, projectKinship, projectGenes } from '../../systems/prestige.js';
+import { broodSummary } from '../../systems/population.js';
+import { eggCost } from '../../systems/stats.js';
 import { traitCost, fedCost, genomeCost } from '../../systems/traits.js';
 import { goal as hardshipGoal, effectiveTier } from '../../systems/hardships.js';
 import { TRAIT_ORDER, TRAITS } from '../../data/bloodline.js';
@@ -138,9 +140,22 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const flyBtn = h('button', { type: 'button', class: 'btn btn-primary btn-big', text: 'Take the Nuptial Flight',
     on: { click: () => dlg('flight') } });
   const flyHint = h('p', { class: 'note' });
+  // Alate rearing (moved here from the Colony tab, C116; same controls, shown with the alate_rearing key)
+  const alateCount = h('dd');
+  const alateCost = h('span', { class: 'cost' });
+  const rear1 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 1', on: { click: (ev) => act('rearAlate', { n: 1 }, ev, rear1) } });
+  const rear5 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 5', on: { click: (ev) => act('rearAlate', { n: 5 }, ev, rear5) } });
+  const autoRear = h('input', { type: 'checkbox', class: 'check' });
+  autoRear.addEventListener('change', (ev) => act('setAutomation', { patch: { autoRear: !!autoRear.checked } }, ev, autoRear));
+  const alateSec = h('section', { class: 'sec sec-alates' }, h('h3', { class: 'sec-title', text: 'Alate rearing' }),
+    h('p', { class: 'note', text: 'Each reared alate adds +' + Math.round(num(FLIGHT.rearedPer, 0.02) * 100) + '% to your next Nuptial Flight.' }),
+    h('dl', { class: 'kv' }, h('dt', { text: 'Reared / cells' }), alateCount, h('dt', { text: 'Next alate egg' }), h('dd', null, alateCost)),
+    h('div', { class: 'btn-row' }, rear1, rear5),
+    h('label', { class: 'toggle-row', dataset: { tip: 'Rear alates whenever a cell is free.' } }, autoRear, h('span', { text: 'Auto-rear' })));
   views.flight.append(
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Nuptial Flight' }),
       h('p', { class: 'note', text: 'Rear winged princesses, then fly to refound stronger.' }), flyList.el),
+    alateSec,
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Projection' }),
       h('div', { class: 'row-between' }, h('span', null, projEl, ' alates'), perMinEl), meter.el, peakNote, flyKv, flyBtn, flyHint));
 
@@ -434,6 +449,19 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
           royal5: 'Royal Chamber level ' + num(FLIGHT.royalLevel, 5) + ' (now L' + fmtCount(royalL) + ')',
           fRun: 'Food earned this run ≥ ' + fmt(num(FLIGHT.fRunMin, 1e8)) + ' (now ' + fmt(num(s.run.fRun)) + ')',
         });
+        // alate rearing (C116)
+        const rearing = isShown(s, 'alate_rearing');
+        show(alateSec, rearing);
+        if (rearing) {
+          const c = obj(s.run.colony);
+          const bs = q(() => broodSummary(s, d), null) || {};
+          const alBrood = num(obj(bs.byCaste).alate);
+          setText(alateCount, fmtCount(num(c.alatesReared)) + ' / ' + fmtCount(num(obj(d && d.stats).alateCells))
+            + (alBrood > 0 ? ' (+' + fmtCount(alBrood) + ' growing)' : '')
+            + (num(c.rearRequested) > 0 ? ' · ' + fmtCount(c.rearRequested) + ' queued' : ''));
+          setCost(alateCost, q(() => eggCost(s, d, 'alate'), null), s);
+          setProp(autoRear, 'checked', !!(s.meta.automation && s.meta.automation.autoRear));
+        }
         const alates = num(proj.alates, q(() => projectAlates(s, d), 0));
         setText(projEl, fmtCount(alates));
         const perMin = num(proj.perMin);

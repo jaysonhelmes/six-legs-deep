@@ -683,6 +683,55 @@ export function forceEvent(s, d, id, env) {
 }
 
 // ------------------------------------------------------------------------------------------------------------------
+// Army Ant Column preview (C114)
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * The army ant column's force (BOSSES.army_ant_column): AP = apBase × (1 + supercolonies)^apExp, as n ants of atk / hp.
+ * @param {import('../core/types.js').State} s
+ * @returns {{ n: number, atk: number, hp: number }}
+ */
+export function armyColumnFoe(s) {
+  const b = BOSSES && BOSSES.army_ant_column;
+  if (!b) return { n: 0, atk: 0, hp: 0 };
+  const m = num(s && s.meta && s.meta.counters ? s.meta.counters.supercolonies : 0);
+  const ap = b.apBase * Math.pow(1 + m, b.apExp);
+  const per = Math.sqrt(b.atk * b.hp);
+  return { n: per > 0 ? ap / per : 0, atk: b.atk, hp: b.hp };
+}
+
+/** Loot spec of a won army column fight. */
+function armyColumnReward() {
+  const b = BOSSES && BOSSES.army_ant_column;
+  return b ? { foodSec: b.lootFoodSec, chitinSec: b.lootChitinSec, chitinMin: b.lootChitinMin } : null;
+}
+
+/**
+ * [q] C114: what "Fight" would put on the field right now — the column (count, AP), the garrison that would march
+ * (soldiers, supermajors; the fight starts with no militia), its AP, and combat.preview's win chance, loss range and
+ * loot, with the options the battle start uses (home ×1, no gate, the player's auto-retreat setting). Never touches
+ * s.rng.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {{ foe: { n: number, atk: number, hp: number }, foeAP: number, soldier: number, supermajor: number,
+ *   yourAP: number, win: number, lossesLo: number, lossesHi: number, loot: Object, canFight: boolean }}
+ */
+export function armyColumnPreview(s, d) {
+  const foe = armyColumnFoe(s);
+  const g = garrisonOf(d);
+  const you = { militia: 0, soldier: g.soldier, supermajor: g.supermajor };
+  const rs = s && s.meta && s.meta.settings ? s.meta.settings.retreatAt : 1;
+  const retreatAt = Number.isFinite(rs) ? Math.min(1, Math.max(0, rs)) : 1;
+  const pv = combat.preview(s, d, you, foe, { homeMult: 1, retreatAt, reward: armyColumnReward() });
+  return {
+    foe, foeAP: num(combat.foeAP(foe)), soldier: g.soldier, supermajor: g.supermajor,
+    yourAP: num(combat.armyAP(s, d, you, { homeMult: 1 })),
+    win: num(pv.win), lossesLo: num(pv.lossesLo), lossesHi: num(pv.lossesHi), loot: pv.loot,
+    canFight: g.soldier + g.supermajor > 0,
+  };
+}
+
+// ------------------------------------------------------------------------------------------------------------------
 // Cards and choices
 // ------------------------------------------------------------------------------------------------------------------
 
@@ -792,16 +841,13 @@ const CHOICES = {
   'ev_army_ant_column:fight'(s, d, card, env) {
     const b = BOSSES && BOSSES.army_ant_column;
     if (!b) return;
-    const m = num(s.meta.counters.supercolonies);
-    const ap = b.apBase * Math.pow(1 + m, b.apExp);
-    const per = Math.sqrt(b.atk * b.hp);
     const g = garrisonOf(d);
     rivals.startEventBattle(s, d, {
       kind: 'army', hex: num(card.data.hex), below: false,
       you: { militia: 0, soldier: g.soldier, supermajor: g.supermajor },
-      foe: { n: per > 0 ? ap / per : 0, atk: b.atk, hp: b.hp },
+      foe: armyColumnFoe(s),   // C114: the card's preview uses the same foe
       homeMult: 1, party: 0, raid: 0,
-      reward: { foodSec: b.lootFoodSec, chitinSec: b.lootChitinSec, chitinMin: b.lootChitinMin },
+      reward: armyColumnReward(),
       tag: 'ev_army_ant_column',
     }, env);
   },

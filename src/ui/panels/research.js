@@ -1,5 +1,6 @@
 // Research panel: tier grid by branch (columns = branches, rows = tiers), locked nodes greyed with their
-// prerequisites, Innate helix badges with run counts, and branch refinements. Owner: WP9.
+// prerequisites, Innate helix badges with run counts, and branch refinements. "Hide completed" (C116) drops owned nodes
+// from the grid (remembered per browser) and leaves a "N completed hidden" note per branch. Owner: WP9.
 // Contract: ARCHITECTURE §14.5 (Research row), §8.4; DESIGN §11. Queries: research.isAvailable / isOwned / cost /
 // refinementCost / branchComplete.
 
@@ -39,6 +40,55 @@ export function nodesOf(branch) {
   return ids.sort((a, b) => num(RESEARCH[a].tier) - num(RESEARCH[b].tier) || RESEARCH_ORDER.indexOf(a) - RESEARCH_ORDER.indexOf(b));
 }
 
+/** localStorage key of the "Hide completed" research toggle (a per-browser UI convenience, outside the save; C116). */
+export const HIDE_OWNED_KEY = 'sld.research.hideOwned';
+
+/** The browser's localStorage, or null when unavailable / blocked. */
+function browserStore() {
+  try {
+    return typeof window !== 'undefined' && window && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remembered "Hide completed" choice (false when storage is missing, blocked or holds anything else).
+ * @param {{ getItem: Function }|null} [store]
+ * @returns {boolean}
+ */
+export function loadHideOwned(store = browserStore()) {
+  try {
+    return !!store && store.getItem(HIDE_OWNED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remember the "Hide completed" choice; storage failures keep it for this session only.
+ * @param {boolean} on
+ * @param {{ setItem: Function }|null} [store]
+ */
+export function saveHideOwned(on, store = browserStore()) {
+  try {
+    if (store) store.setItem(HIDE_OWNED_KEY, on ? '1' : '0');
+  } catch { /* storage blocked: this session only */ }
+}
+
+/**
+ * The nodes of a branch to show, and how many owned ones were left out.
+ * @param {string[]} ids nodesOf(branch)
+ * @param {(id: string) => boolean} ownedFn
+ * @param {boolean} hideOwned
+ * @returns {{ ids: string[], hidden: number }}
+ */
+export function visibleNodes(ids, ownedFn, hideOwned) {
+  if (!hideOwned) return { ids, hidden: 0 };
+  const out = ids.filter((id) => !ownedFn(id));
+  return { ids: out, hidden: ids.length - out.length };
+}
+
 /** Runs needed for a node to become Innate (3, or 2 with ancestral_memory). */
 function innateRuns(s) {
   const base = num(INNATE && INNATE.runs, 3);
@@ -56,6 +106,7 @@ export function createPanel(root, { game, ui, bridge }) {
   const el = h('div', { class: 'panel panel-research' });
   root.appendChild(el);
   let filter = 'all';
+  let hideOwned = loadHideOwned();
 
   const insightEl = h('span', { class: 'big-num' });
   const rateEl = h('span', { class: 'muted' });
@@ -64,11 +115,17 @@ export function createPanel(root, { game, ui, bridge }) {
     on: { click: () => { filter = id; for (const b of Array.from(filterRow.children)) toggleClass(b, 'selected', b.dataset.f === id); lastLayout = ''; } } });
   filterRow.appendChild(mkFilter('all', 'All'));
   for (const b of branchIds()) filterRow.appendChild(mkFilter(b, nameOf('branch', b)));
+  const hideBox = h('input', { type: 'checkbox', class: 'check' });
+  hideBox.checked = hideOwned;
+  hideBox.addEventListener('change', () => { hideOwned = !!hideBox.checked; saveHideOwned(hideOwned); });
+  const hiddenTotal = h('span', { class: 'muted hide-owned-count' });
+  const hideRow = h('label', { class: 'toggle-row hide-owned', dataset: { tip: 'Hide research you already own. Locked nodes still name the prerequisites they are missing.' } },
+    hideBox, h('span', { text: 'Hide completed' }), hiddenTotal);
   const grid = h('div', { class: 'tech-grid' });
   const gridWrap = h('div', { class: 'tech-scroll' }, grid);
   const empty = note('No research data loaded yet.');
   el.append(h('div', { class: 'row-between research-head' }, h('span', null, h('i', { class: 'ico ico-insight' }), ' ', insightEl, ' insight'), rateEl),
-    filterRow, gridWrap, empty);
+    filterRow, hideRow, gridWrap, empty);
 
   const cols = {};
   let lastLayout = '';
@@ -81,14 +138,15 @@ export function createPanel(root, { game, ui, bridge }) {
     for (const b of branches) {
       const main = BRANCHES[b] && BRANCHES[b].main;
       const list = h('div', { class: 'tech-col-list' });
+      const hiddenNote = h('p', { class: 'tech-hidden-note' });
       const refine = h('div', { class: 'tech-node refine' });
       const refName = h('span', { class: 'tech-name' });
       const refCost = h('span', { class: 'cost' });
       refine.append(refName, h('span', { class: 'tech-desc', text: fmtMult(num(REFINEMENT && REFINEMENT.mult, 1.1)) + ' ' + (MAIN_LABELS[main] || 'branch output') + ' per level' }), refCost);
       refine.addEventListener('click', (ev) => act('buyRefinement', { branch: b }, ev, refine));
       const col = h('div', { class: 'tech-col' }, h('h4', { class: 'tech-col-head' }, nameOf('branch', b),
-        h('span', { class: 'tech-col-main', text: MAIN_LABELS[main] || '' })), list, refine);
-      cols[b] = { list, refine, refName, refCost };
+        h('span', { class: 'tech-col-main', text: MAIN_LABELS[main] || '' })), hiddenNote, list, refine);
+      cols[b] = { list, refine, refName, refCost, hiddenNote };
       grid.appendChild(col);
     }
   }
@@ -160,9 +218,14 @@ export function createPanel(root, { game, ui, bridge }) {
         lastLayout = layout;
         buildColumns();
       }
+      let hiddenSum = 0;
       for (const b of Object.keys(cols)) {
         const c = cols[b];
-        syncList(c.list, nodesOf(b), (id) => id, createNode, (node, id) => updateNode(node, id, s));
+        const vis = visibleNodes(nodesOf(b), (id) => q(() => isOwned(s, id), !!obj(s.run.research)[id]), hideOwned);
+        hiddenSum += vis.hidden;
+        show(c.hiddenNote, vis.hidden > 0);
+        setText(c.hiddenNote, vis.hidden > 0 ? fmtCount(vis.hidden) + ' completed hidden' : '');
+        syncList(c.list, vis.ids, (id) => id, createNode, (node, id) => updateNode(node, id, s));
         const complete = q(() => branchComplete(s, b), false);
         show(c.refine, complete);
         if (complete) {
@@ -172,6 +235,8 @@ export function createPanel(root, { game, ui, bridge }) {
           toggleClass(c.refine, 'cant', !ok);
         }
       }
+      if (hideBox.checked !== hideOwned) hideBox.checked = hideOwned;
+      setText(hiddenTotal, hideOwned && hiddenSum > 0 ? '(' + fmtCount(hiddenSum) + ' hidden)' : '');
     },
     destroy() {
       if (el.parentNode) el.parentNode.removeChild(el);

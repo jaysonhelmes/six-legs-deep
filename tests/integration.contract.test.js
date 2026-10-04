@@ -107,7 +107,8 @@ const HANDLERS = {
   'systems/jobs.js': ['shiftJob', 'setJobs', 'setJobTargets', 'setAutoJobs', 'setThresholdJobs', 'saveJobPreset', 'applyJobPreset'],
   'systems/adaptations.js': ['buyAdaptation'],
   'systems/nest.js': ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill', 'reorderQueue',
-    'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint'],
+    'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint', 'cancelPlanned', 'backfillUnneeded', 'drainPocket',
+    'relocatePocket', 'growRoot'],
   'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'buyMound', 'moveAphids'],
   'systems/trails.js': ['drawTrail', 'rerouteTrail', 'deleteTrail', 'assignWorkers', 'assignEscorts', 'mark', 'rally', 'frenzy', 'massRecruit'],
   'systems/rivals.js': ['launchParty', 'recallParty', 'reinforce', 'battleAction', 'bribe', 'tournament', 'tournamentChoice'],
@@ -289,7 +290,7 @@ test('[post-integration] data content: documented ORDER arrays, table sizes and 
   };
   await size('data/chambers.js', 'CHAMBER_ORDER', 16);
   await size('data/adaptations.js', 'ADAPTATION_ORDER', 10);
-  await size('data/research.js', 'RESEARCH_ORDER', 57);
+  await size('data/research.js', 'RESEARCH_ORDER', 58);
   await size('data/events.js', 'EVENT_ORDER', 28);
   await size('data/achievements.js', 'ACH_ORDER', 81);
   await size('data/fieldGuide.js', 'FG_ORDER', 40);

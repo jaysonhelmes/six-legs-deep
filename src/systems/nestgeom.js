@@ -6,6 +6,7 @@
 import { GRID, CELL } from '../data/balance.js';
 import { LAYER_ORDER, LAYERS, DIG, GEOM } from '../data/strata.js';
 import { CHAMBERS } from '../data/chambers.js';
+import { DRAINAGE } from '../data/soilFeatures.js';
 import { RESEARCH } from '../data/research.js';
 import { TRAITS } from '../data/bloodline.js';
 import { FEDERATION } from '../data/federation.js';
@@ -226,7 +227,7 @@ export function workCtx(s) {
  * Cell work with a precomputed context (see cellWork).
  * @param {Object} ctx from workCtx(s)
  * @param {number} i
- * @param {string} kind 'tunnel'|'shaft'|'chamber'|'grow'|'relocate'
+ * @param {string} kind 'tunnel'|'shaft'|'chamber'|'grow'|'relocate'|'drain'|'movePocket'
  * @param {boolean} [blueprint=false]
  * @returns {number}
  */
@@ -241,6 +242,8 @@ export function workAt(ctx, i, kind, blueprint = false) {
   if (ctx.cells[i] === CELL.STONE) w *= ctx.stone;
   if (kind === 'chamber' || kind === 'grow' || kind === 'relocate') w *= DIG.chamberCellMult;
   else if (kind === 'tunnel' || kind === 'shaft') w *= ctx.tunnel;
+  else if (kind === 'drain') w *= DRAINAGE.drainWork; // C117: a water cell drained to soil
+  else if (kind === 'movePocket') w *= DRAINAGE.moveWork; // C117: a water cell of a pocket being relocated
   if (blueprint) w = w / ctx.bpDiv / ctx.rush;
   return w;
 }
