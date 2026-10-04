@@ -753,7 +753,7 @@ Boss AP values are tuning knobs. The pacing bot (§28) checks that each boss is 
 
 ### 9.7 Ritual Tournaments (from B; STRETCH, cut-list #2)
 - **Where:** a border hex adjacent to a rival.
-- **Your display:** `Σ committed count × size` (minor 1, soldier 3, supermajor 10). Committed ants stop working for the 20 s display.
+- **Your display:** `Σ committed count × size` (minor 1, soldier 3, supermajor 10). Committed ants stop working for the 20 s display. Minors come from idle workers first, then foragers, who return to foraging afterwards (C101).
 - **Rival display:** `3 × current soldiers × (1 + 0.2 × (tier − 1))`.
 - **Outcomes:**
 

@@ -884,7 +884,8 @@ function tournamentReason(s, d, rivalUid, hex, minor, soldier, supermajor) {
   const su = count(supermajor);
   if (mi === null || so === null || su === null || !(mi + so + su > 0)) return 'invalid';
   if (s.run.war.battles.some((b) => b.kind === TOURNEY && (b.rival === r.uid || b.hex === hex))) return 'busy';
-  if (mi > idleMinors(s) + 1e-9) return 'requirements:idle';
+  // C101: minors come from idle workers first, then from foragers (they return to foraging afterwards)
+  if (mi > idleMinors(s) + num(s.run.colony.jobs.forager) + 1e-9) return 'requirements:idle';
   const g = garrison(s, d);
   if (so > g.soldier + 1e-9 || su > g.supermajor + 1e-9) return 'requirements:garrison';
   return null;
@@ -919,6 +920,7 @@ function previewTournament(s, d, rivalUid, a, res) {
 /** End a tournament record (withdraw or flip) and emit tournamentEnd. */
 function endTournament(s, d, b, env, result) {
   const war = s.run.war;
+  if (b.mob) combat.releaseMobilized(s, b); // C101: drafted foragers go back to foraging
   const idx = war.battles.indexOf(b);
   if (idx >= 0) war.battles.splice(idx, 1);
   combat.recomputeMilitia(s);
@@ -1550,6 +1552,11 @@ export const handlers = {
         acc: 0, t: 0, rally: 0, retreatAt: 1, reward: null, tag: TOURNEY, odds: 0, rival: r.uid, esc: 0,
         lost: { militia: 0, soldier: 0, supermajor: 0 },
       };
+      // C101: draft from idle minors first, then foragers; recorded like a Mobilize draft so they go back to foraging
+      const col = s.run.colony;
+      const fromForager = Math.max(0, Math.min(num(col.jobs.forager), you.militia - idleMinors(s)));
+      if (fromForager > 0) col.jobs.forager = clampNum(num(col.jobs.forager) - fromForager);
+      if (you.militia > 0) b.mob = { n: you.militia, forager: fromForager };
       war.battles.push(b);
       r.tourCd = ACTIONS.tournament.cdSec;
       combat.recomputeMilitia(s);
@@ -1579,7 +1586,9 @@ export const handlers = {
       const you = { militia: b.you.militia, soldier: b.you.soldier, supermajor: b.you.supermajor };
       const foe = bakeFoe(s, d, r, r.n * ACTIONS.tournament.escalateEngage, { yourCount: combat.armyCount(you) });
       env.emit('tournamentEnd', { uid: b.uid, rival: r.uid, hex: b.hex, result: 'escalate', ratio: b.odds });
-      combat.startBattle(s, d, { kind: 'escalate', hex: b.hex, you, foe, homeMult: 1, rival: r.uid }, env);
+      const nuid = combat.startBattle(s, d, { kind: 'escalate', hex: b.hex, you, foe, homeMult: 1, rival: r.uid }, env);
+      const nb = war.battles.find((x) => x.uid === nuid);
+      if (nb && b.mob) nb.mob = b.mob; // the draft follows the escalated fight and returns when it ends (C101)
     },
   },
 };

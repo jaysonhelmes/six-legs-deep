@@ -580,3 +580,21 @@ test('handlers reject garbage without throwing', () => {
     }
   }
 });
+
+test('C101: tournaments draft minors from foragers when none are idle, and return them afterwards', { skip: (!DATA_OK || !WP4_LIVE) && 'needs WP4' }, () => {
+  const { s, d } = world({ minor: 200, soldier: 0 });
+  s.run.research.ritual_tournaments = 1;
+  s.run.colony.jobs = { ...s.run.colony.jobs, forager: 200 };
+  for (const k of Object.keys(s.run.colony.jobs)) if (k !== 'forager') s.run.colony.jobs[k] = 0;
+  const r = rival(s, 'black_garden_ants', hexIndex(4, 0));
+  const hex = hexIndex(2, 0);
+  for (const n of neighbors(hex)) if (!rivals.rivalLand(s, r).includes(n)) d.surface.owned[n] = 1;
+  const cmd = { type: 'tournament', rival: r.uid, hex, minor: 30, soldier: 0, supermajor: 0 };
+  assert.equal(tournament.validate(s, d, cmd), null, 'foragers can be committed');
+  assert.equal(tournament.validate(s, d, { ...cmd, minor: 201 }), 'requirements:idle');
+  act(tournament, s, d, cmd);
+  assert.equal(s.run.colony.jobs.forager, 170, '30 foragers left their job for the display');
+  run(s, d, ACTIONS.tournament.sec + ACTIONS.tournament.choiceSec + 0.5);
+  assert.equal(s.run.war.battles.length, 0);
+  assert.ok(Math.abs(s.run.colony.jobs.forager - 200) < 1e-6, 'they went back to foraging');
+});

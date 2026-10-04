@@ -343,10 +343,11 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
     st.supermajor = Math.max(0, Math.min(st.supermajor, maxSup));
     const isTour = st.kind === 'tournament';
     const idle = Math.max(0, Math.floor(num(s.run.colony && s.run.colony.adults && s.run.colony.adults.minor) - sumJobs(s)));
-    st.minor = Math.max(0, Math.min(st.minor, idle));
+    const minorPool = idle + Math.floor(num(s.run.colony && s.run.colony.jobs && s.run.colony.jobs.forager)); // C101: idle, then foragers
+    st.minor = Math.max(0, Math.min(st.minor, minorPool));
     sSol.set(st.soldier, { max: maxSol, text: fmtCount(st.soldier) + ' / ' + fmtCount(maxSol), fmt: (v) => fmtCount(v) + ' / ' + fmtCount(maxSol) });
     sSup.set(st.supermajor, { max: maxSup, text: fmtCount(st.supermajor) + ' / ' + fmtCount(maxSup), fmt: (v) => fmtCount(v) + ' / ' + fmtCount(maxSup) });
-    sMin.set(st.minor, { max: idle, text: fmtCount(st.minor) + ' / ' + fmtCount(idle), fmt: (v) => fmtCount(v) + ' / ' + fmtCount(idle) });
+    sMin.set(st.minor, { max: minorPool, text: fmtCount(st.minor) + ' / ' + fmtCount(minorPool), fmt: (v) => fmtCount(v) + ' / ' + fmtCount(minorPool) });
     show(sSup.el, maxSup > 0 || isShown(s, 'caste_supermajor'));
     show(sMin.el, isTour);
     const hasTarget = !!(st.target && st.kind);

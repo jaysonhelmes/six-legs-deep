@@ -218,7 +218,7 @@ export const REASON_DETAILS = Object.freeze({
   'requirements:garrison': 'Not enough soldiers in the garrison.',
   'requirements:soldiers': 'Not enough soldiers at home for that.',
   'requirements:ap': 'Your garrison is not strong enough for that.',
-  'requirements:idle': 'Not enough idle workers: free some from their jobs.',
+  'requirements:idle': 'Not enough workers: tournaments use idle workers first, then foragers.',
   // colony, jobs, research, seasons, prestige
   'invalid:garrison': 'Not that many in the garrison (ants out on the map are busy).',
   'invalid:total': 'Not enough workers for those jobs.',
