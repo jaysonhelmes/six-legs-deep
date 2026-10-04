@@ -9,7 +9,7 @@ import {
   nameOf, reasonText, WAR_TIPS, TACTIC_TIPS, PARTY_NAMES, BATTLE_NAMES, RAID_PHASES, RES_NAMES,
 } from '../text.js';
 import { isShown, hasResearch, fedLevel, num, arr, obj } from '../reveal.js';
-import { previewTrail } from '../../systems/trails.js';
+import { previewTrail, bestOrigin } from '../../systems/trails.js';
 import { claimCost, canClaim, sourceAt } from '../../systems/surface.js';
 import { previewAction, garrison as garrisonOf } from '../../systems/rivals.js';
 import { ringOf } from '../../core/hex.js';
@@ -75,6 +75,13 @@ function abilityTip(id) {
 }
 
 /** Main entrance hex. */
+/** C102: the entrance a trail to targetHex should start from (shortest route), falling back to the main one. */
+function originFor(s, d, targetHex) {
+  let o = -1;
+  try { o = bestOrigin(s, d, targetHex); } catch { o = -1; }
+  return o >= 0 ? o : mainHex(s);
+}
+
 function mainHex(s) {
   const e = arr(s.run && s.run.surface && s.run.surface.entrances).find((x) => x && x.kind === 'main');
   return e ? num(e.hex, 0) : 0;
@@ -640,11 +647,11 @@ export function createPanel(root, { game, ui, bridge }) {
       info.append(h('dt', { text: 'Ring' }), ringDd, h('dt', { text: 'Stock' }), stockDd, h('dt', { text: 'Level' }), levelDd, h('dt', { text: 'Time left' }), ttlDd);
       const forage = h('button', { type: 'button', class: 'btn', text: 'Hand-forage', dataset: { tip: 'Send a runner: food per click. Key Space.' },
         on: { click: (ev) => act('clickForage', { src: uid }, ev, forage) } });
-      const draw = h('button', { type: 'button', class: 'btn btn-primary', text: 'Draw trail from entrance',
+      const draw = h('button', { type: 'button', class: 'btn btn-primary', text: 'Draw trail from nearest entrance',
         on: { click: (ev) => {
           const src = sourceBy(game.s, uid);
           if (!src) return;
-          const r = act('drawTrail', { origin: mainHex(game.s), target: src.hex }, ev, draw);
+          const r = act('drawTrail', { origin: originFor(game.s, game.d, src.hex), target: src.hex }, ev, draw);
           if (r.ok) bridge.toast('Trail drawn.', 'good');
         } } });
       const attack = h('button', { type: 'button', class: 'btn btn-danger', text: 'Hunt…',
@@ -705,7 +712,7 @@ export function createPanel(root, { game, ui, bridge }) {
       show(selRefs.draw, !combat && !hasTrail);
       if (!combat && !hasTrail) {
         let p = null;
-        try { p = previewTrail(s, d, mainHex(s), src.hex, []); } catch { p = null; }
+        try { p = previewTrail(s, d, originFor(s, d, src.hex), src.hex, []); } catch { p = null; }
         setText(selRefs.preview, p && p.ok ? 'Trail: ' + fmtCount(num(p.len)) + ' hexes · ' + fmtRate(num(p.perWorker)) + ' per worker · capacity ' + fmtCount(num(p.cap))
           : p && p.reason ? reasonText(p.reason, 'drawTrail') : '');
       } else {

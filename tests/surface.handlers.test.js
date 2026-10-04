@@ -314,3 +314,14 @@ test('C100: only one trail may lead to a destination (drawTrail, preview, create
   assert.equal(trails.createTrail(s, d, 0, seed.uid), 0);
   assert.equal(s.run.surface.trails.length, before);
 });
+
+test('C102: bestOrigin starts a trail from the nearest entrance (e.g. a conquered outpost)', () => {
+  const { s, d } = world();
+  const seed = addSeed(s, hexIndex(5, 0));
+  assert.equal(trails.bestOrigin(s, d, seed.hex), 0, 'only the main entrance');
+  const out = hexIndex(4, 0);
+  s.run.surface.entrances.push({ kind: 'outpost', hex: out, col: -1, rival: 0 });
+  assert.equal(trails.bestOrigin(s, d, seed.hex), out, 'the outpost next to the source wins');
+  assert.equal(run(s, d, { type: 'drawTrail', origin: trails.bestOrigin(s, d, seed.hex), target: seed.hex }).reason, null);
+  assert.equal(s.run.surface.trails[s.run.surface.trails.length - 1].origin, out);
+});

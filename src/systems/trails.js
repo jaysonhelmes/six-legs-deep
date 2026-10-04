@@ -12,7 +12,7 @@ import { SEASON_MODS } from '../data/seasons.js';
 import { adultsTotal } from '../core/state.js';
 import { canAfford, spend } from '../core/wallet.js';
 import { addEffect, removeEffect, effectMult } from '../core/effects.js';
-import { HEX_COUNT, hexPath, ringOf, neighbors, countInRadius } from '../core/hex.js';
+import { HEX_COUNT, hexPath, ringOf, neighbors, countInRadius, hexDist } from '../core/hex.js';
 import { clampNum } from '../core/math.js';
 import * as surface from './surface.js';        // moveCost, removeSource, trailSlots/dNavFor/slopeFor/queueEvent/flushEvents (WP4)
 import * as population from './population.js';  // killAdults [x]
@@ -645,6 +645,32 @@ function waypointsOf(w) {
  * @param {number[]} [waypoints=[]]
  * @returns {{ ok: boolean, reason: (string|null), path: number[], len: number, dEff: number, perWorker: number, cap: number, cEff: number }}
  */
+/**
+ * [q] C102: the best place to start a trail to targetHex — every entrance (main, outposts from conquered nests,
+ * satellites, the nuptial exit) plus, with trunk_trails, trail hexes; the 8 nearest by hex distance are routed and the
+ * shortest route wins (short trails also build strength fastest); ties go to more food per worker. Returns the origin
+ * hex, or -1 if none can route.
+ */
+export function bestOrigin(s, d, targetHex) {
+  if (!isHex(targetHex)) return -1;
+  const cands = trailOrigins(s, d).filter((h) => h !== targetHex)
+    .sort((a, b) => hexDist(a, targetHex) - hexDist(b, targetHex)).slice(0, 8);
+  let best = -1;
+  let bestPw = -Infinity;
+  let bestLen = Infinity;
+  for (const o of cands) {
+    const p = previewTrail(s, d, o, targetHex);
+    if (!p.ok) continue;
+    const pw = num(p.perWorker);
+    if (p.len < bestLen - 1e-9 || (Math.abs(p.len - bestLen) <= 1e-9 && pw > bestPw)) {
+      best = o;
+      bestPw = pw;
+      bestLen = p.len;
+    }
+  }
+  return best;
+}
+
 /** [q] True if a trail already leads to this source (C100: one trail per destination). */
 export function hasTrailTo(s, srcUid) {
   return s.run.surface.trails.some((t) => t.src === srcUid);

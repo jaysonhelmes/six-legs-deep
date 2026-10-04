@@ -36,6 +36,7 @@ import * as settingsPanel from './panels/settings.js';
 import { LOOP, GRID } from '../data/balance.js';
 import { RESET } from '../data/prestige.js';
 import { EVENTS } from '../data/events.js';
+import { bestOrigin } from '../systems/trails.js';
 
 /** Reveal key of every tab (ARCHITECTURE §14.5). */
 export const TAB_KEYS = Object.freeze({
@@ -503,7 +504,10 @@ export function mountUI(root, game, opts = {}) {
       if (src && isClickableSource(src.type)) items.push(A('clickForage', { src: t.id }, 'Hand-forage'));
       if (src && isClickableSource(src.type)) {
         const main = arr(s.run.surface.entrances).find((e) => e && e.kind === 'main');
-        items.push(A('drawTrail', { origin: main ? main.hex : 0, target: src.hex }, 'Draw trail from entrance'));
+        let origin = -1;
+        try { origin = bestOrigin(s, game.d, src.hex); } catch { origin = -1; } // C102: nearest/best entrance
+        if (origin < 0) origin = main ? main.hex : 0;
+        items.push(A('drawTrail', { origin, target: src.hex }, 'Draw trail from nearest entrance'));
       }
       if (src && !isClickableSource(src.type) && src.type !== 'lycaenid_caterpillar') {
         items.push({ label: src.type === 'termite_mound' ? 'Raid mound…' : 'Hunt…',
