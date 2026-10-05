@@ -14,10 +14,12 @@ import { RESET } from '../data/prestige.js';
 import { GOLDEN } from '../data/events.js';
 import { FEDERATION } from '../data/federation.js';
 import * as surfaceSys from '../systems/surface.js';
+import { OWN_TRAIL } from '../systems/surface.js';
 import * as nestSys from '../systems/nest.js';
 import { hexToPixel, hexQR, hexIndex, ringOf, countInRadius, hexDist, DIRS, HEX_COUNT } from '../core/hex.js';
 import { createLayer, createOffscreen, pageHidden, nowMs, reducedMotion } from './canvas.js';
 import { createSurfaceCamera } from './camera.js';
+import { drawIconAmbient, drawAmbientExtras, windStrength } from './ambient.js';
 import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, arcTable, pointAtArc, distToPolyline, trailCurve, pathObstacles, laneLayout, laneCurve, SQRT3 } from './geom.js';
 import {
   terrainColor, SURFACE, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
@@ -39,6 +41,15 @@ const INTRO_RINGS = 3;
 const INTRO_FILL = 0.42;
 const INTRO_ZOOM_MAX = 1.35;
 const INTRO_NARROW = 480;
+/** C163: fine cache resolution (zoomed in): pixel budget, scale cap, and the zoom × DPR over base scale that turns it
+ *  on / off (hysteresis). */
+const HI_CACHE_PX = 9e6;
+const HI_CACHE_SCALE = 3.2;
+const HI_ON = 1.6;
+const HI_OFF = 1.3;
+/** C163: …and only past the old 1.6 zoom cap, so the default views keep the base caches (memory). */
+const HI_ZOOM_ON = 1.6;
+const HI_ZOOM_OFF = 1.45;
 /** Satellite placement tint: valid sites. */
 const SAT_OK = '#6fdc82';
 /** Pointy-top corner pairs of the edge shared with the neighbour in DIRS[k]. */
@@ -191,6 +202,10 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   /** last terrain build time in ms (perf probe, getPerf) */
   let terrainBuildMs = 0;
   let laneBuildMs = 0;
+  /** C161 perf probe: smoothed ms of the sources + objects pass (icons with their ambient life) */
+  let ambientMs = 0;
+  /** C163: terrain / land caches at the fine resolution (zoomed in; syncHiRes) */
+  let hiRes = false;
   /** C123: pre-warm weather on the next frame (load, import, run start, view shown again, resize, long gap) */
   let weatherFill = true;
   let lastRenderAt = 0;
@@ -205,6 +220,8 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   let lanes = new Map();
   let laneKey = '';
   const claimMemo = { key: '', res: null };
+  /** C161: ambient life this frame: wind strength from the weather (windStrength) and whether it runs at all */
+  const amb = { wind: 1, on: true };
   const pulses = []; // { kind, uid, hex, t, max }
 
   /** Preview channel written by surfaceInput.js (WP8-internal). */
@@ -453,13 +470,32 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   // caches
   // ---------------------------------------------------------------------------------------------------------------
 
-  function cacheGeom(R) {
+  /**
+   * World-space cache geometry for map radius R. The base resolution keeps ~4.2 M cache pixels (scale ≤ 2); C163: the
+   * fine one (`hi`, used while zoomed in, see syncHiRes) allows ~9 M pixels and scale ≤ 3.2, so terrain and borders
+   * stay crisp up to zoom 2.75 on 2× screens.
+   */
+  function cacheGeom(R, hi = false) {
     const wx = (R + 1) * SIZE * SQRT3;
     const wy = (R + 1) * SIZE * 1.5 + SIZE;
     const W = wx * 2;
     const H = wy * 2;
-    const scale = clamp(Math.sqrt(4.2e6 / (W * H)), 0.6, 2);
+    const base = clamp(Math.sqrt(4.2e6 / (W * H)), 0.6, 2);
+    const scale = hi ? Math.max(base, clamp(Math.sqrt(HI_CACHE_PX / (W * H)), 0.6, HI_CACHE_SCALE)) : base;
     return { W, H, wx, wy, scale };
+  }
+
+  /**
+   * C163: switch the terrain and land caches to the fine resolution while the device-pixel zoom (zoom × DPR) is well
+   * past what the base cache covers, and back once it drops again (hysteresis, so a pinch does not thrash rebuilds).
+   * @param {number} R map radius
+   */
+  function syncHiRes(R) {
+    const base = cacheGeom(R, false).scale;
+    const need = curView.zoom * (layer.dpr > 0 ? layer.dpr : 1);
+    const z = curView.zoom;
+    if (!hiRes && z >= HI_ZOOM_ON && need > base * HI_ON) hiRes = true;
+    else if (hiRes && (z < HI_ZOOM_OFF || need < base * HI_OFF)) hiRes = false;
   }
 
   function hexPathOn(g, cx, cy, r) {
@@ -483,7 +519,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   function terrainFor(s, season, keep) {
     const surf = s.run.surface;
     const R = radiusOf(s);
-    const key = `${surf.terrain && surf.terrain.length}|${terrainChecksum(surf.terrain || [])}|${season}|${R}|${s.run.seed}`;
+    const key = `${surf.terrain && surf.terrain.length}|${terrainChecksum(surf.terrain || [])}|${season}|${R}|${s.run.seed}|${hiRes ? 'hi' : 'lo'}`;
     if (keep) keep.push(key);
     let terrainCache = terrainCaches.get(key);
     if (terrainCache && terrainCache.canvas) return terrainCache;
@@ -502,7 +538,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
 
   function buildTerrain(s, season, R, terrainCache) {
     const surf = s.run.surface;
-    const gm = cacheGeom(R);
+    const gm = cacheGeom(R, hiRes);
     const off = createOffscreen(gm.W * gm.scale, gm.H * gm.scale);
     terrainCache.canvas = off.canvas;
     terrainCache.scale = gm.scale;
@@ -1104,10 +1140,10 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
     let sightSum = 0;
     for (const rv of s.run.rivals.list || []) if (rv && rivalVisible(s, rv)) sightSum += rv.uid * 7 + 1;
-    const key = `${surf.rev}|${R}|${revCount}|${ownedSum}|${rivalSum}|${sightSum}`;
+    const key = `${surf.rev}|${R}|${revCount}|${ownedSum}|${rivalSum}|${sightSum}|${hiRes ? 'hi' : 'lo'}`;
     if (key === landCache.key && landCache.canvas) return;
     landCache.key = key;
-    const gm = cacheGeom(R);
+    const gm = cacheGeom(R, hiRes);
     if (!landCache.canvas || landCache.R !== R || landCache.scale !== gm.scale) {
       const off = createOffscreen(gm.W * gm.scale, gm.H * gm.scale);
       landCache.canvas = off.canvas;
@@ -1124,15 +1160,33 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     g.setTransform(gm.scale, 0, 0, gm.scale, gm.wx * gm.scale, gm.wy * gm.scale);
     const rivals = new Map();
     for (const rv of s.run.rivals.list || []) if (rv) rivals.set(rv.uid, rv);
-    // owned tint
+    // owned tint (permanent land: auto, claimed, conquered)
+    const perm = (h) => T.owned[h] !== 0 && T.owned[h] !== OWN_TRAIL;
     g.fillStyle = rgba(SURFACE.player, 0.14);
     g.beginPath();
     for (let i = 0; i < n; i++) {
-      if (!T.owned[i]) continue;
+      if (!perm(i)) continue;
       const [x, y] = hexToPixel(i, SIZE);
       hexPathOn(g, x, y, SIZE * 1.01);
     }
     g.fill();
+    // C162: hexes held only by a trail (Trunk Trails; lost with the trail): a lighter tint with a fine diagonal hatch
+    const held = [];
+    for (let i = 0; i < n; i++) if (T.owned[i] === OWN_TRAIL) held.push(i);
+    if (held.length) {
+      g.fillStyle = rgba(SURFACE.trailHeld, 0.1);
+      g.beginPath();
+      for (const i of held) {
+        const [x, y] = hexToPixel(i, SIZE);
+        hexPathOn(g, x, y, SIZE * 1.01);
+      }
+      g.fill();
+      const pat = hatchPattern(g, 'diag', SURFACE.trailHeld, 0.42, 7);
+      if (pat) {
+        g.fillStyle = pat;
+        g.fill();
+      }
+    }
     // rival land: tint + hatch, per rival
     const byRival = new Map();
     // C124: a rival's land shows only where it can be known — on revealed hexes, or everywhere once its nest is sighted
@@ -1170,9 +1224,10 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       g.stroke();
       g.setLineDash([]);
     }
-    // owned outline: a dark under-stroke so the amber border reads on gold summer grass and orange leaf litter alike
+    // owned outline: a dark under-stroke so the amber border reads on gold summer grass and orange leaf litter alike.
+    // C162: solid round permanent land (also where it meets trail-held hexes), dashed and paler round trail-held land
     g.beginPath();
-    for (let i = 0; i < n; i++) if (T.owned[i]) edgesOf(g, i, (h) => !T.owned[h]);
+    for (let i = 0; i < n; i++) if (perm(i)) edgesOf(g, i, (h) => !perm(h));
     g.lineJoin = 'round';
     g.strokeStyle = 'rgba(40,24,6,0.45)';
     g.lineWidth = 4.2;
@@ -1180,6 +1235,18 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     g.strokeStyle = rgba(SURFACE.player, 0.95);
     g.lineWidth = 2.2;
     g.stroke();
+    if (held.length) {
+      g.beginPath();
+      for (const i of held) edgesOf(g, i, (h) => !T.owned[h]);
+      g.setLineDash([5, 4]);
+      g.strokeStyle = 'rgba(40,24,6,0.4)';
+      g.lineWidth = 3.4;
+      g.stroke();
+      g.strokeStyle = rgba(SURFACE.trailHeld, 0.95);
+      g.lineWidth = 1.6;
+      g.stroke();
+      g.setLineDash([]);
+    }
     g.lineJoin = 'miter';
     // faint grid on revealed hexes
     g.strokeStyle = 'rgba(20,30,10,0.07)';
@@ -1637,7 +1704,15 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       let alpha = 1;
       if (src.ttl > 0 && src.ttl < 20) alpha = 0.55 + 0.45 * Math.abs(Math.sin(time * 5));
       ctx.globalAlpha = alpha;
-      atlas.drawIcon(ctx, src.type, p.x, p.y, size);
+      if (amb.on) {
+        // C161: idle life (sway / crawl / inch, then a fly, termites …), visual only, deterministic phase per uid
+        const wp = hexWorldPt(src.hex);
+        const ao = { t: time, uid: src.uid, wind: amb.wind, wx: wp.x, wy: wp.y };
+        drawIconAmbient(ctx, atlas, src.type, p.x, p.y, size, ao);
+        drawAmbientExtras(ctx, src.type, p.x, p.y, size, ao);
+      } else {
+        atlas.drawIcon(ctx, src.type, p.x, p.y, size);
+      }
       ctx.globalAlpha = 1;
       if (src.max > 0 && src.stock >= 0) {
         const f = clamp(src.stock / src.max, 0, 1);
@@ -1968,7 +2043,15 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         continue;
       }
       const bob = o.kind === 'golden_aphid' || o.kind === 'wandering_queen' ? Math.sin(time * 3) * 2 : 0;
-      atlas.drawIcon(ctx, OBJECT_ICON[o.kind], p.x, p.y + bob, size * (o.kind === 'lizard' ? 1.3 : 1));
+      const osz = size * (o.kind === 'lizard' ? 1.3 : 1);
+      if (amb.on) {
+        // C161: molehill soil puffs, swarm alates, the rove beetle's antennae, the Phengaris caterpillar's inching
+        const ao = { t: time, uid: o.uid, wind: amb.wind };
+        drawIconAmbient(ctx, atlas, OBJECT_ICON[o.kind], p.x, p.y + bob, osz, ao);
+        drawAmbientExtras(ctx, OBJECT_ICON[o.kind], p.x, p.y + bob, osz, ao);
+      } else {
+        atlas.drawIcon(ctx, OBJECT_ICON[o.kind], p.x, p.y + bob, osz);
+      }
       if (o.t > 0 && o.t < 600) {
         const max = o.data && o.data.tMax > 0 ? o.data.tMax : null;
         if (max) {
@@ -2608,6 +2691,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     // SEASON_BLEND_SEC of a season (two cached canvases, no per-step rebuilds; continuous at the boundary, where the
     // next season's cache simply becomes the current one)
     const sb = seasonBlend(d && d.season);
+    syncHiRes(radiusOf(s));
     const keepT = [];
     const terrA = terrainFor(s, sb.from, keepT);
     const terrB = sb.t > 0 && sb.to !== sb.from ? terrainFor(s, sb.to, keepT) : null;
@@ -2638,10 +2722,14 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     drawDaughters(ctx, s);
     drawTrails(ctx, s, d, polys);
     drawMound(ctx, s);
+    amb.on = !reduced;
+    amb.wind = amb.on ? windStrength(weatherNow(s, d, sb)) : 0;
+    const tAmb = nowMs();
     drawSources(ctx, s, d);
     drawRivals(ctx, s);
     drawRaidArrows(ctx, s);
     drawObjects(ctx, s);
+    ambientMs = ambientMs * 0.9 + (nowMs() - tAmb) * 0.1;
     drawGolden(ctx, s);
 
     reallocIn -= dt;
@@ -2876,6 +2964,10 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       let shared = 0;
       for (const off of lanes.values()) if (off.some((v) => v !== 0)) shared++;
       return { laneBuildMs, trails: lanes.size, sharedTrails: shared, cachedCurves: trailGeo.size };
+    },
+    /** C161 / C163 perf / test probe: ambient life state, the smoothed sources-to-objects pass (ms) and the cache resolution. */
+    getAmbient() {
+      return { on: amb.on, wind: amb.wind, passMs: ambientMs, hiRes, terrainScale: (terrainCaches.values().next().value || {}).scale || 0, landScale: landCache.scale };
     },
   };
   registerRenderer(canvas, api);

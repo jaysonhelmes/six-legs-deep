@@ -472,10 +472,27 @@ export function startRun(s, d, opts) {
     run.colony.autoJobs = true;
     run.colony.thresholdJobs = true;
   }
-  if (lv(fed, 'automated_brood') > 0 && isObj(keep.casteTargets)) {
-    const zero = run.hardship === 'monomorphic' ? Object.keys(run.colony.casteTargets)
-      : run.hardship === 'pacifist' ? ['soldier', 'supermajor'] : null;
-    copyTargets(run.colony.casteTargets, keep.casteTargets, zero);
+  // C151: caste target counts + "Keep berths filled" flags. keep.casteFill holds a boolean only for castes the player
+  // set; those (and any caste with a carried target > 0) count as set this run, so the first Barracks / War Hall does
+  // not override them. A legacy share preset (keep.casteTargets) carries as "Keep berths filled" for each caste with a
+  // share.
+  if (lv(fed, 'automated_brood') > 0) {
+    const col = run.colony;
+    const zero = run.hardship === 'monomorphic' ? Object.keys(col.casteGoals)
+      : run.hardship === 'pacifist' ? ['soldier', 'supermajor'] : [];
+    let fill = isObj(keep.casteFill) ? keep.casteFill : null;
+    if (isObj(keep.casteGoals)) copyTargets(col.casteGoals, keep.casteGoals, zero);
+    else if (isObj(keep.casteTargets)) {
+      fill = {};
+      for (const k of Object.keys(col.casteFill)) if (Number.isFinite(keep.casteTargets[k]) && keep.casteTargets[k] > 0) fill[k] = true;
+    }
+    for (const k of Object.keys(col.casteFill)) {
+      col.casteGoals[k] = Math.floor(col.casteGoals[k]);
+      const set = (fill && typeof fill[k] === 'boolean') || col.casteGoals[k] > 0;
+      if (!set) continue;
+      col.casteFill[k] = !!(fill && fill[k] === true) && !zero.includes(k);
+      col.casteTouched[k] = true;
+    }
   }
 
   // Founding Boon.

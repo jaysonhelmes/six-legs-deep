@@ -18,7 +18,7 @@ function deepFreeze(o) {
 /** Display and iteration order (DESIGN §13.7 table order). */
 export const TRAIT_ORDER = deepFreeze(['founding_stores', 'nanitic_vigor', 'remembered_paths', 'ancestral_blueprint',
   'automaton_instincts', 'hardy_workers', 'deep_diggers', 'keen_antennae', 'fertile_queen', 'ancestral_memory', 'long_memory',
-  'warrior_lineage', 'royal_court', 'seasonal_wisdom', 'swarm_instinct', 'sweet_inheritance', 'wide_wings', 'vast_galleries',
+  'warrior_lineage', 'root_memory', 'royal_court', 'deep_spring', 'seasonal_wisdom', 'swarm_instinct', 'sweet_inheritance', 'wide_wings', 'vast_galleries',
   'brood_bank', 'polygyny', 'budding']);
 
 /** Bloodline traits: { id, name, cost: { base, growth }, max, fx }. Consumers per ARCHITECTURE §12.2. */
@@ -36,7 +36,11 @@ export const TRAITS = deepFreeze({
   ancestral_memory: { id: 'ancestral_memory', name: 'Ancestral Memory', cost: { base: 8, growth: 1 }, max: 1, fx: { runs: 2 } },
   long_memory: { id: 'long_memory', name: 'Long Memory', cost: { base: 10, growth: 4 }, max: 3, fx: { capSec: 7200, eff: 0.10 } },
   warrior_lineage: { id: 'warrior_lineage', name: 'Warrior Lineage', cost: { base: 10, growth: 3 }, max: 5, fx: { mult: 1.25 } },
+  // C158: blueprint helpers (need Ancestral Blueprint to matter): a free root for a planned Root Aphid Pen with none to
+  // touch; a spring pocket for a planned Water Well with no pocket in reach (data/soilFeatures ROOT_MEMORY, DEEP_SPRING).
+  root_memory: { id: 'root_memory', name: 'Root Memory', cost: { base: 12, growth: 1 }, max: 1, fx: { freeRoot: 1 } },
   royal_court: { id: 'royal_court', name: 'Royal Court', cost: { base: 15, growth: 1 }, max: 1, fx: { cells: 50, maxL: 9, reared: 50 } },
+  deep_spring: { id: 'deep_spring', name: 'Deep Spring', cost: { base: 15, growth: 1 }, max: 1, fx: { spring: 1 } },
   seasonal_wisdom: { id: 'seasonal_wisdom', name: 'Seasonal Wisdom', cost: { base: 20, growth: 1 }, max: 1, fx: { winterR: 0.25 } },
   swarm_instinct: { id: 'swarm_instinct', name: 'Swarm Instinct', cost: { base: 20, growth: 4 }, max: 5, fx: { mult: 1.5 } },
   sweet_inheritance: { id: 'sweet_inheritance', name: 'Sweet Inheritance', cost: { base: 25, growth: 1 }, max: 1,

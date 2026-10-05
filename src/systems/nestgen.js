@@ -4,7 +4,7 @@
 
 import { GRID, CELL } from '../data/balance.js';
 import { ROOTS, STONES, CACHES, WATER, SITE_MODS, GEN } from '../data/soilFeatures.js';
-import { LAYERS } from '../data/strata.js';
+import { LAYERS, GEOM } from '../data/strata.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { FLIGHT } from '../data/prestige.js';
 import { makeHolder, randInt, weighted } from '../core/rng.js';
@@ -85,15 +85,21 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     }
   }
 
-  // C137: the first Royal Chamber reserves its Flight-level room (top-right anchor: it grows left, as in a new game;
-  // top-left when an extra pre-dug Royal Chamber sits on the left). With no free side it keeps the legacy grow-a-side rule (noRes).
+  // C137 / C155: the first Royal Chamber reserves its full-size room (its L8 footprint, GEOM.footprintMaxL; top-right
+  // anchor: it grows left, as in a new game; top-left when an extra pre-dug Royal Chamber sits on the left). When no
+  // full-size room is free it reserves its Flight-level room (C66: L5 always fits), else it keeps the legacy grow-a-side
+  // rule (noRes).
   {
-    const fp = footprint('royal_chamber', FLIGHT.royalLevel);
-    const W = Math.max(fp.w, r0.w);
-    const H = Math.max(fp.h, r0.h);
     const hit = (R) => chambers.some((c) => c.uid !== 1 && c.x < R.x + R.w && R.x < c.x + c.w && c.y < R.y + R.h && R.y < c.y + c.h);
-    const opts = [{ x: r0.x + r0.w - W, y: r0.y, w: W, h: H }, { x: r0.x, y: r0.y, w: W, h: H }];
-    const R = opts.find((o) => o.x >= 0 && o.x + o.w <= COLS && !hit(o));
+    let R = null;
+    for (const L of [GEOM.footprintMaxL, FLIGHT.royalLevel]) {
+      const fp = footprint('royal_chamber', L);
+      const W = Math.max(fp.w, r0.w);
+      const H = Math.max(fp.h, r0.h);
+      const opts = [{ x: r0.x + r0.w - W, y: r0.y, w: W, h: H }, { x: r0.x, y: r0.y, w: W, h: H }];
+      R = opts.find((o) => o.x >= 0 && o.x + o.w <= COLS && !hit(o)) || null;
+      if (R) break;
+    }
     if (R) chambers[0].res = R;
     else chambers[0].noRes = true;
   }
@@ -125,12 +131,13 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     roots.push({ col, y0: 1, y1 });
   }
 
-  // Royal growth zone (C66): every Flight-level footprint the first Royal Chamber can grow into (row rule: it never
-  // grows up). Boulders and water pockets never land there, so no seed can wall the queen in before Royal L5, a Flight
-  // requirement (a stone there needed the 10,000-insight acid_excavation). Roots and caches may (they do not block).
+  // Royal growth zone (C66, C155): every full-size (L8) footprint the first Royal Chamber can grow into (row rule: it
+  // never grows up), which holds every Flight-level one. Boulders and water pockets never land there, so no seed can
+  // wall the queen in (before Royal L5, a Flight requirement, a stone there needed the 10,000-insight acid_excavation)
+  // or hold her reserved growth back. Roots and caches may (they do not block).
   const keep = new Uint8Array(COLS * ROWS);
   {
-    const fp = footprint('royal_chamber', FLIGHT.royalLevel);
+    const fp = footprint('royal_chamber', GEOM.footprintMaxL);
     const sx = Math.max(0, fp.w - r0.w);
     markRect(keep, r0.x - sx, r0.y, r0.w + 2 * sx, Math.max(fp.h, r0.h), 1);
   }

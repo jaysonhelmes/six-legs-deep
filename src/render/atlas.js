@@ -125,7 +125,8 @@ function createAtlas() {
 
   function icon(name) {
     if (icons.has(name)) return icons.get(name);
-    const px = 64;
+    // C163: 128 px so icons stay crisp at the Above view's 2.75× zoom on 2× screens (was 64)
+    const px = 128;
     const off = createOffscreen(px, px);
     let out = null;
     if (off.ctx && off.canvas) {

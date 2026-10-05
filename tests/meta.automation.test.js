@@ -49,7 +49,7 @@ test('setAutomation deep-merges the patch and keeps the other fields', () => {
   assert.equal(a.autoRear, true);
   assert.deepEqual(a.autoFlight, { on: false, mode: 'minutes', alates: 0, minutes: 0 });
   assert.ok(Object.is(a.autoFlight.minutes, 0), '-0 is stored as 0');
-  assert.deepEqual(a.keep, { jobTargets: null, casteTargets: null });
+  assert.deepEqual(a.keep, { jobTargets: null, casteTargets: null, casteGoals: null, casteFill: null });
 });
 
 test('passCount: one pass per integer run second crossed, bounded offline', () => {

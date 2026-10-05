@@ -734,7 +734,7 @@ export function createPanel(root, { game, ui, bridge }) {
       const info = q(() => pocketAction(s, d, k, null), null);
       const owned = hasResearch(s, DRAINAGE ? DRAINAGE.research : 'drainage');
       setText(featText, 'Cannot be dug. A Water Well must touch one.' + (info && info.wells ? ' A Water Well uses this pocket.' : '')
-        + (owned ? ' Drain it (the cells become soil) or move it up to ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows into plain soil.'
+        + (owned ? ' Drain it (the cells become soil) or move it up to ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows into plain soil (tunnels there that nothing needs are filled in).'
           : ' ' + nameOf('research', 'drainage') + ' research lets you drain or move it.'));
       show(drainBtn, owned);
       show(moveBtn, owned);
@@ -868,7 +868,7 @@ export function createPanel(root, { game, ui, bridge }) {
           : tool.kind === 'relocate' ? 'Relocating: click a new spot in the nest.'
             : tool.kind === 'backfill' ? 'Backfill: click or drag a box over tunnels. Red cells stay open (a chamber needs them). B or Esc ends.'
               : tool.kind === 'growRoot' ? 'Grow a root: click a column in the nest. The preview shows how deep it reaches.'
-                : tool.kind === 'movePocket' ? 'Move the water pocket: click a spot of plain soil within ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows.'
+                : tool.kind === 'movePocket' ? 'Move the water pocket: click a spot of plain soil within ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows (spare tunnels there are filled in).'
               : 'Click the edge to grow toward: the new row or column is shown.');
         if (tool.kind === 'placeChamber') {
           const rules = chamberRuleText(s, d, tool.chamber);

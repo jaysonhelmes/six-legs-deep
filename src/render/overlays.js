@@ -313,6 +313,14 @@ function territory(ctx, info) {
       any = true;
     }
     if (any) ctx.fill();
+    // C162: trail-held hexes (temporary, lost with the trail) also carry a fine diagonal hatch
+    if (any && code === 4) {
+      const pat = hatchPattern(ctx, 'diag', OWNED_TINT[4], 0.8, 6);
+      if (pat) {
+        ctx.fillStyle = pat;
+        ctx.fill();
+      }
+    }
   }
   // border hexes
   ctx.strokeStyle = SURFACE.border;
@@ -344,7 +352,8 @@ function territory(ctx, info) {
     }
     ctx.fill();
   }
-  legend(ctx, [['Auto', OWNED_TINT[1]], ['Claimed', OWNED_TINT[2]], ['Conquered', OWNED_TINT[3]], ['Trunk', OWNED_TINT[4]], ['Border', SURFACE.border]]);
+  legend(ctx, [['Auto', OWNED_TINT[1]], ['Claimed', OWNED_TINT[2]], ['Conquered', OWNED_TINT[3]], ['Held by trail', OWNED_TINT[4], 'diag'],
+    ['Border', SURFACE.border]]);
 }
 
 function legend(ctx, items) {
@@ -357,9 +366,14 @@ function legend(ctx, items) {
   let w = 8;
   for (const [t] of items) w += ctx.measureText(t).width + 22;
   ctx.fillRect(4, 4, w, 20);
-  for (const [t, c] of items) {
-    ctx.fillStyle = c;
+  for (const [t, c, hatch] of items) {
+    ctx.fillStyle = hatch ? rgba(c, 0.35) : c;
     ctx.fillRect(x, y - 5, 10, 10);
+    const pat = hatch ? hatchPattern(ctx, hatch, c, 0.95, 4) : null;
+    if (pat) {
+      ctx.fillStyle = pat;
+      ctx.fillRect(x, y - 5, 10, 10);
+    }
     ctx.fillStyle = '#f4ecd8';
     ctx.fillText(t, x + 13, y);
     x += ctx.measureText(t).width + 22;

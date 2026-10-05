@@ -778,3 +778,46 @@ test('terrain (C111): linked puddles and garden paths paint in every season with
   }
   assert.deepEqual(stats.bad, []);
 });
+
+test('C154 / C156: a reserved cell picks its chamber (no grooming), water inside keeps its pocket; the badge pass draws cleanly', () => {
+  const game = makeGame();
+  const ui = makeUI();
+  const s = game.s;
+  const nest = createNestRenderer(makeCanvas(800, 600), { game, ui, bus: game.bus });
+  nest.render(0.016);
+  const at = (i) => {
+    const p = cellPt(nest, i);
+    return nest.pick(p.x, p.y);
+  };
+  // the Royal Chamber's reserved L8 room: x 13–21, rows 20–23 (its room is x 18–21, rows 20–21)
+  const cell = 23 * COLS + 14;
+  assert.deepEqual(at(cell), { view: 'nest', kind: 'chamber', id: 1, reserved: true, i: cell });
+  // discoloured soil (a cache hint) inside the reservation selects the chamber too
+  const hint = 22 * COLS + 15;
+  s.run.nest.features.caches = [{ i: hint, kind: 'seed_cache', found: false, hinted: true }];
+  s.run.nest.rev++;
+  assert.deepEqual(at(hint), { view: 'nest', kind: 'chamber', id: 1, reserved: true, i: hint });
+  // a nursery's reserved cell is kind 'chamber' (a click there inspects, never grooms)
+  s.run.nest.chambers.push({ uid: 7, type: 'nursery', k: 0, x: 4, y: 40, w: 3, h: 2, level: 1, target: 1, status: 'active', blueprint: false,
+    bornAt: 0, res: { x: 4, y: 40, w: 8, h: 4 } });
+  for (let y = 40; y < 42; y++) for (let x = 4; x < 7; x++) s.run.nest.cells[y * COLS + x] = CELL.CHAMBER;
+  s.run.nest.rev++;
+  assert.deepEqual(at(43 * COLS + 9), { view: 'nest', kind: 'chamber', id: 7, reserved: true, i: 43 * COLS + 9 });
+  assert.deepEqual(at(41 * COLS + 5), { view: 'nest', kind: 'nursery', id: 7 }, 'its room still grooms');
+  // a revealed water pocket inside a reservation keeps its own inspect (drain / move clears the room)
+  for (const c of [42 * COLS + 10, 42 * COLS + 11, 43 * COLS + 10, 43 * COLS + 11]) s.run.nest.cells[c] = CELL.WATER;
+  s.run.nest.features.water.push({ x: 10, y: 42, w: 2, h: 2, revealed: true });
+  s.run.nest.rev++;
+  assert.equal(at(42 * COLS + 10).kind, 'pocket');
+  // rendering with reservations, an affordable upgrade (▲ badge) and every zoom stays valid
+  Object.assign(s.run.res, { food: 1e9, soil: 1e9 });
+  s.run.unlocked.royal_levelup = true;
+  stats.bad.length = 0;
+  for (const z of [1, 2, 3]) {
+    nest.setZoom ? nest.setZoom(z) : null;
+    frames([nest], 3);
+  }
+  ui.setUI({ hover: { view: 'nest', kind: 'chamber', id: 1, reserved: true, i: cell } });
+  frames([nest], 3);
+  assert.deepEqual(stats.bad, []);
+});

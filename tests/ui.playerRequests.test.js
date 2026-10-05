@@ -281,3 +281,26 @@ test('research panel (C116): "Hide completed" hides owned nodes, notes the count
     delete globalThis.window.localStorage;
   }
 });
+
+test('context menu: a destination that already has a trail offers "Remove trail to here" instead of drawing one', () => {
+  setRevealAll(true);
+  uistate.resetUI();
+  const root = doc.createElement('div');
+  root.id = 'app';
+  doc.body.appendChild(root);
+  const game = createGame({ nowMs: 1000, storage: makeFakeStorage(), stepFn: () => [] });
+  const ui = mountUI(root, game, { loadRender: false });
+  ui.frame(1000);
+  const calls = [];
+  game.actions.do = (type, args) => { calls.push({ type, args }); return { ok: true, reason: null }; };
+  const seed = addSource(game.s, 'seed_patch', hexIndex(2, 0));
+  game.s.run.surface.trails.push({ uid: 900, origin: 0, src: seed.uid, path: [0, seed.hex], len: 2, job: 'forager', workers: 0, escorts: 0, S: 0, born: 0, reroutes: [] });
+  ui.bridge.contextMenu({ view: 'surface', kind: 'source', id: seed.uid, hex: seed.hex }, 50, 50);
+  const menu = root.querySelector('.ctx-menu');
+  assert.ok(menu);
+  assert.equal(button(menu, 'Draw trail from nearest entrance'), null, 'no second trail offered');
+  button(menu, 'Remove trail to here').click();
+  assert.deepEqual(calls.at(-1), { type: 'deleteTrail', args: { uid: 900 } });
+  ui.destroy();
+  root.remove();
+});

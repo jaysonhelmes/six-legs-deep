@@ -185,7 +185,7 @@ test('C137: older saves get reservations once where the full rectangle is free; 
   add('granary', 37, 42, 2, 2);
   n.rev++;
   settle(s, d);
-  assert.deepEqual(royal.res, { x: 15, y: 20, w: 7, h: 3 }, 'the queen keeps her obstacle-free Flight-level room');
+  assert.deepEqual(royal.res, { x: 13, y: 20, w: 9, h: 4 }, 'the queen gets her obstacle-free full-size room (C155)');
   assert.ok(a.res && a.res.w === 8 && a.res.h === 4);
   assert.deepEqual(b.res, { x: 1, y: 76, w: 8, h: 4 });
   assert.equal(c.noRes, true, 'no free full-size rectangle: legacy');
@@ -195,21 +195,22 @@ test('C137: older saves get reservations once where the full rectangle is free; 
   assert.equal(JSON.stringify(n.chambers), before, 'runs once');
 });
 
-test('C137: the Royal Chamber reserves its Flight-level room at the start; nothing may be placed in it (C66 simplified)', () => {
+test('C137 / C155: the Royal Chamber reserves its full-size (L8) room at the start and grows into it with no side to pick', () => {
   const { s, d } = setup();
   const r = s.run.nest.chambers[0];
-  assert.deepEqual(r.res, { x: 15, y: 20, w: 7, h: 3 });
+  assert.deepEqual(r.res, { x: 13, y: 20, w: 9, h: 4 });
   assert.equal(nest.validatePlacement(s, d, 'nursery', 15, 22).reason, 'blocked:reserved');
+  assert.equal(nest.validatePlacement(s, d, 'midden', 13, 23).reason, 'blocked:reserved', 'its L7–L8 rows are held too');
   assert.equal(nest.blocksRoyalGrowth(s, { x: 22, y: 20, w: 3, h: 2 }, 0, { d }), false, 'right of it is free');
-  for (let L = 1; L < 5; L++) {
+  for (let L = 1; L < 8; L++) {
+    const info = nest.levelInfo(s, d, 1);
+    assert.equal(info.reserved, true, 'reserved growth at L' + L);
+    assert.ok(!info.dirs.left && !info.dirs.right && !info.dirs.up && !info.dirs.down, 'no side to pick');
     assert.equal(run(s, d, { type: 'levelChamber', uid: 1 }), null);
     settle(s, d);
+    if (r.level === 5) assert.deepEqual([r.x, r.y, r.w, r.h], [15, 20, 7, 3], 'its Flight-level room is the same corner (C66)');
   }
-  assert.deepEqual([r.x, r.y, r.w, r.h, r.level], [15, 20, 7, 3, 5]);
-  // Past the reservation it grows the legacy way (a side to pick).
-  const info = nest.levelInfo(s, d, 1);
-  assert.equal(info.reserved, false);
-  assert.ok(info.dirs.left || info.dirs.right);
+  assert.deepEqual([r.x, r.y, r.w, r.h, r.level], [13, 20, 9, 4, 8], 'L8 fills the reservation exactly');
 });
 
 test('C137: a relocated chamber takes its reservation along (same corner unless another is asked for)', () => {

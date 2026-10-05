@@ -53,7 +53,7 @@ function capped({ layMult = 40 } = {}) {
 
 test('F22: a soldier egg that costs more than the food cap no longer stops minors from being laid', () => {
   const { s, d } = capped();
-  s.run.colony.casteTargets = { soldier: 0.15, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   assert.ok(d.stats.eggCost.soldier > d.stats.foodCap, `precondition: soldier egg ${d.stats.eggCost.soldier} > cap ${d.stats.foodCap}`);
   assert.ok(d.stats.eggCost.minor <= d.stats.foodCap, 'precondition: a minor egg fits in storage');
   let minors = 0;
@@ -79,7 +79,7 @@ test('F9: an unaffordable supermajor falls through to the next slider caste (sol
   recompute(s, d, fakeEnv());
   assert.ok(d.stats.eggCost.soldier <= d.stats.foodCap && d.stats.eggCost.supermajor > d.stats.foodCap,
     `precondition: soldier ${d.stats.eggCost.soldier} ≤ cap ${d.stats.foodCap} < supermajor ${d.stats.eggCost.supermajor}`);
-  s.run.colony.casteTargets = { soldier: 0.15, supermajor: 0.3, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 1000, replete: 0 };
   s.run.res.food = d.stats.foodCap;
   const tally = { minor: 0, soldier: 0, supermajor: 0 };
   for (let i = 0; i < 200; i++) {
@@ -96,7 +96,7 @@ test('F22: the egg reserve counts — a soldier egg above cap × (1 − reserve)
   recompute(s, d, fakeEnv());
   const cap = d.stats.foodCap;
   assert.ok(d.stats.eggCost.soldier < cap && d.stats.eggCost.soldier > cap * 0.4, 'precondition');
-  s.run.colony.casteTargets = { soldier: 0.15, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   s.run.colony.eggReserve = 0.6;                      // only 40 % of the cap is ever spendable on eggs
   s.run.res.food = cap;
   let minors = 0;
@@ -153,7 +153,7 @@ test('C91: full housing does not block soldier eggs while Barracks berths are fr
   d.nest.agg.foodCapBase = 1e6;
   recompute(s, d, fakeEnv());
   s.run.res.food = 5e5;
-  s.run.colony.casteTargets = { soldier: 0.9, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   let soldiers = 0;
   let minors = 0;
   for (let i = 0; i < 50; i++) {

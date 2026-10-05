@@ -167,12 +167,12 @@ test('BFS field over the default nest: distances along the shaft, stepDown walks
   assert.notEqual(cache.get('top', () => [top]), f1);
 });
 
-test('surface camera: zoom clamped to 0.6–1.6, zoomAt keeps the cursor point fixed, pan clamps to the map', () => {
+test('surface camera: zoom clamped to 0.6–2.75 (C163), zoomAt keeps the cursor point fixed, pan clamps to the map', () => {
   const cam = createSurfaceCamera();
   cam.setViewport(800, 600);
   cam.setRadius(8);
   assert.equal(cam.zoomMin, 0.6);
-  assert.equal(cam.zoomMax, 1.6);
+  assert.equal(cam.zoomMax, 2.75);
   const v0 = cam.view();
   const h = 50;
   const p0 = hexToPx(h, v0);
@@ -180,7 +180,7 @@ test('surface camera: zoom clamped to 0.6–1.6, zoomAt keeps the cursor point f
   const p1 = hexToPx(h, cam.view());
   assert.ok(Math.abs(p1.x - p0.x) < 1e-6 && Math.abs(p1.y - p0.y) < 1e-6, 'point under the cursor stays put');
   for (let k = 0; k < 20; k++) cam.zoomAt(1.5, 400, 300);
-  assert.equal(cam.zoom, 1.6);
+  assert.equal(cam.zoom, 2.75);
   for (let k = 0; k < 20; k++) cam.zoomAt(0.5, 400, 300);
   assert.equal(cam.zoom, 0.6);
   cam.pan(-1e6, -1e6);

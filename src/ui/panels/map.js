@@ -738,11 +738,12 @@ export function createPanel(root, { game, ui, bridge }) {
       const owned = d && d.surface && d.surface.owned ? d.surface.owned[hex] : 0;
       const rv = d && d.surface && d.surface.rival ? d.surface.rival[hex] : 0;
       const rr = rv ? rivalBy(s, rv) : null;
-      setText(selRefs.ownDd, owned ? ['', 'Yours (auto)', 'Yours (claimed)', 'Yours (conquered)', 'Yours (trunk trail)'][owned] || 'Yours'
+      setText(selRefs.ownDd, owned ? ['', 'Yours (auto)', 'Yours (claimed)', 'Yours (conquered)', 'Held by trail: claim to keep'][owned] || 'Yours'
         : rr ? nameOf('rival', rr.type) : 'Unclaimed');
       let reason = null;
       try { reason = canClaim(s, d, hex); } catch { reason = 'invalid'; }
-      const claimShown = isShown(s, 'hex_claim') && !owned;
+      // C162: a trail-held hex (owned 4, temporary) can still be claimed for good
+      const claimShown = isShown(s, 'hex_claim') && (!owned || owned === 4);
       show(selRefs.claimBtn, claimShown);
       show(selRefs.costDt, claimShown);
       show(selRefs.costDd, claimShown);

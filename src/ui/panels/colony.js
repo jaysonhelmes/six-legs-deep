@@ -1,5 +1,5 @@
 // Colony panel: brood pipeline (eggs / larvae / pupae, lay rate, housing, egg reserve slider, Fungal Brood), caste
-// slider and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets (a target slider per chip; +/− and drags edit targets in auto mode, C94) and
+// target counts (C151: stepper, Max, "Keep berths filled", chitin reserve) and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets (a target slider per chip; +/− and drags edit targets in auto mode, C94) and
 // presets (Adaptations have their own tab since C143, panels/adaptations.js; alate rearing lives on the Prestige tab's Flight view, C116). Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
 // Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, stats.eggCost.
 
@@ -7,7 +7,7 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../do
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
 import { nameOf, JOB_TIPS, CASTE_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
-import { broodSummary, housingBrood, chitinReserve } from '../../systems/population.js';
+import { broodSummary, housingBrood, chitinReserve, casteStatus } from '../../systems/population.js';
 import { idleMinors, jobCap, withTarget, effectiveTargets } from '../../systems/jobs.js';
 import { eggCost } from '../../systems/stats.js';
 import { JOB_ORDER, JOBS, TARGET_UI } from '../../data/jobs.js';
@@ -25,9 +25,13 @@ export { ADAPT_FALLBACK, ADAPT_UNLOCK_FALLBACK, adaptBulk } from './adaptations.
 /** Caste unlock keys (slider castes). */
 const CASTE_KEYS = Object.freeze({ soldier: 'caste_soldier', supermajor: 'caste_supermajor', replete: 'caste_replete' });
 const STEPS = [1, 10, 100, 'max'];
-/** Slider limits (DESIGN §5.1 egg reserve ≤ 90 % of the food cap, §5.5 caste targets sum ≤ 90 %). */
+/** Slider limit (DESIGN §5.1 egg reserve ≤ 90 % of the food cap). */
 const RESERVE_MAX = num(SLIDERS && SLIDERS.eggReserveMax, 0.9);
-const CASTE_SUM_MAX = num(SLIDERS && SLIDERS.casteSumMax, 0.9);
+/** C151 caste target counts: upper bound and the stepper's step sizes. */
+const GOAL_MAX = num(SLIDERS && SLIDERS.casteGoalMax, 1e30);
+const GOAL_STEPS = Array.isArray(SLIDERS && SLIDERS.casteGoalSteps) && SLIDERS.casteGoalSteps.length ? SLIDERS.casteGoalSteps : [1, 10];
+/** Berth chamber per target caste (C151 "cap" wording). */
+const CAP_NAME = Object.freeze({ soldier: 'Barracks', supermajor: 'War Hall', replete: 'Repletion Hall' });
 
 /** C104 chitin reserve ladder (absolute chitin per slider step). */
 const CHITIN_STEPS = Array.isArray(SLIDERS && SLIDERS.chitinReserveSteps) && SLIDERS.chitinReserveSteps.length ? SLIDERS.chitinReserveSteps : [0];
@@ -114,6 +118,42 @@ export function berthLines(s, st, adults) {
   return out;
 }
 
+/**
+ * C151 status line of a caste target row: "12 / 20 (cap 30) · 18 berths free".
+ * @param {{ have: number, goal: number, cap: number, free: number }} st casteStatus()
+ * @returns {string}
+ */
+export function casteGoalLine(st) {
+  const x = obj(st);
+  const cap = Math.floor(num(x.cap) + 1e-9);
+  const free = Math.floor(num(x.free) + 1e-9);
+  return fmtCount(Math.floor(num(x.have) + 1e-9)) + ' / ' + fmtCount(Math.floor(num(x.goal) + 1e-9)) + ' (cap ' + fmtCount(cap) + ')'
+    + ' · ' + fmtCount(free) + (free === 1 ? ' berth' : ' berths') + ' free';
+}
+
+/**
+ * C151: why the queen is or is not laying a caste right now (short player text).
+ * @param {Object} s
+ * @param {string} c caste
+ * @param {{ have: number, goal: number, free: number }} st casteStatus()
+ * @param {Object|null} cost stats.eggCost(c)
+ * @param {number} reserve chitin reserve
+ * @returns {string}
+ */
+export function casteGoalReason(s, c, st, cost, reserve) {
+  const x = obj(st);
+  if (s.run.hardship === 'monomorphic' || (s.run.hardship === 'pacifist' && c !== 'replete')) return 'Not in this Hardship.';
+  if (!(num(x.goal) - num(x.have) > 1e-9)) return num(x.goal) > 0 ? 'Target reached: the queen lays workers.' : '';
+  if (!(num(x.free) > 1e-9)) return 'No free ' + CAP_NAME[c] + ' berth: build or enlarge one.';
+  const k = obj(cost);
+  const held = c === 'replete' ? 0 : num(reserve);
+  if (num(k.chitin) > 0 && num(s.run.res.chitin) - held < num(k.chitin)) {
+    return held > 0 ? 'Waiting for chitin above the reserve (' + fmtCount(held) + ').' : 'Waiting for chitin.';
+  }
+  for (const r of ['fungus', 'honeydew']) if (num(k[r]) > 0 && num(s.run.res[r]) < num(k[r])) return 'Waiting for ' + r + '.';
+  return 'Laying ' + nameOf('caste', c).toLowerCase() + 's before workers.';
+}
+
 /** Safe query call. */
 function q(fn, fallback) {
   try {
@@ -173,12 +213,23 @@ export function createPanel(root, { game, ui, bridge }) {
     casteCounts.appendChild(chip);
   }
   const berthsEl = h('p', { class: 'note' });
-  const casteSliders = {};
-  const casteSliderBox = h('div', { class: 'caste-sliders' });
+  // C151 caste target counts: per caste a stepper (−/+ by the ×1 / ×10 step, typed number), Max (= its berth cap) and
+  // "Keep berths filled" (the target follows the cap).
+  let goalStep = GOAL_STEPS[0];
+  /** Last target sent per caste ({ v, at }): the base for the next +/− until the queued command has applied. */
+  const pendingGoal = {};
+  const goalStepRow = h('div', { class: 'seg seg-small caste-step', role: 'radiogroup', 'aria-label': 'Target step' });
+  for (const sv of GOAL_STEPS) {
+    goalStepRow.appendChild(h('button', { type: 'button', class: 'seg-btn' + (sv === goalStep ? ' selected' : ''), dataset: { step: String(sv) },
+      text: '×' + sv, attrs: { 'aria-label': 'Change targets by ' + sv },
+      on: { click: () => { goalStep = sv; for (const b of Array.from(goalStepRow.children)) toggleClass(b, 'selected', b.dataset.step === String(sv)); } } }));
+  }
+  const casteGoalRows = {};
+  const casteSliderBox = h('div', { class: 'caste-targets' }, goalStepRow);
   for (const c of ['soldier', 'supermajor', 'replete']) {
-    const sl = sliderRow(nameOf('caste', c) + ' eggs', { min: 0, max: Math.round(CASTE_SUM_MAX * 100), step: 5, tip: CASTE_TIPS[c] }, (v) => setCaste(c, v));
-    casteSliders[c] = sl;
-    casteSliderBox.appendChild(sl.el);
+    const row = createGoalRow(c);
+    casteGoalRows[c] = row;
+    casteSliderBox.appendChild(row.el);
   }
   // C104 chitin reserve: soldier / supermajor eggs only spend chitin above it (Adaptations and the Gate ignore it).
   const chitinRes = sliderRow('Chitin reserve', { min: 0, max: CHITIN_STEPS.length - 1, step: 1,
@@ -203,7 +254,7 @@ export function createPanel(root, { game, ui, bridge }) {
   }
   const retireTitle = h('h4', { class: 'sub-title', text: 'Retire to workers' });
   const casteSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Castes' }), casteCounts, berthsEl,
-    h('p', { class: 'note', text: 'Larval diet decides caste. The rest become minors.' }), casteSliderBox,
+    h('p', { class: 'note', text: 'Larval diet decides caste. The queen raises each caste up to its target, then lays workers.' }), casteSliderBox,
     retireTitle, retireBox);
 
   // --- jobs ---
@@ -244,12 +295,79 @@ export function createPanel(root, { game, ui, bridge }) {
   const empty = note('Your first worker is on the way. The queen tends her first egg.');
   el.append(empty, broodSec, casteSec, jobsSec);   // Adaptations: own tab (C143); alate rearing: Prestige → Flight (C116)
 
-  function setCaste(c, pct) {
-    const t = { ...obj(game.s.run.colony.casteTargets) };
-    const others = Object.keys(CASTE_KEYS).filter((k) => k !== c).reduce((a, k) => a + num(t[k]), 0);
-    t[c] = Math.max(0, Math.min(pct / 100, CASTE_SUM_MAX - others));
-    for (const k of Object.keys(CASTE_KEYS)) t[k] = num(t[k]);
-    act('setCasteTargets', { soldier: t.soldier, supermajor: t.supermajor, replete: t.replete }, null, casteSliders[c].input);
+  /** C151: casteStatus of the live game (null if not available). */
+  function goalStatus(c) {
+    return q(() => casteStatus(game.s, game.d, c), null);
+  }
+
+  /** C151: the target count to build the next +/− on (the last value sent while its command is still queued). */
+  function baseGoal(c) {
+    const p = pendingGoal[c];
+    if (p && Date.now() - p.at < TARGET_PENDING_MS) return p.v;
+    delete pendingGoal[c];
+    return Math.floor(num(obj(goalStatus(c)).goal) + 1e-9);
+  }
+
+  /** C151: send one caste's target count (whole ants, 0..GOAL_MAX). */
+  function setGoal(c, v, ev = null, src = null) {
+    const n = Math.max(0, Math.min(GOAL_MAX, Math.floor(num(v))));
+    const res = act('setCasteTargets', { [c]: n }, ev, src);
+    if (res.ok) pendingGoal[c] = { v: n, at: Date.now() };
+    return res;
+  }
+
+  /** C151 caste target row: name + "have / target (cap)", stepper, Max, Keep berths filled, per-egg cost and status. */
+  function createGoalRow(c) {
+    const lc = nameOf('caste', c).toLowerCase();
+    const status = h('span', { class: 'caste-goal-status muted' });
+    const input = h('input', { type: 'number', class: 'input input-small caste-goal-input', min: 0, step: 1,
+      attrs: { 'aria-label': nameOf('caste', c) + ' target', inputmode: 'numeric' } });
+    input.style.width = '6.5em';
+    input.addEventListener('change', (ev) => {
+      const v = Number(input.value);
+      if (input.value !== '' && Number.isFinite(v)) setGoal(c, v, ev, input);
+    });
+    const minus = h('button', { type: 'button', class: 'btn btn-icon', text: '−', attrs: { 'aria-label': 'Lower the ' + lc + ' target' },
+      on: { click: (ev) => setGoal(c, baseGoal(c) - goalStep, ev, minus) } });
+    const plus = h('button', { type: 'button', class: 'btn btn-icon', text: '+', attrs: { 'aria-label': 'Raise the ' + lc + ' target' },
+      on: { click: (ev) => setGoal(c, baseGoal(c) + goalStep, ev, plus) } });
+    const max = h('button', { type: 'button', class: 'btn btn-small', text: 'Max',
+      attrs: { 'aria-label': 'Set the ' + lc + ' target to the ' + CAP_NAME[c] + ' berths' },
+      dataset: { tip: 'Set the target to the ' + CAP_NAME[c] + ' berths you have now.' },
+      on: { click: (ev) => setGoal(c, Math.floor(num(obj(goalStatus(c)).cap) + 1e-9), ev, max) } });
+    const fillBox = h('input', { type: 'checkbox', class: 'check' });
+    fillBox.addEventListener('change', (ev) => {
+      if (act('setCasteFill', { caste: c, on: !!fillBox.checked }, ev, fillBox).ok) delete pendingGoal[c];
+    });
+    const fillRow = h('label', { class: 'toggle-row caste-fill',
+      dataset: { tip: 'The target follows your ' + CAP_NAME[c] + ' berths, including new ones. The chitin reserve still applies.' } },
+    fillBox, h('span', { text: 'Keep berths filled' }));
+    const cost = h('span', { class: 'cost' });
+    const reason = h('span', { class: 'muted caste-goal-reason' });
+    const el = h('div', { class: 'caste-goal', dataset: { caste: c, tip: CASTE_TIPS[c] } },
+      h('div', { class: 'row-between' }, h('span', { class: 'caste-goal-name' }, h('i', { class: 'ico ico-' + c, attrs: { 'aria-hidden': 'true' } }),
+        ' ' + nameOf('caste', c) + ' target'), status),
+      h('div', { class: 'btn-row caste-goal-ctrl' }, minus, input, plus, max, fillRow),
+      h('p', { class: 'note caste-goal-cost' }, 'Per egg ', cost, ' ', reason));
+    el.style.margin = '6px 0';
+    return { el, status, input, minus, plus, max, fillBox, fillRow, cost, reason };
+  }
+
+  /** C151: refresh one caste target row. */
+  function updateGoalRow(r, c, s, d, reserve) {
+    const st = q(() => casteStatus(s, d, c), null) || { have: 0, goal: 0, cap: 0, free: 0, fill: false };
+    const blocked = s.run.hardship === 'monomorphic' || (s.run.hardship === 'pacifist' && c !== 'replete');
+    setText(r.status, casteGoalLine(st));
+    const goal = Math.floor(num(st.goal) + 1e-9);
+    const p = pendingGoal[c];
+    if (p && (p.v === goal || Date.now() - p.at >= TARGET_PENDING_MS)) delete pendingGoal[c];
+    setProp(r.input, 'value', String(pendingGoal[c] ? pendingGoal[c].v : goal));
+    for (const b of [r.minus, r.plus, r.max, r.input, r.fillBox]) setProp(b, 'disabled', blocked);
+    setProp(r.fillBox, 'checked', !!st.fill);
+    toggleClass(r.el, 'filling', !!st.fill);
+    const cost = q(() => eggCost(s, d, c), null);
+    setCost(r.cost, cost, s);
+    setText(r.reason, casteGoalReason(s, c, st, cost, reserve));
   }
 
   function amountFor(available) {
@@ -436,14 +554,15 @@ export function createPanel(root, { game, ui, bridge }) {
           show(casteEls[k].chip, k === 'minor' || num(adults[k]) > 0 || isShown(s, casteKey(k)));
         }
         setText(berthsEl, berthLines(s, st, adults).join(' · '));
-        const t = obj(c.casteTargets);
-        for (const k of Object.keys(casteSliders)) {
+        const resv = q(() => chitinReserve(s), num(c.chitinReserve));
+        let anyGoal = false;
+        for (const k of Object.keys(casteGoalRows)) {
           const vis = isShown(s, casteKey(k));
-          show(casteSliders[k].el, vis);
-          const pacifistBlock = s.run.hardship === 'pacifist' && k !== 'replete';
-          casteSliders[k].set(Math.round(num(t[k]) * 100), { disabled: s.run.hardship === 'monomorphic' || pacifistBlock,
-            text: fmtPct(num(t[k]), { signed: false }), fmt: (v) => fmtPct(v / 100, { signed: false }) });
+          show(casteGoalRows[k].el, vis);
+          anyGoal = anyGoal || vis;
+          if (vis) updateGoalRow(casteGoalRows[k], k, s, d, resv);
         }
+        show(goalStepRow, anyGoal);
         // C104 chitin reserve
         const milVis = isShown(s, casteKey('soldier')) || isShown(s, casteKey('supermajor'));
         show(chitinRes.el, milVis);

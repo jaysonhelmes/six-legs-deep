@@ -20,7 +20,7 @@ function deepFreeze(o) {
  * Map geometry (DESIGN §8.1, §8.3). sun_compass / regional_expansion radii live in research / federation `fx.radius`.
  * revealStart = rings revealed at run start (keen_antennae / boon_scouts_lead values live in their own fx).
  */
-export const MAP = deepFreeze({ radiusBase: 8, zoomMin: 0.6, zoomMax: 1.6, revealStart: 2,
+export const MAP = deepFreeze({ radiusBase: 8, zoomMin: 0.6, zoomMax: 2.75, revealStart: 2,   // zoomMax: C163 (was 1.6)
   rootRing: 3 });   // rootRing (extra): plants within this ring seed the nest's root lines (DESIGN §8.9 step 5, §7.9)
 
 /** Terrain ids; the stored terrain code is the index in this array. */

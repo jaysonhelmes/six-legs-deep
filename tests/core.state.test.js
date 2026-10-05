@@ -49,7 +49,7 @@ test('meta defaults per ARCHITECTURE §4', () => {
   assert.deepEqual(m.cosmetics, { owned: {}, equipped: {} });
   assert.deepEqual(m.automation.autoFlight, { on: false, mode: 'peak', alates: 0, minutes: 30 });
   assert.deepEqual(m.automation.autoSuper, { on: false, mode: 'kinship', kinship: 0, hours: 6 });
-  assert.deepEqual(m.automation.keep, { jobTargets: null, casteTargets: null });
+  assert.deepEqual(m.automation.keep, { jobTargets: null, casteTargets: null, casteGoals: null, casteFill: null });
   assert.equal(Object.keys(m.counters).length, 21);
   assert.ok(Object.values(m.counters).every((v) => v === 0));
   assert.equal(m.stats.nanGuards, 0);
@@ -88,7 +88,7 @@ test('skeleton run: nest, surface, crumb source and trail (§4, §4.2)', () => {
   assert.equal(r.colony.naniticsLeft, 5);
   assert.deepEqual(r.colony.jobTargets, { forager: 0.6, digger: 0.2, nurse: 0.1, scout: 0.1, herder: 0, leafcutter: 0, gardener: 0 });
   assert.deepEqual(r.nest.chambers, [{ uid: 1, type: 'royal_chamber', k: 0, x: 18, y: 20, w: 4, h: 2, level: 1, target: 1,
-    status: 'active', blueprint: false, bornAt: 0, res: { x: 15, y: 20, w: 7, h: 3 } }]);
+    status: 'active', blueprint: false, bornAt: 0, res: { x: 13, y: 20, w: 9, h: 4 } }]); // C155: its full-size L8 room
   assert.equal(r.nest.nextUid, 2);
   assert.deepEqual(r.nest.shafts, [{ kind: 'main', col: 20, open: true, ref: -1 }]);
   assert.equal(r.nest.deepestRow, 21);

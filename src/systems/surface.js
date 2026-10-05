@@ -186,6 +186,9 @@ function revealOne(s, d, hex, insight, env) {
   queueEvent(d, env, 'hexRevealed', { hex });
 }
 
+/** d.surface.owned code of a hex held only by a trail (Trunk Trails, C133): temporary territory (C162). */
+export const OWN_TRAIL = 4;
+
 /** Claim a hex outright (claimed, claims++, rev++, claimDone). */
 function doClaim(s, d, hex, env) {
   const S = s.run.surface;
@@ -242,7 +245,7 @@ function rebuildTerritory(s, d, trunk) {
   if (trunk) {
     for (const t of S.trails) {
       if (!t || !Array.isArray(t.path)) continue;
-      for (const h of t.path) if (isHex(h) && h < nIn && D.owned[h] === 0 && D.rival[h] === 0) D.owned[h] = 4;
+      for (const h of t.path) if (isHex(h) && h < nIn && D.owned[h] === 0 && D.rival[h] === 0) D.owned[h] = OWN_TRAIL;
     }
   }
   let count = 0;
@@ -573,7 +576,9 @@ export function canClaim(s, d, hex) {
   if (!unlocked(s, 'hex_claim')) return 'locked';
   if (!isHex(hex) || hex >= hexesIn(s)) return 'invalid';
   if (!S.revealed[hex]) return 'invalid:fog';
-  if (d.surface.owned[hex] || S.claimed[hex]) return 'invalid:owned';
+  // C162: a hex held only by a trail (Trunk Trails, owned code OWN_TRAIL) is temporary territory: it can be claimed for
+  // good at the normal cost and then stays owned without the trail. Trail-held hexes count as owned land for adjacency.
+  if ((d.surface.owned[hex] && d.surface.owned[hex] !== OWN_TRAIL) || S.claimed[hex]) return 'invalid:owned';
   if (d.surface.rival[hex]) return 'blocked:rival';
   const adj = neighbors(hex).some((n) => d.surface.owned[n] !== 0 || (S.claimed[n] && d.surface.rival[n] === 0));
   if (!adj) return 'invalid:adjacent';

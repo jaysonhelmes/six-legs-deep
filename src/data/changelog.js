@@ -10,6 +10,45 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.10.0',
+    date: '2026-10-04',
+    title: 'Caste targets, living map and grander chambers',
+    sections: [
+      { heading: 'Colony', notes: [
+        'Caste sliders are now targets: set how many soldiers, supermajors and repletes you want with -/+ (x1 or x10), type a number, or press Max to match your berths. The queen raises each caste to its target, then lays workers.',
+        'New "Keep berths filled" toggle: the target follows your Barracks, War Hall or Repletion Hall berths, including new ones. It turns on by itself when your first Barracks or War Hall opens.',
+        'Each caste row shows how many you have, your target, the berth cap, free berths and the cost per egg. Old percentages are converted to targets automatically.',
+        'The Ants count on the left rail breaks down by caste. Click the row to fold it.',
+      ] },
+      { heading: 'Nest', notes: [
+        'Reserved space now looks like a dig site, with freshly dug soil, props and workers, instead of a dotted outline.',
+        'Clicking soil in the reserved space of a chamber opens that chamber; hovering shows what it is reserved for.',
+        'Chambers look grander as they level: carvings and pillars from level 3; ornate trim, glowing lamps and an emblem from level 7.',
+        'The Royal Chamber reserves its full-size room up front and grows into it on its own.',
+        'A water pocket can be moved over spare tunnels; they are filled in as part of the move.',
+        'A small green triangle on a chamber means its next level is affordable right now.',
+        'New Bloodline traits: Deep Spring (a blueprint Water Well with no water nearby gets a spring beside it) and Root Memory (a blueprint Root Aphid Pen gets a free root grown down to it).',
+      ] },
+      { heading: 'Map', notes: [
+        'The surface comes alive: plants sway in the wind, beetles crawl, caterpillars inch along, flies buzz over dead insects, termites bustle and molehills puff soil. Reduced motion turns it off.',
+        'You can permanently claim hexes your trails hold; trail-held territory now looks paler and hatched, with a dashed border.',
+        'Zoom much closer on the surface map (up to 2.75x).',
+        'Hovering a hex tells you what its ground does to trails (sand counts as 1.25 hexes); the Manual has a new Terrain entry.',
+      ] },
+      { heading: 'Interface', notes: [
+        'The Winged Cursor works across the whole game window, with a gold pointer over clickable things.',
+      ] },
+    ],
+  },
+  {
+    version: '0.9.1',
+    date: '2026-10-04',
+    title: 'Remove a trail from its destination',
+    notes: [
+      'Right-click a food source, aphid colony or other destination that already has a trail and choose "Remove trail to here".',
+    ],
+  },
+  {
     version: '0.9.0',
     date: '2026-10-04',
     title: 'War Hall, reserved rooms and wider trails',

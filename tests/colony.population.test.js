@@ -134,12 +134,13 @@ test('no laying while Hungry', () => {
   assert.equal(broodTotal(s), 0);
 });
 
-test('caste slider: the caste with the largest deficit is laid; shares converge to the targets', () => {
+test('C151 caste targets: the caste with the largest deficit is laid until adults + brood reach each target, then minors', () => {
   const { s, d } = setup();
   roomy(s, d, { layMult: 40 });                            // λ = 10 → one egg per 0.1 s tick
   s.run.unlocked.caste_soldier = true;
   s.run.unlocked.caste_replete = true;
-  s.run.colony.casteTargets = { soldier: 0.2, supermajor: 0, replete: 0.3 };
+  s.run.colony.casteGoals = { soldier: 20, supermajor: 0, replete: 30 };
+  s.run.colony.casteTouched = { soldier: true, supermajor: true, replete: true }; // no C151 auto-fill
   s.run.res.chitin = 1e6;
   s.run.res.honeydew = 1e6;
   d.stats.honeydewCap = 1e9;
@@ -151,12 +152,13 @@ test('caste slider: the caste with the largest deficit is laid; shares converge 
   assert.equal(s.run.stats.soldiersRaised, e.soldier);
 });
 
-test('a large batch (offline step) is split so it keeps the slider shares', () => {
+test('a large batch (offline step) is split so each caste stops at its target count (C151)', () => {
   const { s, d } = setup();
   roomy(s, d, { layMult: 40 });
   s.run.unlocked.caste_soldier = true;
   s.run.unlocked.caste_replete = true;
-  s.run.colony.casteTargets = { soldier: 0.2, supermajor: 0, replete: 0.3 };
+  s.run.colony.casteGoals = { soldier: 20, supermajor: 0, replete: 30 };
+  s.run.colony.casteTouched = { soldier: true, supermajor: true, replete: true }; // no C151 auto-fill
   s.run.res.chitin = 1e6;
   s.run.res.honeydew = 1e6;
   Object.assign(d.nest.agg, { berthsBase: 1000, warBerthsBase: 1000, repleteBerthsBase: 1000 });
@@ -169,7 +171,7 @@ test('slider castes fall back to minors without a free berth or their extras; so
   const { s, d } = setup();
   roomy(s, d, { layMult: 40 });
   s.run.unlocked.caste_soldier = true;
-  s.run.colony.casteTargets = { soldier: 0.5, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   s.run.res.chitin = 1e6;
   for (let i = 0; i < 10; i++) popTick(s, d, 0.1);
   assert.equal(s.run.colony.eggs.soldier, 0, 'no berths');
@@ -191,7 +193,7 @@ test('pacifist and monomorphic runs never lay military / slider castes even with
   const { s, d } = setup();
   roomy(s, d, { layMult: 40 });
   s.run.unlocked.caste_soldier = true;
-  s.run.colony.casteTargets = { soldier: 0.5, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   s.run.res.chitin = 1e6;
   d.nest.agg.berthsBase = 100;
   s.run.hardship = 'pacifist';
@@ -328,7 +330,7 @@ test('larvae eat first: fungus for exactly one supermajor egg plus a big Nutriti
   roomy(s, d, { layMult: 4 });                             // λ = 1
   s.run.research.fungiculture = 1;
   s.run.unlocked.caste_supermajor = true;
-  s.run.colony.casteTargets = { soldier: 0, supermajor: 0.9, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 0, supermajor: 1000, replete: 0 };
   s.run.colony.adults.minor = 10000;                       // demand 50 fungus/s
   s.run.colony.layAcc = 1;
   d.nest.agg.warBerthsBase = 10; // C136: War Hall berths
@@ -474,26 +476,32 @@ test('broodSummary: stages by progress, frozen count, per-caste totals', () => {
 // Commands
 // ---------------------------------------------------------------------------------------------------------------------
 
-test('setCasteTargets: locked castes, Σ ≤ 0.9, pacifist / monomorphic hardships; copies into keep.casteTargets', () => {
+test('setCasteTargets (C151 counts): locked castes, pacifist / monomorphic hardships, floors; copies into keep', () => {
   const { s, d } = setup();
   const v = (cmd) => handlers.setCasteTargets.validate(s, d, { type: 'setCasteTargets', ...cmd });
   assert.equal(v({ soldier: 0, supermajor: 0, replete: 0 }), null, 'zeros are always fine');
-  assert.equal(v({ soldier: 0.3 }), 'locked');
+  assert.equal(v({}), 'invalid', 'nothing to set');
+  assert.equal(v({ soldier: 3 }), 'locked');
   s.run.unlocked.caste_soldier = true;
   s.run.unlocked.caste_replete = true;
-  assert.equal(v({ soldier: 0.5, replete: 0.5 }), 'invalid:sum');
-  for (const bad of [-0.1, 1.5, NaN, null, '0.2', {}]) assert.equal(v({ soldier: bad }), 'invalid', String(bad));
-  assert.equal(v({ soldier: 0.3, replete: 0.6 }), null);
+  for (const bad of [-1, 1e31, NaN, Infinity, null, '2', {}]) assert.equal(v({ soldier: bad }), 'invalid', String(bad));
+  assert.equal(v({ soldier: 50, replete: 400 }), null, 'counts have no sum limit');
   s.run.hardship = 'pacifist';
-  assert.equal(v({ soldier: 0.1 }), 'hardship');
-  assert.equal(v({ replete: 0.1 }), null);
+  assert.equal(v({ soldier: 1 }), 'hardship');
+  assert.equal(v({ replete: 1 }), null);
   s.run.hardship = 'monomorphic';
-  assert.equal(v({ replete: 0.1 }), 'hardship');
+  assert.equal(v({ replete: 1 }), 'hardship');
   s.run.hardship = null;
-  handlers.setCasteTargets.apply(s, d, { type: 'setCasteTargets', soldier: 0.3, replete: -0 });
-  assert.deepEqual(s.run.colony.casteTargets, { soldier: 0.3, supermajor: 0, replete: 0 });
-  assert.ok(!Object.is(s.run.colony.casteTargets.replete, -0));
-  assert.deepEqual(s.meta.automation.keep.casteTargets, { soldier: 0.3, supermajor: 0, replete: 0 });
+  s.run.colony.casteFill.soldier = true;
+  handlers.setCasteTargets.apply(s, d, { type: 'setCasteTargets', soldier: 30.7, replete: -0 });
+  assert.deepEqual(s.run.colony.casteGoals, { soldier: 30, supermajor: 0, replete: 0 });
+  assert.ok(!Object.is(s.run.colony.casteGoals.replete, -0));
+  assert.equal(s.run.colony.casteFill.soldier, false, 'a typed target stops tracking the berths');
+  assert.deepEqual(s.run.colony.casteTouched, { soldier: true, supermajor: false, replete: true });
+  assert.deepEqual(s.meta.automation.keep.casteGoals, { soldier: 30, supermajor: 0, replete: 0 });
+  assert.deepEqual(s.meta.automation.keep.casteFill, { soldier: false, replete: false }, 'only castes the player set');
+  handlers.setCasteTargets.apply(s, d, { type: 'setCasteTargets', supermajor: 2 });
+  assert.deepEqual(s.run.colony.casteGoals, { soldier: 30, supermajor: 2, replete: 0 }, 'omitted keys keep their value');
 });
 
 test('setEggReserve, setFungalBrood, rearAlate validation and effects', () => {

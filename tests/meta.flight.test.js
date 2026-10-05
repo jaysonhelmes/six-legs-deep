@@ -254,23 +254,36 @@ test('startRun: C39 carry of job / caste targets with automaton_instincts / auto
   const s = newState(4);
   const d = makeDerived();
   const jt = { forager: 0.5, digger: 0.3, nurse: 0.1, scout: 0.1, herder: 0, leafcutter: 0, gardener: 0 };
-  s.meta.automation.keep = { jobTargets: jt, casteTargets: { soldier: 0.2, supermajor: 0.1, replete: 0.05 } };
+  const zeros = { soldier: 0, supermajor: 0, replete: 0 };
+  const off = { soldier: false, supermajor: false, replete: false };
+  s.meta.automation.keep = { jobTargets: jt, casteTargets: null, casteGoals: { soldier: 20, supermajor: 4, replete: 7 },
+    casteFill: { soldier: true, supermajor: false } };
   startRun(s, d, { seed: 3 });
   assert.equal(s.run.colony.autoJobs, false);
-  assert.deepEqual(s.run.colony.casteTargets, { soldier: 0, supermajor: 0, replete: 0 });
+  assert.deepEqual(s.run.colony.casteGoals, zeros);
+  assert.deepEqual(s.run.colony.casteTouched, off, 'nothing carried: the first Barracks may switch filling on');
   s.cycle.traits.automaton_instincts = 1;
   startRun(s, d, { seed: 3 });
   assert.deepEqual(s.run.colony.jobTargets, jt);
   assert.equal(s.run.colony.autoJobs, true);
   assert.equal(s.run.colony.thresholdJobs, true);
-  assert.deepEqual(s.run.colony.casteTargets, { soldier: 0, supermajor: 0, replete: 0 }, 'caste presets need automated_brood');
+  assert.deepEqual(s.run.colony.casteGoals, zeros, 'caste presets need automated_brood');
   s.era.federation.automated_brood = 1;
   startRun(s, d, { seed: 3 });
-  assert.deepEqual(s.run.colony.casteTargets, { soldier: 0.2, supermajor: 0.1, replete: 0.05 });
+  assert.deepEqual(s.run.colony.casteGoals, { soldier: 20, supermajor: 4, replete: 7 });
+  assert.deepEqual(s.run.colony.casteFill, { soldier: true, supermajor: false, replete: false });
+  assert.deepEqual(s.run.colony.casteTouched, { soldier: true, supermajor: true, replete: true });
   startRun(s, d, { seed: 3, hardship: 'pacifist' });
-  assert.deepEqual(s.run.colony.casteTargets, { soldier: 0, supermajor: 0, replete: 0.05 });
+  assert.deepEqual(s.run.colony.casteGoals, { soldier: 0, supermajor: 0, replete: 7 });
+  assert.deepEqual(s.run.colony.casteFill, off);
   startRun(s, d, { seed: 3, hardship: 'monomorphic' });
-  assert.deepEqual(s.run.colony.casteTargets, { soldier: 0, supermajor: 0, replete: 0 });
+  assert.deepEqual(s.run.colony.casteGoals, zeros);
+  // C151: a legacy share preset carries as "Keep berths filled" for each caste with a share.
+  s.meta.automation.keep = { jobTargets: jt, casteTargets: { soldier: 0.2, supermajor: 0, replete: 0.05 }, casteGoals: null, casteFill: null };
+  startRun(s, d, { seed: 3 });
+  assert.deepEqual(s.run.colony.casteGoals, zeros);
+  assert.deepEqual(s.run.colony.casteFill, { soldier: true, supermajor: false, replete: true });
+  assert.deepEqual(s.run.colony.casteTouched, { soldier: true, supermajor: false, replete: true });
 });
 
 test('startRun boons: chitin hoard, insight cache, royal vigor, peaceful start', () => {

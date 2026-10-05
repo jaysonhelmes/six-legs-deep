@@ -18,6 +18,36 @@ import { offlineCapEff } from '../core/offline.js';
 import { frontWindows } from './rules.js';
 import { rivalName } from '../systems/rivals.js';
 
+/** C152: rows of the rail's Ants breakdown, in order, and their labels. */
+export const ANT_ROWS = Object.freeze(['minor', 'soldier', 'supermajor', 'replete', 'alate', 'queen']);
+export const ANT_LABELS = Object.freeze({ minor: 'Workers', soldier: 'Soldiers', supermajor: 'Supermajors', replete: 'Repletes',
+  alate: 'Alates (reared)', queen: 'Queens' });
+/** Icon class per breakdown row (alates use the flight-currency icon, queens the egg). */
+const ANT_ICON = Object.freeze({ minor: 'minor', soldier: 'soldier', supermajor: 'supermajor', replete: 'replete', alate: 'alates', queen: 'egg' });
+/** Reveal key per breakdown row (a row also shows whenever its count is above zero). */
+const ANT_KEYS = Object.freeze({ soldier: 'caste_soldier', supermajor: 'caste_supermajor', replete: 'caste_replete', alate: 'alate_rearing' });
+
+/**
+ * C152: the rail's Ants breakdown — [{ id, label, n }] for workers (minors), soldiers, supermajors, repletes, reared
+ * alates and queens (one per active Royal Chamber, at least 1). A caste row shows once its caste is unlocked or its
+ * count is above zero; workers and queens show with the rest. Empty (no breakdown) while the colony has only workers
+ * and one queen.
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {Array<{ id: string, label: string, n: number }>}
+ */
+export function antBreakdown(s, d) {
+  const col = obj(s && s.run && s.run.colony);
+  const a = obj(col.adults);
+  const royal = arr(d && d.nest && d.nest.agg && d.nest.agg.royal).filter((L) => num(L) > 0).length;
+  const n = { minor: num(a.minor), soldier: num(a.soldier), supermajor: num(a.supermajor), replete: num(a.replete),
+    alate: num(col.alatesReared), queen: Math.max(1, royal) };
+  const rows = [];
+  for (const id of ['soldier', 'supermajor', 'replete', 'alate']) if (n[id] > 0 || isShown(s, ANT_KEYS[id])) rows.push(id);
+  if (rows.length === 0 && n.queen <= 1) return [];
+  return ['minor', ...rows, 'queen'].map((id) => ({ id, label: ANT_LABELS[id], n: n[id] }));
+}
+
 /** Rail resources in order with their reveal keys (ARCHITECTURE §11; leaves live in the fungus widget only). */
 export const RAIL_RES = Object.freeze([
   { res: 'food', key: null, cap: 'foodCap' },
@@ -400,6 +430,33 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     h('span', { class: 'res-name', text: 'Ants' }), h('span', { class: 'res-val' }), h('span', { class: 'res-rate' }));
   const popVal = popRow.querySelector('.res-val');
   const popRate = popRow.querySelector('.res-rate');
+  // C152: per-caste breakdown under the Ants row (click / Enter on the row folds it; remembered per browser).
+  const popChev = h('span', { class: 'pop-chev', text: '▾', attrs: { 'aria-hidden': 'true' } });
+  popChev.style.marginLeft = '4px';
+  popChev.style.opacity = '0.7';
+  popRow.insertBefore(popChev, popRate);
+  const popList = h('div', { class: 'res-list pop-castes', role: 'list', attrs: { 'aria-label': 'Ants by caste' } });
+  const popSub = {};
+  for (const id of ANT_ROWS) {
+    const val = h('span', { class: 'res-val' });
+    const row = h('div', { class: 'res-row res-sub pop-' + id, role: 'listitem' },
+      h('i', { class: 'ico ico-' + ANT_ICON[id], attrs: { 'aria-hidden': 'true' } }), h('span', { class: 'res-name', text: ANT_LABELS[id] }), val);
+    row.style.paddingLeft = '14px';
+    row.style.fontSize = '0.9em';
+    popSub[id] = { row, val };
+    popList.appendChild(row);
+  }
+  let popOpen = true;
+  try { popOpen = globalThis.localStorage ? globalThis.localStorage.getItem('sld.railAnts') !== 'closed' : true; } catch { popOpen = true; }
+  const togglePop = () => {
+    popOpen = !popOpen;
+    try { if (globalThis.localStorage) globalThis.localStorage.setItem('sld.railAnts', popOpen ? 'open' : 'closed'); } catch { /* per-viewer convenience */ }
+    if (game.s && game.s.run) updateRail(game.s, game.d);
+  };
+  popRow.addEventListener('click', togglePop);
+  popRow.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' || ev.key === ' ') { if (ev.preventDefault) ev.preventDefault(); togglePop(); }
+  });
   const metaList = h('div', { class: 'res-list res-meta' });
   const metaRows = {};
   for (const [k, label] of [['alates', 'Alates'], ['kinship', 'Kinship'], ['genes', 'Genes']]) {
@@ -422,7 +479,7 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     } } });
   diaRow.appendChild(diaBtn);
   if (rail) {
-    rail.append(brand, resList, fungusWidget, h('div', { class: 'rail-sep' }), popRow, metaList, scaleRow, diaRow);
+    rail.append(brand, resList, fungusWidget, h('div', { class: 'rail-sep' }), popRow, popList, metaList, scaleRow, diaRow);
   }
 
   // ---------------------------------------------------------------- HUD top
@@ -547,6 +604,27 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     for (const c of arr(s.run.colony.brood)) brood += num(c && c.n);
     setText(popVal, fmtCount(adults));
     setText(popRate, brood > 0 ? '+' + fmtCount(brood) + ' brood' : '');
+    // C152 caste breakdown
+    const parts = antBreakdown(s, d);
+    const hasList = parts.length > 0;
+    show(popChev, hasList);
+    show(popList, hasList && popOpen);
+    setText(popChev, popOpen ? '▾' : '▸');
+    if (hasList) {
+      popRow.setAttribute('role', 'button');
+      popRow.setAttribute('tabindex', '0');
+      popRow.setAttribute('aria-expanded', popOpen ? 'true' : 'false');
+    } else {
+      popRow.removeAttribute('role');
+      popRow.removeAttribute('tabindex');
+      popRow.removeAttribute('aria-expanded');
+    }
+    const shown = new Set(parts.map((p) => p.id));
+    for (const id of ANT_ROWS) {
+      show(popSub[id].row, shown.has(id));
+      const p = parts.find((x) => x.id === id);
+      if (p) setText(popSub[id].val, fmtCount(p.n));
+    }
     const showMeta = (k, vis, v) => { show(metaRows[k].row, vis); if (vis) setText(metaRows[k].val, fmtCount(v)); };
     showMeta('alates', num(s.meta.counters.flights) > 0 || num(s.cycle.alates) > 0, num(s.cycle.alates));
     showMeta('kinship', num(s.era.kinshipLife) > 0 || num(s.era.kinship) > 0, num(s.era.kinship));

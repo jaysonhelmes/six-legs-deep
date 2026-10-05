@@ -2,7 +2,7 @@
 // bottleneck badge, slider limits and the achievement rewards WP2 implements.
 // Owner: WP2. Contract: ARCHITECTURE §6.2 (numbers from DESIGN §5, §6.4, §10, §12, §19).
 // ARCH-R: keys added beyond §6.2 (all numbers from DESIGN): BROOD.fungalTimeMult (Fungal Brood ×0.75, §5.3/§6.4),
-// CLICK.avgSec (the 5 s window of d.rates.food.clicks, §8.1 economy step 10), SLIDERS (egg reserve and caste slider
+// CLICK.avgSec (the 5 s window of d.rates.food.clicks, §8.1 economy step 10), SLIDERS (egg reserve, C151 caste target counts and the old caste slider
 // limits 0.9, §5.1/§5.5), WINTER_R (honeypot "winter forage penalty halved" = R term 0.5, §6.7/§15.6) and ACH_FX (the
 // achievement extra rewards that §12.5 assigns to WP2; ACHIEVEMENTS[].reward is display text only). The hoarder,
 // clickstorm and survivor rewards keep their §6.2 homes (CAPS.hoarder, CLICK.clickstorm, UPKEEP.survivorAch).
@@ -55,8 +55,11 @@ export const SPOILAGE = deepFreeze({ clayPerMin: 0.005 });
 /** Bottleneck badge: food ≥ capFrac × cap for more than capSec seconds → bn_food_cap (DESIGN §2.2). */
 export const BOTTLENECK = deepFreeze({ capFrac: 0.99, capSec: 5 });
 
-/** Slider limits: egg reserve up to 90 % of the food cap (§5.1); caste targets sum ≤ 90 % (§5.5). */
-export const SLIDERS = deepFreeze({ eggReserveMax: 0.9, casteSumMax: 0.9,
+/**
+ * Slider limits: egg reserve up to 90 % of the food cap (§5.1). casteSumMax: the old caste-share limit (≤ 90 %), kept only
+ * to read pre-C151 saves. C151 caste target counts: integers 0..casteGoalMax; casteGoalSteps = the stepper's step sizes.
+ */
+export const SLIDERS = deepFreeze({ eggReserveMax: 0.9, casteSumMax: 0.9, casteGoalMax: 1e30, casteGoalSteps: [1, 10],
   // C104 chitin reserve (absolute chitin, player request): the slider walks this ladder; soldier / supermajor eggs only
   // spend chitin above the reserve. The last step is the command's upper bound.
   chitinReserveSteps: [0, 1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000,
