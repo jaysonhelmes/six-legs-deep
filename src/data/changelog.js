@@ -10,6 +10,14 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.9.1',
+    date: '2026-10-04',
+    title: 'Remove a trail from its destination',
+    notes: [
+      'Right-click a food source, aphid colony or other destination that already has a trail and choose "Remove trail to here".',
+    ],
+  },
+  {
     version: '0.9.0',
     date: '2026-10-04',
     title: 'War Hall, reserved rooms and wider trails',

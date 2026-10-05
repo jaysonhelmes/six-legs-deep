@@ -542,7 +542,10 @@ export function mountUI(root, game, opts = {}) {
       }
       if (src && isClickableSource(src.type)) items.push(A('clickForage', { src: src.uid }, 'Hand-forage'));
       // trails reach every forageable source, Lycaenid caterpillars too (escorted honeydew trails, job 'lycaenid')
-      if (src && (isClickableSource(src.type) || src.type === 'lycaenid_caterpillar')) {
+      // one trail per destination (C100): a source that already has a trail offers to remove it instead (player request)
+      const existing = src ? arr(s.run.surface.trails).find((x) => x && x.src === src.uid) : null;
+      if (existing) items.push(A('deleteTrail', { uid: existing.uid }, 'Remove trail to here'));
+      if (src && !existing && (isClickableSource(src.type) || src.type === 'lycaenid_caterpillar')) {
         const main = arr(s.run.surface.entrances).find((e) => e && e.kind === 'main');
         let origin = -1;
         try { origin = bestOrigin(s, game.d, src.hex); } catch { origin = -1; } // C102: nearest/best entrance
