@@ -1,5 +1,5 @@
 // Settings panel: notation, autosave interval, reduced motion, sound, harsh nature, retreat slider, colony and queen
-// names, cosmetics, save now, export (copy + .txt download on click), import (paste → confirm modal), hard reset
+// names, cosmetics, save now, version + patch notes (C150), export (copy + .txt download on click), import (paste → confirm modal), hard reset
 // (type "abandon"), and Photo Mode (STRETCH: hides the UI, composes the canvases plus a stat card into a PNG,
 // download on click). Owner: WP9. Contract: ARCHITECTURE §14.5 (Settings row), §9 setSetting / equipCosmetic;
 // DESIGN §22, §25.8.
@@ -11,6 +11,8 @@ import { COSMETICS, COSMETIC_SLOT_ORDER } from '../../data/cosmetics.js';
 import { num, obj } from '../reveal.js';
 import { adultsTotal } from '../../core/state.js';
 import { makeAct, sliderRow, note } from './common.js';
+import { versionLabel } from '../patchNotes.js';
+import { CURRENT_VERSION } from '../../data/changelog.js';
 
 const NOTATIONS = [['suffix', 'Suffixes (1.23M)'], ['scientific', 'Scientific (1.23e6)'], ['engineering', 'Engineering (1.23e6)']];
 const AUTOSAVE = [[15, 'Every 15 s'], [30, 'Every 30 s'], [60, 'Every minute'], [0, 'Off (still saves on hide)']];
@@ -202,6 +204,12 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
       }
     } } });
 
+  // --- version and patch notes (C150) ---
+  const patchBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Patch notes', dataset: { tip: 'What changed in each update.' },
+    on: { click: () => { if (dialogs && typeof dialogs.patchNotes === 'function') dialogs.patchNotes(); } } });
+  const versionRow = h('div', { class: 'btn-row version-row' },
+    h('span', { class: 'muted version-label', text: 'Six Legs Deep ' + versionLabel(CURRENT_VERSION) }), patchBtn);
+
   // --- danger & photo ---
   const resetBtn = h('button', { type: 'button', class: 'btn btn-small btn-danger', text: 'Abandon colony…',
     on: { click: () => { if (dialogs && typeof dialogs.hardReset === 'function') dialogs.hardReset(); } } });
@@ -221,7 +229,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
       h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Queen' }), queenName)),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Cosmetics' }), cosBox),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Save' }),
-      h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Autosave' }), autosave), saveState, saveBtn),
+      h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Autosave' }), autosave), saveState, saveBtn, versionRow),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Export' }),
       h('p', { class: 'note', text: 'Keep a copy of your colony, or move it to another browser.' }), exportArea,
       h('div', { class: 'btn-row' }, exportBtn, copyBtn, dlBtn, exportInfo)),

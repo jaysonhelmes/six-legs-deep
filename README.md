@@ -90,6 +90,19 @@ controls** lists the same keys in the game.
 Red **warning chips** next to the bottleneck badge show active threats such as mold, floods or a footstep. Click one to
 bring the spot into view.
 
+## Patch notes
+
+The game shows its version (for example **v0.9.0**) in Settings → Save and at the foot of the resource rail on wide screens; clicking it opens the in-game patch notes. After an update, returning players see a small "Updated to v0.9.0 — see what's new" pill (brand-new players do not). The last version a player has seen is kept in the browser (`localStorage` key `sld.lastSeenVersion`), not in the save.
+
+**Every update must add a patch-notes entry.** Add one object at the **top** of `CHANGELOG` in `src/data/changelog.js` and bump its `version` (`MAJOR.MINOR.PATCH`: a minor bump per feature or feedback pass, a patch bump for small fixes). `CURRENT_VERSION` follows the first entry automatically, which is what makes the update pill appear for returning players.
+
+```js
+{ version: '0.10.0', date: '2026-10-05', title: 'Short title',
+  sections: [{ heading: 'Nest', notes: ['What changed, in words a player understands.'] }] }   // or notes: [...]
+```
+
+Write for players: no clarification numbers (C123), file names or developer terms. Versions must be strictly descending and dates must not increase down the list; `tests/ui.patchNotes.test.js` checks both, plus the wording rules.
+
 ## Folder map
 
 ```
@@ -97,7 +110,7 @@ index.html            DOM skeleton (ids are the contract with src/main.js)
 styles/               base.css (layout, breakpoints, theme) and panels.css (panels, HUD, modals, toasts)
 src/main.js           browser boot: storage, the one-tab lock, load or new game, UI, renderers, the frame loop, autosave
 src/core/             state schema, fixed-step loop, commands, save/load, offline catch-up, RNG, hex maths
-src/data/             every balance number and table (change numbers here, nowhere else)
+src/data/             every balance number and table (change numbers here, nowhere else), and changelog.js (patch notes)
 src/systems/          game rules: population, jobs, nest digging, surface and trails, war, research, prestige, events
 src/render/           canvas renderers for Above and Below, sprites, overlays, ceremonies, input
 src/ui/               HUD and warning chips, panels (src/ui/panels/), tooltips, toasts, modals, welcome card, onboarding

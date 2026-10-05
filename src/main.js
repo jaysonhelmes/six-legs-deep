@@ -211,7 +211,8 @@ function boot() {
   game.hooks.beforePrestige = () => { persist(); };
   game.bus.on('saveStale', () => pauseForOtherTab());
 
-  const ui = mountUI(document.getElementById('app'), game);
+  // C150: hadSave (a save existed at boot, even a damaged one) lets the shell offer the patch notes after an update
+  const ui = mountUI(document.getElementById('app'), game, { hadSave: !!(loaded.loaded || loaded.error) });
   if (!storage) ui.bridge.toast('This browser blocks saving. Use Export in Settings to keep your colony.', 'danger');
   if (loaded.error) ui.bridge.toast(loaded.restoredFrom ? 'Your save was damaged; a backup was restored.' : 'Your save could not be read; a new colony began.', 'danger');
   if (loaded.welcome) ui.showWelcome(loaded.welcome);

@@ -23,6 +23,8 @@ import { createEventCard } from './eventCard.js';
 import { openColonyHistory } from './history.js';
 import { openManual, toggleManual } from './manual.js';
 import { MANUAL_KEYS } from './manualContent.js';
+import { openPatchNotes, updateNotice, createUpdatePill, versionLabel, markSeen } from './patchNotes.js';
+import { CURRENT_VERSION } from '../data/changelog.js';
 import { openWelcome } from './welcome.js';
 import { createOnboarding } from './onboarding.js';
 import { isClickableSource } from './panels/map.js';
@@ -183,7 +185,16 @@ export function mountUI(root, game, opts = {}) {
     importSave: (str, cb) => openImportConfirm(mctx, str, cb),
     history: () => openColonyHistory(mctx),   // C130: Colony History gallery (Prestige tab)
     manual: (o) => openManual(manualCtx, o),  // C131: the Manual (book button, H / ?)
+    patchNotes: () => openPatchNotes(patchCtx), // C150: patch notes (version label, Settings, update pill)
   };
+  /** C150: patch notes context. The last-seen version is a per-browser key outside the save (try/catch inside). */
+  const browserStorage = (() => { try { return win && win.localStorage ? win.localStorage : null; } catch { return null; } })();
+  let updatePill = null;
+  const hideUpdatePill = () => {
+    if (updatePill && updatePill.parentNode) updatePill.parentNode.removeChild(updatePill);
+    updatePill = null;
+  };
+  const patchCtx = { modals, storage: browserStorage, since: null, onSeen: hideUpdatePill };
   /** Manual context (C131): tab buttons inside entries open a revealed tab. */
   const manualCtx = { ...mctx, openTab: (id, sub) => openTab(id, sub), tabShown: (id) => tabVisible(id) };
 
@@ -239,6 +250,11 @@ export function mountUI(root, game, opts = {}) {
 
   const tooltips = createTooltips(tooltipEl, root, { game });
   const hud = createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui: uistate, bridge });
+  // C150: the version at the foot of the rail (wide-tall; the top-bar layouts hide it, Settings → Save has it everywhere)
+  const railVersion = h('button', { type: 'button', class: 'rail-version', text: versionLabel(CURRENT_VERSION),
+    dataset: { tip: 'Patch notes: what changed in each update.' }, attrs: { 'aria-label': 'Patch notes, version ' + CURRENT_VERSION },
+    on: { click: () => dialogs.patchNotes() } });
+  rail.appendChild(railVersion);
   const eventCard = createEventCard(eventCardEl, { game, bridge });
   const onboarding = createOnboarding({ game, ui: uistate, root });
 
@@ -1065,8 +1081,28 @@ export function mountUI(root, game, opts = {}) {
     if (handle) handle.summary = summary;
   }
 
+  /**
+   * C150: after an update, a pill in the toast column offers the patch notes ("Updated to v0.9.0 — see what's new").
+   * opts.hadSave (main.js: a save was loaded at boot) false → a brand-new player: the version is recorded silently.
+   * Without opts.hadSave (tests that mount the shell) nothing is read or written.
+   */
+  function checkForUpdate(hadSave) {
+    const notice = updateNotice({ storage: browserStorage, hadSave: !!hadSave });
+    if (!notice.show) return false;
+    patchCtx.since = notice.lastSeen;
+    hideUpdatePill();
+    updatePill = createUpdatePill({
+      version: CURRENT_VERSION,
+      onOpen: () => dialogs.patchNotes(),
+      onDismiss: () => { markSeen(browserStorage); hideUpdatePill(); },
+    });
+    toastsEl.insertBefore(updatePill, toastsEl.firstChild);
+    return true;
+  }
+
   applyLayout();
   refresh(true);
+  if (typeof opts.hadSave === 'boolean') checkForUpdate(opts.hadSave);
 
   return {
     canvases,
@@ -1121,6 +1157,8 @@ export function mountUI(root, game, opts = {}) {
       for (const p of pops) if (p.el.parentNode) p.el.parentNode.removeChild(p.el);
       if (sheetBtn.parentNode) sheetBtn.parentNode.removeChild(sheetBtn);
       if (drawerClose.parentNode) drawerClose.parentNode.removeChild(drawerClose);
+      if (railVersion.parentNode) railVersion.parentNode.removeChild(railVersion);
+      hideUpdatePill();
     },
   };
 }

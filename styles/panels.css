@@ -1241,3 +1241,36 @@ p.planned-wait { margin: 2px 0 4px; }
 .fg-source { color: var(--accent-2); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .fg-source:hover { color: var(--accent); }
 .fg-source:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 2px; }
+
+/* ================================================================== C150 patch notes */
+/* rail foot version label (wide-tall only; the top-bar layouts reach the notes through Settings → Save) */
+.rail-version { align-self: flex-start; margin-top: auto; padding: 8px 6px 2px; border: 0; background: transparent; color: var(--text-3);
+  font-size: var(--fs-xs); font-variant-numeric: tabular-nums; text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+.rail-version:hover { color: var(--accent); }
+.rail-version:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 4px; }
+#app:is([data-layout='wide-short'], [data-layout='medium'], [data-layout='narrow']) .rail-version { display: none; }
+.version-row { align-items: center; margin-top: 6px; }
+.version-label { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+/* update pill: a persistent toast (no timer) at the bottom of the toast column */
+.update-pill { padding: 4px 4px 4px 8px; }
+.update-pill-open { flex: 1; min-width: 0; padding: 5px 4px; border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 650;
+  text-align: left; cursor: pointer; line-height: 1.35; }
+.update-pill-open:hover { color: var(--gold); text-decoration: underline; text-underline-offset: 2px; }
+/* the modal */
+.modal-patch { width: min(620px, 100%); }
+.patch-notes { display: grid; gap: 8px; min-width: 0; }
+.pn-entry { border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--surface-2); min-width: 0; }
+.pn-entry.pn-current { border-color: color-mix(in srgb, var(--gold) 50%, var(--line-soft)); }
+.pn-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 9px 12px; cursor: pointer; list-style-position: inside; }
+.pn-summary:focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--r-md); }
+.pn-version { font-weight: 700; color: var(--gold); font-variant-numeric: tabular-nums; }
+.pn-title { flex: 1 1 12em; min-width: 0; font-weight: 650; overflow-wrap: anywhere; }
+.pn-date { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
+.pn-body { padding: 0 12px 10px; border-top: 1px dashed var(--line-soft); }
+.modal-body .pn-heading { margin: 10px 0 2px; }
+.pn-list { margin: 6px 0 2px; padding-left: 18px; display: grid; gap: 4px; font-size: var(--fs-sm); line-height: 1.45; color: var(--text-2); }
+@media (max-width: 420px) {
+  .pn-summary { padding: 8px 10px; }
+  .pn-body { padding: 0 10px 8px; }
+  .pn-list { padding-left: 16px; }
+}
