@@ -11,7 +11,7 @@
 // develops for HALF the step (its eggs were laid, on average, mid-step), so big offline steps are unbiased against 0.1 s
 // ticks; the first worker (egg at 0:00, T = 15 s) therefore hatches on the tick ending ~15.1 s.
 // ARCH-R: a lay batch may be split into sub-batches (at most one per caste) so that a large batch (offline steps, huge λ)
-// keeps the caste-slider shares; the deficit uses the eggs this run INCLUDING the batch being laid.
+// stops each caste at its target count (C151) and lays minors with the rest.
 // ARCH-R: with the species eggFungusFrac, the fungus share is paid in fungus only when enough fungus is stored;
 // otherwise the egg is paid fully in food (a leafcutter colony without gardens must not stall).
 // ARCH-R: groomBrood accepts any brood-group chamber (Royal Chamber, nursery or hibernaculum), not only nurseries.
@@ -24,6 +24,12 @@
 // C103: each hatched adult sheds MOLT.perHatch chitin (once caste_soldier or res_chitin is unlocked); d.rates.chitin.molts.
 // C104: soldier / supermajor eggs spend only chitin above run.colony.chitinReserve (skipped like a full berth at or
 //   below it); chitinNeed [q] tells trails.allocate when chitin trails get the auto-fill first.
+// C151: caste TARGET COUNTS replace the caste-share sliders. run.colony.casteGoals[c] = adults + brood of the caste the
+//   queen lays toward (largest deficit first, then minors); casteFill[c] ("Keep berths filled") makes the target the
+//   caste's berth cap (soldiers: Barracks berths, supermajors: War Hall berths, repletes: Repletion Hall berths). Fill
+//   switches on by itself the first step a soldier / supermajor cap exists in a run unless casteTouched[c] (the player
+//   set that caste, a carried preset did, or the save predates C151 with that cap already built). Old share saves
+//   (run.colony.casteTargets) convert on the first step: target = max(round(share × cap), current adults + brood).
 
 import { CASTE_ORDER, CASTES } from '../data/castes.js';
 import { EGG, BROOD, NUTRITION, SLIDERS, MOLT } from '../data/economy.js';
@@ -39,6 +45,10 @@ import { releaseMinors, jobCap } from './jobs.js';
 const EPS = 1e-9;
 const ADULT_CASTES = ['minor', 'soldier', 'supermajor', 'replete'];
 const SLIDER_CASTES = ['soldier', 'supermajor', 'replete'];
+/** C151: castes whose "Keep berths filled" switches on by itself when their first berth exists in a run. */
+const AUTO_FILL_CASTES = ['soldier', 'supermajor'];
+/** d.stats capacity key per target caste (C151). */
+const CAP_KEY = Object.freeze({ soldier: 'berths', supermajor: 'warBerths', replete: 'repleteBerths' });
 
 /** Finite number or the fallback. */
 function num(v, dflt = 0) {
@@ -104,6 +114,111 @@ function freeRoom(s, d, caste) {
     case 'repleteBerths': return num(st.repleteBerths) - num(col.adults.replete) - broodOf(s, 'replete');
     case 'alateCells': return num(st.alateCells) - num(col.alatesReared) - broodOf(s, 'alate');
     default: return 0;
+  }
+}
+
+/**
+ * [q] C151: population cap of a target caste = its berths (soldier → Barracks, supermajor → War Hall, replete →
+ * Repletion Hall; d.stats, may be fractional with colony scale). 0 for other castes.
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} caste
+ * @returns {number}
+ */
+export function casteCap(d, caste) {
+  const k = own(CAP_KEY, caste) ? CAP_KEY[caste] : null;
+  return k && d && d.stats ? Math.max(0, num(d.stats[k])) : 0;
+}
+
+/**
+ * [q] C151: the target count the queen lays a caste toward: its berth cap while "Keep berths filled" is on, else the
+ * player's number (run.colony.casteGoals).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} caste
+ * @returns {number}
+ */
+export function casteGoal(s, d, caste) {
+  const col = s.run.colony;
+  if (!SLIDER_CASTES.includes(caste)) return 0;
+  if (col.casteFill && col.casteFill[caste] === true) return casteCap(d, caste);
+  return Math.max(0, num(col.casteGoals && col.casteGoals[caste]));
+}
+
+/** C151: target − (adults + brood) of the caste (≤ 0 when the target is met). */
+function casteDeficit(s, d, caste) {
+  return casteGoal(s, d, caste) - num(s.run.colony.adults[caste]) - broodOf(s, caste);
+}
+
+/**
+ * [q] C151 caste-target readout for the UI: adults, brood, have (= adults + brood), the target, the berth cap, free
+ * berths (cap − have, ≥ 0) and whether "Keep berths filled" is on.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} caste 'soldier' | 'supermajor' | 'replete'
+ * @returns {{ adults: number, brood: number, have: number, goal: number, cap: number, free: number, fill: boolean }}
+ */
+export function casteStatus(s, d, caste) {
+  const adults = num(s.run.colony.adults[caste]);
+  const brood = broodOf(s, caste);
+  const cap = casteCap(d, caste);
+  return { adults, brood, have: adults + brood, goal: casteGoal(s, d, caste), cap, free: Math.max(0, cap - adults - brood),
+    fill: !!(s.run.colony.casteFill && s.run.colony.casteFill[caste] === true) };
+}
+
+/** C151 per-caste boolean map with every target caste present. */
+function boolMap(src) {
+  const out = {};
+  for (const c of SLIDER_CASTES) out[c] = !!(src && src[c] === true);
+  return out;
+}
+
+/** C151: make sure the run's caste-target maps exist (older or hand-edited states). */
+function ensureCasteMaps(col) {
+  if (!col.casteGoals || typeof col.casteGoals !== 'object') col.casteGoals = { soldier: 0, supermajor: 0, replete: 0 };
+  if (!col.casteFill || typeof col.casteFill !== 'object') col.casteFill = boolMap(null);
+  if (!col.casteTouched || typeof col.casteTouched !== 'object') col.casteTouched = boolMap(null);
+}
+
+/**
+ * [x] C151: convert a pre-C151 share map (run.colony.casteTargets, fractions of eggs) into target counts: a caste with a
+ * share > 0 gets max(round(share × berth cap), round(adults + brood)) — never below what the colony already has — and
+ * every caste whose berths already exist counts as set by the player (its berths were not "first built" now). Removes
+ * the old map. No-op without it. Needs d.stats (called on the first real step).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {boolean} true if a share map was converted
+ */
+export function convertLegacyCasteTargets(s, d) {
+  const col = s.run.colony;
+  if (!own(col, 'casteTargets')) return false;
+  const old = col.casteTargets;
+  delete col.casteTargets;
+  ensureCasteMaps(col);
+  if (!old || typeof old !== 'object') return true;
+  for (const c of SLIDER_CASTES) {
+    const share = clampNum(num(old[c]), 0, 1);
+    const cap = casteCap(d, c);
+    if (share > 0) {
+      const have = num(col.adults[c]) + broodOf(s, c);
+      col.casteGoals[c] = clampNum(Math.max(Math.round(share * cap), Math.round(have)), 0, SLIDERS.casteGoalMax);
+      col.casteTouched[c] = true;
+    }
+    if (cap > 0) col.casteTouched[c] = true;
+  }
+  return true;
+}
+
+/**
+ * C151: "Keep berths filled" switches on by itself for soldiers / supermajors the first step their berths exist in a run
+ * (first active Barracks / War Hall), unless the player already set that caste this run. Respects locks and hardships.
+ */
+function autoFill(s, d) {
+  const col = s.run.colony;
+  ensureCasteMaps(col);
+  for (const c of AUTO_FILL_CASTES) {
+    if (col.casteTouched[c] === true || !(casteCap(d, c) > 0) || !casteAllowed(s, c)) continue;
+    col.casteFill[c] = true;
+    col.casteTouched[c] = true;
   }
 }
 
@@ -399,7 +514,7 @@ function eggsByExtras(s, caste) {
 
 /**
  * [q] C104 chitin demand, read by trails.allocate (auto-fill puts free foragers on chitin trails first while needed)
- * and the UI. next = the chitin of the next egg of the cheapest military caste the caste slider wants (with a free
+ * and the UI. next = the chitin of the next egg of the cheapest military caste below its target count (with a free
  * berth), else of the next soldier egg; needed = some military caste can be laid at all, a reserve is set or a military
  * egg is wanted, and chitin < reserve + next. Pure (state + d.stats).
  * @param {import('../core/types.js').State} s
@@ -418,7 +533,7 @@ export function chitinNeed(s, d) {
     const form = CASTES[c].extra ? CASTES[c].extra.chitin : undefined;
     const one = form === undefined ? 0 : extraTotal(s, c, form, 1);
     if (c === 'soldier') fallback = one;
-    if (num(col.casteTargets[c]) > 0 && d && d.stats && freeRoom(s, d, c) > EPS) next = Math.min(next, one);
+    if (d && d.stats && casteDeficit(s, d, c) > EPS && freeRoom(s, d, c) > EPS) next = Math.min(next, one);
   }
   const wanted = Number.isFinite(next);
   if (!wanted) next = Number.isFinite(fallback) ? fallback : 0;
@@ -473,18 +588,13 @@ function chooseCaste(s, d, remaining, env) {
     if (!s.meta.automation.autoRear) limit = Math.min(limit, col.rearRequested);
     return { caste: 'alate', limit };
   }
-  // (2) the caste-slider caste with the largest deficit, if its berth is free, its extras are affordable and storage
-  // can ever pay for its egg (C71)
-  let eggsTotal = 0;
-  for (const c of CASTE_ORDER) eggsTotal += num(col.eggs[c]);
-  const projected = eggsTotal + remaining;
+  // (2) the target caste with the largest deficit (target − adults − brood, C151), if its berth is free, its extras are
+  // affordable (chitin above the reserve, C104) and storage can ever pay for its egg (C71)
   let best = null;
   let bestDef = 0;
   for (const c of SLIDER_CASTES) {
-    const t = num(col.casteTargets[c]);
-    if (!(t > 0)) continue;
-    const def = t * projected - num(col.eggs[c]);
-    if (!(def > bestDef)) continue;
+    const def = casteDeficit(s, d, c);
+    if (!(def > EPS) || !(def > bestDef)) continue;
     if (!casteAllowed(s, c) || !(freeRoom(s, d, c) > EPS) || eggsByExtras(s, c) < 1) continue;
     if (foodOutOfReach(s, d, c, env)) continue;
     best = c;
@@ -692,6 +802,8 @@ export function tick(s, d, dt, env) {
   const step = dt > 0 ? dt : 0;
   const econDt = step > 0 ? (env && env.econDt > 0 ? env.econDt : step) : 0;
   if (!(step > 0)) return;
+  convertLegacyCasteTargets(s, d);   // C151: pre-C151 share saves, once
+  autoFill(s, d);
   layEggs(s, d, econDt, env);
   moltRate(d, develop(s, d, econDt, env), econDt);
   frost(s, d, dt, env);
@@ -715,31 +827,80 @@ function broodGroup(d, uid) {
   return gs.find((g) => g && g.uid === uid && typeof uid === 'number') || null;
 }
 
+/**
+ * C151: copy the caste targets and the fill flags of the castes set this run into meta.automation.keep (automated_brood
+ * carries them, prestige.js; an untouched caste has no fill entry, so its first berths still switch filling on).
+ */
+function keepCastes(s) {
+  const col = s.run.colony;
+  const keep = s.meta.automation.keep;
+  keep.casteGoals = { ...col.casteGoals };
+  const fill = {};
+  for (const c of SLIDER_CASTES) if (col.casteTouched[c] === true) fill[c] = col.casteFill[c] === true;
+  keep.casteFill = fill;
+  keep.casteTargets = null;   // the legacy share preset is superseded
+}
+
 /** Colony / brood command handlers (ARCHITECTURE §9). */
 export const handlers = {
-  /** setCasteTargets { soldier, supermajor, replete }: fractions, Σ ≤ 0.9; an omitted key keeps its current value. */
+  /**
+   * setCasteTargets { soldier?, supermajor?, replete? }: C151 target COUNTS (adults + brood), finite 0..casteGoalMax,
+   * floored to whole ants; an omitted key keeps its value. A caste given here stops tracking its berths ("Keep berths
+   * filled" off) and counts as set by the player this run. Copies the targets and fill flags into keep (automated_brood).
+   */
   setCasteTargets: {
     validate(s, d, cmd) {
-      let sum = 0;
+      let any = false;
       for (const c of SLIDER_CASTES) {
-        const v = cmd[c] === undefined ? s.run.colony.casteTargets[c] : cmd[c];
-        if (!inRange(v, 0, 1)) return 'invalid';
-        if (v > 0) {
+        if (cmd[c] === undefined) continue;
+        any = true;
+        const v = cmd[c];
+        if (!inRange(v, 0, SLIDERS.casteGoalMax)) return 'invalid';
+        if (v >= 1) {
           if (s.run.hardship === 'monomorphic') return 'hardship';
           if (s.run.hardship === 'pacifist' && isMilitary(c)) return 'hardship';
           if (!s.run.unlocked[CASTES[c].unlock]) return 'locked';
         }
-        sum += v;
       }
-      if (sum > SLIDERS.casteSumMax + EPS) return 'invalid:sum';
+      return any ? null : 'invalid';
+    },
+    apply(s, d, cmd) {
+      const col = s.run.colony;
+      ensureCasteMaps(col);
+      const next = {};
+      for (const c of SLIDER_CASTES) {
+        if (cmd[c] === undefined) { next[c] = Math.max(0, num(col.casteGoals[c])); continue; }
+        next[c] = Math.floor(clampNum(cmd[c], 0, SLIDERS.casteGoalMax)) + 0;
+        col.casteFill[c] = false;
+        col.casteTouched[c] = true;
+      }
+      col.casteGoals = next;
+      keepCastes(s);
+    },
+  },
+
+  /**
+   * setCasteFill { caste, on }: C151 "Keep berths filled" — while on, the caste's target is its berth cap (tracks new
+   * berths). Turning it off keeps the current cap (rounded down) as the typed target. Counts as set by the player.
+   */
+  setCasteFill: {
+    validate(s, d, cmd) {
+      if (!SLIDER_CASTES.includes(cmd.caste) || typeof cmd.on !== 'boolean') return 'invalid';
+      if (cmd.on) {
+        if (s.run.hardship === 'monomorphic') return 'hardship';
+        if (s.run.hardship === 'pacifist' && isMilitary(cmd.caste)) return 'hardship';
+        if (!s.run.unlocked[CASTES[cmd.caste].unlock]) return 'locked';
+      }
       return null;
     },
     apply(s, d, cmd) {
       const col = s.run.colony;
-      const next = {};
-      for (const c of SLIDER_CASTES) next[c] = clampNum(cmd[c] === undefined ? num(col.casteTargets[c]) : cmd[c], 0, 1);
-      col.casteTargets = next;
-      s.meta.automation.keep.casteTargets = { ...next };
+      ensureCasteMaps(col);
+      const c = cmd.caste;
+      if (!cmd.on && col.casteFill[c] === true) col.casteGoals = { ...col.casteGoals, [c]: Math.floor(casteCap(d, c) + EPS) };
+      col.casteFill = { ...col.casteFill, [c]: cmd.on };
+      col.casteTouched = { ...col.casteTouched, [c]: true };
+      keepCastes(s);
     },
   },
 

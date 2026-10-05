@@ -132,7 +132,7 @@ test('data tables: ORDER arrays match tables, ids repeat, prefixes, species gene
       else assert.ok(table[id].mods && typeof table[id].mods === 'object', id + ' has mods');
     }
   }
-  assert.equal(TRAIT_ORDER.length, 21);
+  assert.equal(TRAIT_ORDER.length, 23); // C158: + root_memory, deep_spring
   assert.equal(FED_ORDER.length, 13);
   assert.equal(GENOME_ORDER.length, 18);
   for (const sp of Object.values(SPECIES)) {

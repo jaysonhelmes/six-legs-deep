@@ -173,7 +173,7 @@ test('C119: a blueprint pre-digs the Royal Chamber at its saved spot, connected 
   // The snapshot records the Royal Chamber's corner.
   assert.equal(run(s, d, { type: 'saveBlueprint', slot: 0, name: 'Plan' }), null);
   // C137: with its reservation (the L1 room sits in its top-right corner)
-  assert.deepEqual(s.era.blueprints[0].royal, { x: GRID.royal.x, y: GRID.royal.y, res: { x: 15, y: 20, w: 7, h: 3 } });
+  assert.deepEqual(s.era.blueprints[0].royal, { x: GRID.royal.x, y: GRID.royal.y, res: { x: 13, y: 20, w: 9, h: 4 } }); // C155: its L8 room
   s.era.blueprints = [{ name: 'Deep', chambers: [], tunnels: [], royal: { x: 8, y: 30 } }];
   s.era.activeBlueprint = 0;
   nest.applyBlueprint(s, d);

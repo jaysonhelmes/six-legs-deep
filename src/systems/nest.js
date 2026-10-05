@@ -7,7 +7,7 @@
 import { GRID, CELL, CLAMP_MAX } from '../data/balance.js';
 import { MICRO, DIG, GEOM, ADVISOR } from '../data/strata.js';
 import { CHAMBERS, CHAMBER_RULES, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
-import { CACHES, MOLE, DRAINAGE, ROOT_CULT } from '../data/soilFeatures.js';
+import { CACHES, MOLE, DRAINAGE, ROOT_CULT, DEEP_SPRING, ROOT_MEMORY } from '../data/soilFeatures.js';
 import { FROST } from '../data/seasons.js';
 import { MOUND } from '../data/surface.js';
 import { CAPS } from '../data/economy.js';
@@ -325,14 +325,21 @@ function isDrainCell(job, c) {
   return job.kind === 'drain' && Array.isArray(job.drain) && job.drain.includes(c);
 }
 
-/** Cell c of a job still needs work: undug (not open), or for a drain cell, still water. */
+/** C157: cell c is one of a pocket move's tunnel cells under the target spot (filled back to soil, then flooded). */
+function isFillCell(job, c) {
+  return job.kind === 'drain' && Array.isArray(job.fill) && job.fill.includes(c);
+}
+
+/** Cell c of a job still needs work: undug (not open), for a drain cell still water, for a fill cell still open. */
 function cellPending(s, job, c) {
   const code = s.run.nest.cells[c];
+  if (isFillCell(job, c)) return code === CELL.TUNNEL;
   return isDrainCell(job, c) ? code === CELL.WATER : !G.isOpenCode(code);
 }
 
 /** Work of cell c inside a job (route cells are tunnels; relocation cells × 0.5 × architect). */
 function jobCellWork(s, ctx, job, ch, c) {
+  if (isFillCell(job, c)) return G.workAt(ctx, c, 'tunnel') * DRAINAGE.fillWork;
   if (isDrainCell(job, c)) return G.workAt(ctx, c, job.to ? 'movePocket' : 'drain');
   const inFoot = !!ch && DUG_KINDS.has(job.kind) && G.inRect(ch, c);
   const kind = job.kind === 'shaft' ? 'shaft' : inFoot ? job.kind : 'tunnel';
@@ -419,6 +426,18 @@ function collectCache(s, d, c, env) {
 /** A queued cell is finished: set its code, bump rev, counters, cache, events / offline log. */
 function completeCell(s, d, job, ch, c, env) {
   const nest = s.run.nest;
+  if (isFillCell(job, c)) {
+    // C157: a tunnel cell under a pocket's new spot is filled back to soil, unless something now needs it (a chamber or
+    // shaft took it, or filling it would cut a chamber or queued job off); then it stays open and the move ends as a
+    // drain (finishDrain re-checks the spot).
+    const geo = ensureGeom(s, d);
+    if (nest.cells[c] === CELL.TUNNEL && geo.chamberAt[c] < 0 && !geo._shaft[c] && !disconnects(s, geo, [c])) {
+      nest.cells[c] = CELL.SOIL;
+      nest.rev++;
+      if (!(env && env.offline)) emit(env, 'cellDug', { i: c });
+    }
+    return;
+  }
   if (isDrainCell(job, c)) {
     // C117: a drained water cell becomes plain, diggable soil (not a dug cell: no counters, no cache).
     nest.cells[c] = CELL.SOIL;
@@ -502,8 +521,11 @@ function pocketBusy(s, p) {
  * no buried cache), Shallow Soil's depth limit, and no chamber's reserved room (C137). The pocket's own water cells
  * count as free (player report: moving a pocket one tile over was refused because it overlapped its old cells; they
  * turn to soil before the pocket refills its new spot).
+ * C157: with a `fill` array, open tunnel cells (not a shaft, chamber, reserved or backfilling cell) are allowed too and
+ * collected into it, when backfilling all of them together would cut nothing off (bulkCuts: every chamber, queued job,
+ * planned blueprint chamber and entrance stays connected; else 'blocked:disconnect'); the move fills them first.
  */
-function pocketSpotBlock(s, geo, rect, p) {
+function pocketSpotBlock(s, geo, rect, p, fill = null) {
   if (!rect || !isInt(rect.x) || !isInt(rect.y)) return 'invalid';
   if (rect.x < 0 || rect.y < 0 || rect.x + rect.w > COLS || rect.y + rect.h > ROWS) return 'invalid:bounds';
   if (rect.y < 1 || Math.abs(rect.y - p.y) > DRAINAGE.moveRows) return 'invalid:row';
@@ -518,10 +540,21 @@ function pocketSpotBlock(s, geo, rect, p) {
     if (geo.chamberAt[c] >= 0) return 'blocked:chamber';
     if (geo._resv && geo._resv[c] >= 0) return 'blocked:reserved';
     if (code === CELL.STONE) return 'blocked:stone';
+    if (code === CELL.TUNNEL && fill) {
+      if (geo._shaft[c]) return 'blocked:shaft';
+      if (geo._backfill[c]) return 'blocked:backfill';
+      fill.push(c);
+      continue;
+    }
     if (code !== CELL.SOIL) return 'blocked:open';
     if (geo._queued[c]) return 'blocked:queued';
     if (geo._backfill[c]) return 'blocked:backfill';
     if (cache.has(c)) return 'blocked:cache';
+  }
+  if (fill && fill.length) {
+    const mask = new Uint8Array(N);
+    for (const c of fill) mask[c] = 1;
+    if (bulkCuts(s, geo, mask, plannedChambers(s))) return 'blocked:disconnect';
   }
   return null;
 }
@@ -541,17 +574,27 @@ function planPocket(s, d, k, to = null) {
   const wetList = G.rectCells(p.x, p.y, p.w, p.h).filter((c) => cells[c] === CELL.WATER);
   if (!wetList.length) return { reason: 'invalid' };
   const geo = G.getGeom(s, d);
+  const fill = [];
   if (to) {
     const rect = { x: to.x, y: to.y, w: p.w, h: p.h };
     if (rect.x === p.x && rect.y === p.y) return { reason: 'invalid' };
-    const why = pocketSpotBlock(s, geo, rect, p);
+    // C157: open tunnel cells under the new spot are allowed when filling them cuts nothing off (they are filled last)
+    const why = pocketSpotBlock(s, geo, rect, p, fill);
     if (why) return { reason: why };
     if (blocksRoyalGrowth(s, rect, 0, { d })) return { reason: 'blocked:royalRoom' };
   }
   // The access tunnel never runs through the target spot (it would leave open cells there and the move would fail), and
   // may cross reserved soil (C137: draining or moving a pocket out of a reserved room is how that room is cleared).
+  // C157: nor does it start from a tunnel cell under the target (that cell is filled).
   const avoid = to ? G.rectCells(to.x, to.y, p.w, p.h).filter((c) => !G.inRect(p, c)) : null;
-  const r = G.routeTo(s, d, wetList, { blocked: avoid, allowRes: true });
+  let from = null;
+  if (fill.length) {
+    const inFill = new Uint8Array(N);
+    for (const c of fill) inFill[c] = 1;
+    from = [];
+    for (let i = 0; i < N; i++) if (geo.open[i] && geo.entDist[i] >= 0 && !geo._backfill[i] && !inFill[i]) from.push(i);
+  }
+  const r = G.routeTo(s, d, wetList, { blocked: avoid, allowRes: true, from });
   if (!r) return { reason: 'blocked:route' };
   if (s.run.nest.queue.length + 1 > queueLimit(s)) return { reason: 'queueFull' };
   const wet = orderCells(geo, wetList, r.cells);
@@ -559,9 +602,10 @@ function planPocket(s, d, k, to = null) {
   let work = 0;
   for (const c of r.cells) work += G.workAt(ctx, c, 'tunnel');
   for (const c of wet) work += G.workAt(ctx, c, to ? 'movePocket' : 'drain');
+  for (const c of fill) work += G.workAt(ctx, c, 'tunnel') * DRAINAGE.fillWork;
   const cost = to ? {} : { soil: DRAINAGE.drainSoil * wet.length };
-  if (!to && !canAfford(s, cost)) return { reason: 'cantAfford', k, p, wet, route: r.cells, cost, work };
-  return { reason: null, k, p, wet, route: r.cells, cost, work };
+  if (!to && !canAfford(s, cost)) return { reason: 'cantAfford', k, p, wet, route: r.cells, cost, work, fill };
+  return { reason: null, k, p, wet, route: r.cells, cost, work, fill };
 }
 
 /** Queue a drain / relocate job from a successful planPocket (soil paid now). */
@@ -569,9 +613,12 @@ function executePocket(s, d, P, to) {
   const nest = s.run.nest;
   if (P.cost && P.cost.soil > 0 && !spend(s, P.cost)) return 0;
   const uid = nest.nextUid++;
-  nest.queue.push({ uid, kind: 'drain', chamber: 0, cells: [...P.route, ...P.wet], cur: 0, prog: 0, paidFood: 0,
+  const fill = to && Array.isArray(P.fill) ? P.fill.slice() : [];
+  const job = { uid, kind: 'drain', chamber: 0, cells: [...P.route, ...P.wet, ...fill], cur: 0, prog: 0, paidFood: 0,
     paidSoil: P.cost && P.cost.soil > 0 ? P.cost.soil : 0, blueprint: false, drain: P.wet.slice(),
-    pocket: { x: P.p.x, y: P.p.y, w: P.p.w, h: P.p.h }, to: to ? { x: to.x, y: to.y } : null });
+    pocket: { x: P.p.x, y: P.p.y, w: P.p.w, h: P.p.h }, to: to ? { x: to.x, y: to.y } : null };
+  if (fill.length) job.fill = fill; // C157: tunnel cells under the new spot, filled last
+  nest.queue.push(job);
   nest.rev++;
   rebuild(s, d);
   return uid;
@@ -658,7 +705,7 @@ export function pocketAction(s, d, k, to = null) {
     for (const ch of s.run.nest.chambers) if (ch.type === 'water_well' && pocketsTouched(s, geo, ch).has(k)) wells++;
   }
   return { ok: !P.reason, reason: P.reason, work: num(P.work), cost: P.cost ? { ...P.cost } : {}, wells,
-    busy: !!p && pocketBusy(s, p) };
+    busy: !!p && pocketBusy(s, p), fill: Array.isArray(P.fill) ? P.fill.slice() : [] };
 }
 
 /**
@@ -699,9 +746,9 @@ export function rootCap(s) {
   return ROOT_CULT.cap + Math.min(ROOT_CULT.moundMax, Math.floor(mound / ROOT_CULT.moundPer));
 }
 
-/** Cultivated roots grown this run. */
+/** Cultivated roots grown this run (C158: Root Memory's free roots do not count against the cap or the price). */
 function ownRoots(s) {
-  return (s.run.nest.features.roots || []).filter((r) => r && r.own).length;
+  return (s.run.nest.features.roots || []).filter((r) => r && r.own && !r.free).length;
 }
 
 /**
@@ -772,7 +819,7 @@ function growRoots(s, d, step) {
 function skipDone(s, job) {
   while (job.cur < job.cells.length) {
     const c = job.cells[job.cur];
-    if (isCell(c) && cellPending(s, job, c) && (isDrainCell(job, c) || G.isDiggable(s, c))) break;
+    if (isCell(c) && cellPending(s, job, c) && (isDrainCell(job, c) || isFillCell(job, c) || G.isDiggable(s, c))) break;
     job.cur++;
     job.prog = 0;
   }
@@ -1048,6 +1095,7 @@ export function tick(s, d, dt, env) {
   if (step > 0) {
     const r1 = nest.chambers.find((c) => c && c.uid === 1);
     if (r1 && !r1.res && !r1.noRes) assignReservations(s, d);
+    if (royalResStale(s)) upgradeRoyalRes(s, d);
   }
   if (nest.backfill.length && step > 0) {
     const keep = [];
@@ -1261,18 +1309,15 @@ function shaftCells(rect, col) {
 
 /**
  * C137: the level whose footprint a chamber type reserves when placed (0 = none: it never grows). The level where its
- * footprint stops growing: min(effective max level, GEOM.footprintMaxL); the Royal Chamber reserves its Flight-level
- * (FLIGHT.royalLevel) room and grows past it the legacy way (a chosen side).
+ * footprint stops growing: min(effective max level, GEOM.footprintMaxL). C155: the Royal Chamber too (its L8 room, which
+ * holds its Flight-level room in the same corner); before, it reserved only its Flight-level room and grew past it the
+ * legacy way (a chosen side), which Royal Chambers keep when only that smaller room was free (royalResPick).
  */
 function resLevel(s, type) {
   const def = CHAMBERS[type];
   if (!def || !def.grows) return 0;
-  let L;
-  if (type === 'royal_chamber') L = num(FLIGHT.royalLevel) || 5;
-  else {
-    const maxL = effMaxL(s, def);
-    L = maxL > 0 ? Math.min(maxL, GEOM.footprintMaxL) : GEOM.footprintMaxL;
-  }
+  const maxL = effMaxL(s, def);
+  const L = maxL > 0 ? Math.min(maxL, GEOM.footprintMaxL) : GEOM.footprintMaxL;
   const a = G.footprint(type, 1);
   const b = G.footprint(type, L);
   return b.w > a.w || b.h > a.h ? L : 0;
@@ -1374,11 +1419,15 @@ function assignReservations(s, d) {
     if (!resLevel(s, ch.type)) continue;
     const geo = ensureGeom(s, d);
     const j = nest.chambers.indexOf(ch);
+    if (ch.type === 'royal_chamber') {
+      // C155: a Royal Chamber takes an obstacle-free full-size room, else its Flight-level room (C66), else none.
+      const R = royalResPick(s, d, geo, ch, j, null, true);
+      if (R) { ch.res = R; nest.rev++; } else ch.noRes = true;
+      continue;
+    }
     const pr = planRes(s, d, geo, ch.type, ch, j, null);
-    const pickable = pr ? pr.anchors.filter((e) => e.ok && (ch.uid !== 1 || e.obst === 0)) : [];
-    // the original Royal Chamber prefers growing left, as in a new game (state.royalRes)
-    const pref = (e) => (ch.uid === 1 && e.anchor === 'tr' ? 0 : 1);
-    pickable.sort((a, b) => a.obst - b.obst || pref(a) - pref(b));
+    const pickable = pr ? pr.anchors.filter((e) => e.ok) : [];
+    pickable.sort((a, b) => a.obst - b.obst);
     if (pickable.length) {
       ch.res = { ...pickable[0].res };
       nest.rev++;
@@ -1386,6 +1435,60 @@ function assignReservations(s, d) {
   }
   if (!royal.res && !royal.noRes) royal.noRes = true;
   rebuild(s, d);
+}
+
+/**
+ * C155: the reservation a Royal Chamber (index j) takes: an obstacle-free, valid corner-anchored rectangle around its
+ * current room at its full size (resDims: L8), preferring the anchor `want`, then the top-right corner (it grows left,
+ * as in a new game, state.royalRes); with `fallback`, when no full-size one is free, the same at its Flight-level size
+ * (C66: the room the Nuptial Flight needs). Null when none (the legacy side choice).
+ * @returns {{ x: number, y: number, w: number, h: number } | null}
+ */
+function royalResPick(s, d, geo, ch, j, want, fallback) {
+  const dims = [resDims(s, 'royal_chamber', ch)];
+  if (fallback) {
+    const f5 = G.footprint('royal_chamber', num(FLIGHT.royalLevel) || 5);
+    dims.push({ w: Math.max(f5.w, ch.w), h: Math.max(f5.h, ch.h) });
+  }
+  for (const D of dims) {
+    if (!D || (D.w <= ch.w && D.h <= ch.h)) continue;
+    const pr = planRes(s, d, geo, 'royal_chamber', ch, j, null, D);
+    const ok = pr ? pr.anchors.filter((e) => e.ok && e.obst === 0) : [];
+    const pref = (e) => (e.anchor === want ? 0 : e.anchor === 'tr' ? 1 : 2);
+    ok.sort((a, b) => pref(a) - pref(b));
+    if (ok.length) return { ...ok[0].res };
+  }
+  return null;
+}
+
+/**
+ * C155: Royal Chambers from saves made while they reserved only their Flight-level room (C137) get their full-size
+ * room once, where an obstacle-free one is free (same corner preferred, so the queen's room only grows); the others keep
+ * the smaller room and grow past it the legacy way (marked resKeep so this runs once). Runs on the first tick (dt > 0).
+ */
+function upgradeRoyalRes(s, d) {
+  const nest = s.run.nest;
+  let changed = false;
+  for (const ch of nest.chambers) {
+    if (!ch || ch.type !== 'royal_chamber' || ch.resKeep || !ch.res || !isInt(ch.res.w) || !isInt(ch.res.h)) continue;
+    const D = resDims(s, ch.type, ch);
+    if (!D || (ch.res.w >= D.w && ch.res.h >= D.h)) continue;
+    const geo = ensureGeom(s, d);
+    const R = royalResPick(s, d, geo, ch, nest.chambers.indexOf(ch), G.anchorOf(ch, ch.res), false);
+    if (R) { ch.res = R; changed = true; } else ch.resKeep = true;
+    nest.rev++;
+  }
+  if (changed) rebuild(s, d);
+}
+
+/** C155: some Royal Chamber still holds a Flight-level-only reservation that upgradeRoyalRes has not tried yet. */
+function royalResStale(s) {
+  for (const ch of s.run.nest.chambers) {
+    if (!ch || ch.type !== 'royal_chamber' || ch.resKeep || !ch.res || !isInt(ch.res.w)) continue;
+    const D = resDims(s, ch.type, ch);
+    if (D && (ch.res.w < D.w || ch.res.h < D.h)) return true;
+  }
+  return false;
 }
 
 /**
@@ -1879,9 +1982,13 @@ function royalRoom(s, d, { relUid = 0, rect = null, level = 0 } = {}) {
   if (relUid === 1 && !rect) return null;
   // C137: a Royal Chamber with a reservation holding its Flight-level room has exactly that room: nothing else may
   // be placed, grow or tunnel into it (water cannot be moved there, boulders are kept out of it), so it stays free.
+  // C155: its reservation may be its full-size (L8) room; the Flight-level room is the part in the same corner.
   if (!rect && royal.res && isInt(royal.res.w)) {
     const fpT = G.footprint('royal_chamber', target);
-    if (royal.res.w >= fpT.w && royal.res.h >= fpT.h && G.anchorOf(royal, royal.res)) return { free: [{ ...royal.res }] };
+    const a = G.anchorOf(royal, royal.res);
+    if (royal.res.w >= fpT.w && royal.res.h >= fpT.h && a) {
+      return { free: [G.anchorRect(royal, a, Math.max(fpT.w, royal.w), Math.max(fpT.h, royal.h))] };
+    }
   }
   const R0 = rect || royal;
   // A growing Royal Chamber already has its next footprint: count the steps from that level.
@@ -2211,6 +2318,40 @@ export function levelInfo(s, d, uid) {
     blocked: P.grows && P.blocked, max: P.max, royalRoom: P.grows && !P.max && P.royalRoom,
     // C137: grows into its reservation (no side to pick); blockWhy = the cell reason holding that growth back
     reserved: !!P.reserved, blockWhy: P.grows && P.blocked ? P.blockWhy : null, res: R ? { x: R.x, y: R.y, w: R.w, h: R.h } : null };
+}
+
+/**
+ * [q] C156: the chamber's next level can be bought right now: it is active, unlocked for levelling, below its max, every
+ * resource of the level cost is affordable (food and soil, plus any listed extra) and its growth is not blocked
+ * (reserved growth waiting on stone / water / a closed layer, every side blocked, the C66 Royal room). The dig queue's
+ * length is ignored (a full queue clears by itself). Drives the nest view's small ▲ badge and the "Upgrade affordable"
+ * tooltip line.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} uid
+ * @returns {boolean}
+ */
+export function upgradeAffordable(s, d, uid) {
+  const f = findChamber(s, uid);
+  if (!f || f.ch.status !== 'active') return false;
+  ensureGeom(s, d);
+  try {
+    return !planLevel(s, d, f.ch, null, { ignoreQueue: true }).reason;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * [q] C156: uids of every chamber whose next level is affordable right now (upgradeAffordable), ascending.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {number[]}
+ */
+export function affordableUpgrades(s, d) {
+  const out = [];
+  for (const ch of s.run.nest.chambers) if (ch && ch.status === 'active' && upgradeAffordable(s, d, ch.uid)) out.push(ch.uid);
+  return out.sort((a, b) => a - b);
 }
 
 /** Contributing chamber of a type among the adjacency partners (≤ adjPathMax path cells) of chamber index j, or null. */
@@ -2657,6 +2798,32 @@ export function cellInfo(s, d, i) {
     reserved: rch ? rch.type : null };
 }
 
+/**
+ * [q] C154: the chamber whose reserved full-size room (C137) covers cell i outside its current footprint, or null:
+ * { uid, type, level, fullL } (fullL = the level whose footprint fills the reservation, i.e. where growth stops). The
+ * nest view's pick sends a click on such a cell to that chamber (select / inspect), and the hover tooltip says
+ * "Reserved for Gallery (L3 → full size at L8)".
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived|null} d
+ * @param {number} i
+ * @returns {{ uid: number, type: string, level: number, fullL: number } | null}
+ */
+export function reservedBy(s, d, i) {
+  if (!isCell(i)) return null;
+  const geo = G.getGeom(s, d);
+  const rj = geo._resv ? geo._resv[i] : -1;
+  if (rj < 0 || geo.chamberAt[i] >= 0) return null;
+  const ch = s.run.nest.chambers[rj];
+  if (!ch || !ch.res) return null;
+  // the level whose footprint first fills the reserved rectangle (its own growth order, C97 / C137)
+  let fullL = resLevel(s, ch.type) || GEOM.footprintMaxL;
+  for (let L = 1; L <= GEOM.footprintMaxL; L++) {
+    const fp = G.footprint(ch.type, L);
+    if (fp.w >= ch.res.w && fp.h >= ch.res.h) { fullL = L; break; }
+  }
+  return { uid: ch.uid, type: ch.type, level: Math.max(0, Math.floor(num(ch.level))), fullL };
+}
+
 // ------------------------------------------------------------------------------------------------------------------
 // Cross-callable mutators [x]
 // ------------------------------------------------------------------------------------------------------------------
@@ -2899,7 +3066,19 @@ function bpPass(s, d, specList, tunnelList) {
     let auto = !!sp0.auto;
     if (sp0.float || (sp0.type === 'water_well' && !sp0.auto)) {
       // C119: a blueprint Water Well takes the nearest valid spot by a revealed free pocket once there is one.
-      const t = wellTarget(s, d, sp0, taken);
+      let t = wellTarget(s, d, sp0, taken);
+      // C158 Deep Spring: none within reach → a spring wells up by its saved spot (once; a spring already waiting for
+      // the Well's unlock is not doubled), and the Well goes there.
+      if ((!t || t.dist > DEEP_SPRING.reach) && G.traitLevel(s, DEEP_SPRING.trait) > 0) {
+        let k = springWaiting(s, d, sp0, taken);
+        if (k < 0) k = makeSpring(s, d, sp0);
+        if (k >= 0) {
+          geo = ensureGeom(s, d);
+          const t2 = wellTarget(s, d, sp0, taken);
+          if (t2 && t2.k === k) t = t2;
+          else if (!t || t.dist > DEEP_SPRING.reach) { taken.push(k); t = null; }
+        }
+      }
       if (!t) { floats.push({ type: sp0.type, x: sp0.x, y: sp0.y, float: true }); continue; }
       taken.push(t.k);
       if (t.x !== sp0.x || t.y !== sp0.y) bpNote(s, sp0.type, t.x, t.y, 'well:moved');
@@ -2956,7 +3135,7 @@ function bpPass(s, d, specList, tunnelList) {
           continue;
         }
         sp.access = 0;
-        sp.reason = bpPlace(s, d, sp, { assumeConnected: true, seedCells: [c] });
+        sp.reason = rootMemoryWait(s, d, sp, bpPlace(s, d, sp, { assumeConnected: true, seedCells: [c] }), true);
         if (!sp.reason) {
           placed(sp);
           for (const k of sp.cells) if (!visited[k]) { visited[k] = 1; q.push(k); }
@@ -2978,7 +3157,7 @@ function bpPass(s, d, specList, tunnelList) {
   for (const sp of specs) {
     if (sp.state !== 0) continue;
     if (sp.auto) {
-      sp.reason = bpPlace(s, d, sp, {});
+      sp.reason = rootMemoryWait(s, d, sp, bpPlace(s, d, sp, {}), true);
       if (!sp.reason) placed(sp);
       continue;
     }
@@ -2986,7 +3165,7 @@ function bpPass(s, d, specList, tunnelList) {
     sp.access = 0;
     const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
       anchor: specAnchor(sp), legacyOk: true });
-    if (P.reason) { sp.reason = P.reason; continue; }
+    if (P.reason) { sp.reason = rootMemoryWait(s, d, sp, P.reason, true); continue; }
     if (blocksRoyalGrowth(s, P.res || P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
       sp.reason = 'blocked:royalRoom';
       continue;
@@ -3089,9 +3268,154 @@ function wellSpecs(s, d, list) {
     if (usable > 0) {
       usable--;
       out.push({ type: sp.type, x: sp.x, y: sp.y, float: true });
+    } else if (G.traitLevel(s, DEEP_SPRING.trait) > 0 && springSpot(s, d, sp)) {
+      out.push({ type: sp.type, x: sp.x, y: sp.y, float: true }); // C158: Deep Spring wells up a pocket for it
     } else bpNote(s, sp.type, sp.x, sp.y, 'well:none');
   }
   return out;
+}
+
+/**
+ * C158 Deep Spring: the DEEP_SPRING.size square of plain soil touching (sharing an edge with) the Water Well's L1 room at
+ * its saved corner (sp.x, sp.y) where a spring pocket can well up, or null. The Well's own room must be usable there
+ * (cellBlock: no water, chamber, reserved room, shaft top, stone, queued / backfilling cell, closed layer; its row rule),
+ * and the spring's cells plain undug SOIL (no chamber, reserved room, shaft, queued or backfilling cell, buried cache,
+ * other pocket), inside the grid below row 0, within Shallow Soil's limit and outside the Royal Chamber's room (C66).
+ * Nearest centre first (then top, then left), so the choice is deterministic.
+ */
+function springSpot(s, d, sp) {
+  const def = CHAMBERS.water_well;
+  if (!def || !isInt(sp.x) || !isInt(sp.y)) return null;
+  const fp = G.footprint('water_well', 1);
+  const well = { x: sp.x, y: sp.y, w: fp.w, h: fp.h };
+  if (well.x < 0 || well.y < 0 || well.x + well.w > COLS || well.y + well.h > ROWS) return null;
+  if (well.y < effRowMin(s, d, 'water_well') || well.y + well.h - 1 > def.rowMax) return null;
+  const geo = ensureGeom(s, d);
+  for (const c of G.rectCells(well.x, well.y, well.w, well.h)) if (cellBlock(s, geo, c, -1)) return null;
+  const k = DEEP_SPRING.size;
+  const cache = new Set();
+  for (const q of s.run.nest.features.caches || []) if (q && !q.found) cache.add(q.i);
+  const cells = s.run.nest.cells;
+  const cands = [];
+  const push = (x, y) => cands.push({ x, y, w: k, h: k });
+  for (let y = well.y - k + 1; y <= well.y + well.h - 1; y++) { push(well.x - k, y); push(well.x + well.w, y); }
+  for (let x = well.x - k + 1; x <= well.x + well.w - 1; x++) { push(x, well.y - k); push(x, well.y + well.h); }
+  const cx = well.x + well.w / 2;
+  const cy = well.y + well.h / 2;
+  const dist = (r) => Math.abs(r.x + k / 2 - cx) + Math.abs(r.y + k / 2 - cy);
+  cands.sort((a, b) => dist(a) - dist(b) || a.y - b.y || a.x - b.x);
+  for (const r of cands) {
+    if (r.x < 0 || r.y < 1 || r.x + k > COLS || r.y + k > ROWS) continue;
+    if (s.run.hardship === 'shallow_soil' && r.y + k - 1 > DIG.shallowSoilRow) continue;
+    let ok = true;
+    for (const c of G.rectCells(r.x, r.y, k, k)) {
+      if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || (geo._resv && geo._resv[c] >= 0) || geo._shaft[c] || geo._queued[c]
+        || geo._backfill[c] || cache.has(c) || geo._pocket[c] >= 0) { ok = false; break; }
+    }
+    if (!ok) continue;
+    if (blocksRoyalGrowth(s, r, 0, { d })) continue;
+    return r;
+  }
+  return null;
+}
+
+/**
+ * C158 Deep Spring: index of a spring pocket near a floating blueprint Well's saved spot (within reach) that no built
+ * Well uses and this pass has not taken (the Well is waiting for its unlock: no second spring is made), or −1.
+ */
+function springWaiting(s, d, sp, taken) {
+  const geo = ensureGeom(s, d);
+  const water = s.run.nest.features.water || [];
+  const used = new Set(taken);
+  for (const ch of s.run.nest.chambers) if (ch.type === 'water_well') for (const k of pocketsTouched(s, geo, ch)) used.add(k);
+  for (let k = 0; k < water.length; k++) {
+    const p = water[k];
+    if (!p || !p.spring || used.has(k)) continue;
+    if (Math.abs(p.x - sp.x) + Math.abs(p.y - sp.y) <= DEEP_SPRING.reach + DEEP_SPRING.size) return k;
+  }
+  return -1;
+}
+
+/** C158 Deep Spring: well up a spring pocket (revealed) by the Well's saved spot; its features.water index or −1. */
+function makeSpring(s, d, sp) {
+  const r = springSpot(s, d, sp);
+  if (!r) return -1;
+  const nest = s.run.nest;
+  if (!Array.isArray(nest.features.water)) nest.features.water = [];
+  for (const c of G.rectCells(r.x, r.y, r.w, r.h)) nest.cells[c] = CELL.WATER;
+  nest.features.water.push({ x: r.x, y: r.y, w: r.w, h: r.h, revealed: true, spring: true });
+  nest.rev++;
+  rebuild(s, d);
+  bpNote(s, 'water_well', sp.x, sp.y, 'well:spring');
+  return nest.features.water.length - 1;
+}
+
+/** C158 Root Memory: key of a blueprint spot (a free root remembers which planned Root Aphid Pen it grows to). */
+function specKey(sp) {
+  return sp.x + ',' + sp.y;
+}
+
+/** C158 Root Memory: the free root already growing to (or grown to) this planned pen, or null. */
+function memoryRootFor(s, sp) {
+  const key = specKey(sp);
+  return (s.run.nest.features.roots || []).find((r) => r && r.free && r.bp === key) || null;
+}
+
+/**
+ * C158 Root Memory: where a free root to a planned Root Aphid Pen at (sp.x, sp.y) can grow: a column over the pen (its
+ * middle first) growing down to the row above it, else a column beside it growing down to its top row; no root or shaft
+ * in that column and nothing that stops roots (chamber, stone, water, shaft cell; rootBlocked) from row ROOT_CULT.y0 to
+ * the target. { col, to } or null.
+ */
+function memoryRootPlan(s, d, sp) {
+  const fp = G.footprint(sp.type, 1);
+  const geo = ensureGeom(s, d);
+  const roots = s.run.nest.features.roots || [];
+  const y0 = ROOT_CULT.y0;
+  const mid = sp.x + Math.floor((fp.w - 1) / 2);
+  const cols = [];
+  for (let k = 0; k < 2 * fp.w; k++) {
+    const c = mid + (k % 2 ? -1 : 1) * Math.ceil(k / 2);
+    if (c >= sp.x && c < sp.x + fp.w && !cols.some((o) => o.col === c)) cols.push({ col: c, to: Math.max(y0, sp.y - 1) });
+  }
+  cols.push({ col: sp.x - 1, to: sp.y }, { col: sp.x + fp.w, to: sp.y });
+  for (const o of cols) {
+    if (o.col < 0 || o.col >= COLS || o.to < y0 || o.to >= ROWS) continue;
+    if (roots.some((r) => r && r.col === o.col)) continue;
+    if (s.run.nest.shafts.some((x) => x && x.col === o.col)) continue;
+    let ok = true;
+    for (let y = y0; y <= o.to; y++) if (rootBlocked(s, geo, G.idx(o.col, y))) { ok = false; break; }
+    if (ok) return o;
+  }
+  return null;
+}
+
+/** C158 Root Memory: start a free root to the planned pen (no cost, outside the cap); true when one grows to it. */
+function startMemoryRoot(s, d, sp) {
+  if (memoryRootFor(s, sp)) return true;
+  const o = memoryRootPlan(s, d, sp);
+  if (!o) return false;
+  const nest = s.run.nest;
+  if (!Array.isArray(nest.features.roots)) nest.features.roots = [];
+  const y0 = ROOT_CULT.y0;
+  nest.features.roots.push({ col: o.col, y0, y1: y0, own: true, free: true, bp: specKey(sp), to: o.to, prog: 0 });
+  nest.rev++;
+  rebuild(s, d);
+  bpNote(s, sp.type, sp.x, sp.y, 'root:memory');
+  return true;
+}
+
+/**
+ * C158: a blueprint spot refused for 'invalid:root' (no root line to touch) waits as 'wait:root' when Root Memory owns a
+ * free root growing to it, or can grow one (`start`: start it now; else only check). Other reasons pass through.
+ */
+function rootMemoryWait(s, d, sp, reason, start) {
+  if (reason !== 'invalid:root' || G.traitLevel(s, ROOT_MEMORY.trait) <= 0) return reason;
+  // its free root already grew as far as it could without touching the pen (something stopped it): no second one
+  const r = memoryRootFor(s, sp);
+  if (r) return r.y1 < num(r.to) ? 'wait:root' : reason;
+  if (start ? startMemoryRoot(s, d, sp) : memoryRootPlan(s, d, sp)) return 'wait:root';
+  return reason;
 }
 
 /** Reason the original Royal Chamber's L1 footprint cannot be pre-dug at (x, y) on this run's soil, or null (C119). */
@@ -3163,10 +3487,9 @@ function placeRoyal(s, d, spot) {
     const g2 = ensureGeom(s, d);
     const j = nest.chambers.indexOf(ch);
     const want = spot.res ? G.anchorOf({ x: ch.x, y: ch.y, w: ch.w, h: ch.h }, spot.res) : null;
-    const pr = planRes(s, d, g2, 'royal_chamber', ch, j, null);
-    const ok = pr ? pr.anchors.filter((e) => e.ok && e.obst === 0) : [];
-    const pick = ok.find((e) => e.anchor === want) || ok[0];
-    if (pick) { ch.res = { ...pick.res }; nest.rev++; rebuild(s, d); } else ch.noRes = true;
+    // C155: its full-size room when one is free (the saved corner first), else its Flight-level room
+    const pick = royalResPick(s, d, g2, ch, j, want, true);
+    if (pick) { ch.res = pick; nest.rev++; rebuild(s, d); } else ch.noRes = true;
     const room = royalRoom(s, d);
     if (room && !room.free.length) fail = 'blocked:royalRoom';
   }
@@ -3311,12 +3634,16 @@ function waitOf(s, d, sp) {
   if (sp.float || (sp.type === 'water_well' && !sp.auto)) {
     // C119: a floating Water Well has no spot until a revealed pocket has a free one; then it is judged there.
     at = wellTarget(s, d, sp, []);
-    if (!at) return { ...base, code: 'wait:water', detail: null };
+    if (!at) {
+      // C158: Deep Spring wells one up by its spot on the next re-check
+      const spring = G.traitLevel(s, DEEP_SPRING.trait) > 0 && (springWaiting(s, d, sp, []) >= 0 || !!springSpot(s, d, sp));
+      return { ...base, code: spring ? 'wait:spring' : 'wait:water', detail: null };
+    }
   }
   const P = planPlacement(s, d, sp.type, at.x, at.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
     anchor: specAnchor(sp), legacyOk: true });
   if (P.reason === 'cantAfford') return { ...base, code: 'cantAfford', detail: { cost: P.cost } };
-  if (P.reason) return { ...base, code: P.reason, detail: null };
+  if (P.reason) return { ...base, code: rootMemoryWait(s, d, sp, P.reason, false), detail: null };
   if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
     return { ...base, code: 'blocked:royalRoom', detail: null };
   }

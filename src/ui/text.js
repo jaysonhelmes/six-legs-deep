@@ -181,6 +181,9 @@ export function blueprintNote(e) {
   }
   if (r === 'well:moved') return { text: 'Blueprint: the Water Well goes next to this run\'s water pocket.', kind: 'info', priority: 'low' };
   if (r === 'well:none') return { text: 'Blueprint: no water pocket on this soil has room for the Water Well, so it is left out.', kind: 'info', priority: 'high' };
+  // C158: Bloodline traits Deep Spring and Root Memory
+  if (r === 'well:spring') return { text: 'Deep Spring: a spring wells up beside the Water Well\'s planned spot.', kind: 'good', priority: 'low' };
+  if (r === 'root:memory') return { text: 'Root Memory: a root grows down to the planned ' + nameOf('chamber', e && e.chamberType) + '.', kind: 'good', priority: 'low' };
   return { text: 'Blueprint: the ' + nameOf('chamber', e && e.chamberType) + ' spot can no longer be used.', kind: 'info', priority: 'low' };
 }
 
@@ -199,7 +202,7 @@ export const REASON_DETAILS = Object.freeze({
   'blocked:layer': 'That layer is closed: ' + nameOr(RESEARCH, 'acid_excavation', 'Acid Excavation') + ' opens bedrock, '
     + nameOr(FEDERATION, 'aquifer_access', 'Aquifer Access') + ' the aquifer.',
   'blocked:royalRoom': 'Would wall in the Royal Chamber — level it to L' + ROYAL_LEVEL + ' first, or relocate.',
-  // C137: full-size reservations (the faint outline around each chamber)
+  // C137: full-size reservations (C154: drawn as fresh-dug works around each chamber)
   'blocked:reserved': 'Reserved: another chamber will grow into this space.',
   'resv:chamber': 'Its full-size room would overlap another chamber. Press F to try another corner.',
   'resv:reserved': 'Its full-size room would overlap another chamber\'s reserved space. Press F to try another corner.',
@@ -223,7 +226,7 @@ export const REASON_DETAILS = Object.freeze({
   'invalid:pending': 'Already being backfilled.',
   'invalid:dir': 'It cannot grow that way.',
   // C117: moving a water pocket
-  'blocked:open': 'Water can only move into plain, undug soil.',
+  'blocked:open': 'Water can only move into plain soil or tunnels that can be filled in.',
   'blocked:cache': 'Something is buried there: dig it up first.',
   'invalid:rule': 'Placement rule not met.',
   // surface: claims, flags, trails, aphids, satellites
@@ -361,6 +364,9 @@ export const WAIT_TEXT = Object.freeze({
   'wait:water': 'a revealed water pocket with room (dig near water to reveal one)',
   'wait:path': 'no access tunnel can reach it yet (stone, water or a reserved space in the way)',
   'wait:access': 'digging access tunnel',
+  // C158: Bloodline traits
+  'wait:root': 'Root Memory is growing a root down to it',
+  'wait:spring': 'Deep Spring wells up a spring at its spot on the next check',
   'blocked:reserved': 'another chamber will grow into that space',
   'wait:next': 'queues on the next check',
   hardship: 'not allowed in this Hardship',
@@ -729,7 +735,7 @@ export const RESEARCH_TIPS = Object.freeze({
   sugar_economy: 'Honeydew ×2.',
   weeder_ants: 'Blight far rarer; fungus ×1.5.',
   fungal_symbiosis: 'Nutrition bonus doubled.',
-  polymorphism: 'Soldiers, Barracks and the caste slider.',
+  polymorphism: 'Soldiers, Barracks and caste targets.',
   formic_acid: 'Soldier attack ×1.3; cancels acid volleys.',
   ritual_tournaments: 'Win border hexes with displays, no deaths.',
   phalanx: 'Escorts ×1.5 power; retreats cost less.',
@@ -763,7 +769,9 @@ export const TRAIT_TIPS = Object.freeze({
   ancestral_memory: 'Research becomes Innate after 2 runs.',
   long_memory: '+2 h offline cap and +10% efficiency.',
   warrior_lineage: 'Soldier and supermajor attack and health ×1.25.',
+  root_memory: 'A free root grows to each rootless blueprint Root Aphid Pen.',
   royal_court: '50 alate cells; Nuptial Chamber to level 9.',
+  deep_spring: 'A spring wells up for blueprint Water Wells with no water nearby.',
   seasonal_wisdom: 'Choose the starting season; milder winters.',
   swarm_instinct: 'Insight ×1.5.',
   sweet_inheritance: 'A level-2 aphid colony nearby; honeydew ×2.',
@@ -1227,6 +1235,55 @@ export const TERRAIN_BLOCK_TIPS = Object.freeze({
   stone: 'Stone — impassable. Trails route around it.',
   puddle: 'Puddle — flooded in spring. Trails route around it.',
 });
+
+/** C165: what each terrain does besides its trail cost (hex tooltip second line, Manual terrain table). */
+export const TERRAIN_NOTES = Object.freeze({
+  grass: '',
+  sand: '',
+  leaf_litter: 'Leaf plants grow here.',
+  garden_path: 'Shoe footsteps land here.',
+  tree_root: 'Aphid colonies live here.',
+  stone: 'Impassable: trails route around it.',
+  puddle: 'Floods in spring: trails must go around it then.',
+  log: 'Prey is twice as likely to appear within ' + ((TERRAIN.log && TERRAIN.log.fx && TERRAIN.log.fx.preyRadius) || 2) + ' hexes.',
+});
+
+/**
+ * C165: trail cost of a terrain in words ("counts as 1.25 hexes for trails"), or null when impassable.
+ * @param {string} id terrain id
+ * @param {boolean} [blocked] the hex is impassable right now (a spring puddle)
+ * @returns {string|null}
+ */
+export function terrainCostText(id, blocked = false) {
+  const def = TERRAIN[id];
+  const mv = def ? def.move : 1;
+  if (blocked || mv == null) return null;
+  return 'counts as ' + fmtMoveCost(mv) + (mv === 1 ? ' hex' : ' hexes') + ' for trails';
+}
+
+function fmtMoveCost(mv) {
+  return String(Math.round(mv * 100) / 100);
+}
+
+/**
+ * C165: hex tooltip lines for a terrain: "Sand — slow ground: counts as 1.25 hexes for trails." plus its note.
+ * Impassable terrain keeps its C129 line (TERRAIN_BLOCK_TIPS).
+ * @param {string} id terrain id
+ * @param {boolean} [blocked] the hex is impassable right now
+ * @returns {string[]}
+ */
+export function terrainTipLines(id, blocked = false) {
+  const def = TERRAIN[id];
+  const name = (def && def.name) || nameOf('terrain', id);
+  const cost = terrainCostText(id, blocked);
+  if (!cost) return [TERRAIN_BLOCK_TIPS[id] || name + ' — impassable.'];
+  const mv = def ? def.move : 1;
+  const kind = mv < 1 ? 'fast ground' : mv > 1 ? 'slow ground' : 'open ground';
+  const lines = [name + ' — ' + kind + ': ' + cost + '.'];
+  const note = id === 'stone' ? '' : TERRAIN_NOTES[id];
+  if (note) lines.push(note);
+  return lines;
+}
 
 /** C130: Colony History (Prestige tab): the layer that ended each recorded run, and its currency. */
 export const HISTORY_LAYERS = Object.freeze({ run: 'Nuptial Flight', cycle: 'Supercolony', era: 'Speciation' });

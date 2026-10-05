@@ -109,7 +109,7 @@ test('C103 Midden: fx.chitin per effective level into the ledger (label midden),
 
 test('C104 reserve: soldier eggs spend only chitin above the reserve; at/below it minors are laid instead', () => {
   const { s, d } = colony();
-  s.run.colony.casteTargets = { soldier: 0.5, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   s.run.colony.chitinReserve = 20;
   s.run.res.chitin = 20;
   let soldiers = 0;
@@ -156,7 +156,7 @@ test('C104 chitinNeed: wanted military egg unaffordable, or chitin below reserve
   const { s, d } = colony();
   s.run.res.chitin = 0;
   assert.equal(chitinNeed(s, d).needed, false, 'no target and no reserve');
-  s.run.colony.casteTargets = { soldier: 0.2, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 1000, supermajor: 0, replete: 0 };
   let n = chitinNeed(s, d);
   assert.equal(n.needed, true);
   assert.equal(n.wanted, true);
@@ -167,7 +167,7 @@ test('C104 chitinNeed: wanted military egg unaffordable, or chitin below reserve
   assert.equal(chitinNeed(s, d).needed, true, 'affordable only by dipping into the reserve');
   s.run.res.chitin = 12;
   assert.equal(chitinNeed(s, d).needed, false, 'reserve + next egg covered');
-  s.run.colony.casteTargets = { soldier: 0, supermajor: 0, replete: 0 };
+  s.run.colony.casteGoals = { soldier: 0, supermajor: 0, replete: 0 };
   s.run.res.chitin = 5;
   assert.equal(chitinNeed(s, d).needed, true, 'below the reserve with no target');
   s.run.hardship = 'pacifist';

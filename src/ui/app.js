@@ -980,7 +980,7 @@ export function mountUI(root, game, opts = {}) {
     const st0 = s.meta.settings || {};
     setNotation(st0.notation);
     root.setAttribute('data-reduced-motion', st0.reducedMotion ? 'true' : 'false');
-    // C149 cosmetics the page itself shows: palette (CSS tokens), winged cursor over the canvases, amber nest frame
+    // C149 cosmetics the page itself shows: palette (CSS tokens), winged cursor (the whole game window, C164), amber nest frame
     for (const [slot, attr] of [['palette', 'data-palette'], ['cursor', 'data-cursor'], ['frame', 'data-frame']]) {
       const v = cosmeticVariant(s, slot);
       if (v) { if (root.getAttribute(attr) !== v) root.setAttribute(attr, v); } else if (root.getAttribute(attr) !== null) root.removeAttribute(attr);

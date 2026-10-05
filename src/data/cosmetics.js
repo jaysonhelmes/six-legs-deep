@@ -24,7 +24,7 @@ export const COSMETIC_SLOT_NAMES = f({
  * palette: 'royal_amber' (deep amber interface + amber-tinted workers in both views);
  * mound: 'snowcap' (white snow cap on the surface mound); flag: 'white_flag' (white flag on the mound);
  * trail: 'gold' (gold pheromone lines) | 'picasso' (each trail its own bright colour);
- * pet: 'ladybug' (a ladybug wandering around the mound); cursor: 'winged' (winged cursor over both views);
+ * pet: 'ladybug' (a ladybug wandering around the mound); cursor: 'winged' (winged cursor across the whole game window, C164);
  * title: 'underdog' (`title` after the colony name in the top bar); frame: 'amber' (amber frame around the nest view).
  */
 export const COSMETICS = f({
@@ -38,7 +38,7 @@ export const COSMETICS = f({
   cos_trail_colour: { id: 'cos_trail_colour', slot: 'trail', name: 'Picasso Trails', desc: 'Every trail gets its own bright colour.', variant: 'picasso',
     colors: ['#ff5d8f', '#4cc9f0', '#b5e550', '#c77dff', '#ff9e3d', '#3ddc97'] },
   cos_ladybug_pet: { id: 'cos_ladybug_pet', slot: 'pet', name: 'Ladybug Pet', desc: 'A ladybug wanders around your mound.', variant: 'ladybug' },
-  cos_winged_cursor: { id: 'cos_winged_cursor', slot: 'cursor', name: 'Winged Cursor', desc: 'A winged pointer over the map and the nest.', variant: 'winged' },
+  cos_winged_cursor: { id: 'cos_winged_cursor', slot: 'cursor', name: 'Winged Cursor', desc: 'A winged pointer across the whole game.', variant: 'winged' },
   cos_title_underdog: { id: 'cos_title_underdog', slot: 'title', name: 'Underdog Title', desc: '"the Underdog" after your colony name.', variant: 'underdog',
     title: 'the Underdog' },
   cos_amber_frame: { id: 'cos_amber_frame', slot: 'frame', name: 'Amber Strata Frame', desc: 'An amber frame around the nest view.', variant: 'amber' },

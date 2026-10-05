@@ -65,7 +65,8 @@ const POLICY = Object.freeze({
   chitinReserve: 50,                   // with soldiers unlocked and less chitin than this, keep a trail on a dead insect
   maxQueue: 4,                         // do not queue new chambers past this many dig jobs
   libraries: 2,                        // Scent Libraries to place (DESIGN §7.6 max instances)
-  soldierTarget: 0.15, supermajorTarget: 0.05,
+  // C151 caste target counts: soldiers / supermajors per minor adult (≈ the old 15 % / 5 % egg shares)
+  soldierPerMinor: 0.15 / 0.8, supermajorPerMinor: 0.05 / 0.8,
   traitPriority: ['founding_stores', 'nanitic_vigor', 'automaton_instincts', 'remembered_paths', 'keen_antennae', 'ancestral_memory',
     'hardy_workers', 'deep_diggers', 'fertile_queen', 'royal_court', 'wide_wings', 'vast_galleries', 'long_memory', 'swarm_instinct',
     'warrior_lineage', 'seasonal_wisdom', 'sweet_inheritance', 'ancestral_blueprint', 'brood_bank', 'polygyny', 'budding'],
@@ -510,9 +511,9 @@ export class Bot {
     if (u.chamber_root_aphid_pen && this.chambersOf('root_aphid_pen').length < 2 && this.growType('root_aphid_pen', { placeOnly: true })) return;
     if (u.chamber_fungus_garden && this.chambersOf('fungus_garden').length === 0 && this.growType('fungus_garden', { placeOnly: true })) return;
     // C136: Barracks berths house soldiers only; supermajors need War Hall berths
-    const needBerths = u.chamber_barracks && c.casteTargets.soldier > 0 && c.adults.soldier + 1 >= st.berths;
+    const needBerths = u.chamber_barracks && c.casteGoals.soldier > 0 && c.adults.soldier + 1 >= st.berths;
     if (needBerths && this.growType('barracks')) return;
-    const needWar = u.chamber_war_hall && c.casteTargets.supermajor > 0 && c.adults.supermajor + 1 >= (st.warBerths || 0);
+    const needWar = u.chamber_war_hall && c.casteGoals.supermajor > 0 && c.adults.supermajor + 1 >= (st.warBerths || 0);
     if (needWar && this.growType('war_hall')) return;
     // Libraries before the Royal Chamber: insight is the run-1 research bottleneck, and Royal levels past L5 only raise the lay
     // rate, which matters only while housing is free (a housing-capped colony lays nothing).
@@ -609,8 +610,12 @@ export class Bot {
     const c = s.run.colony;
     const banned = s.run.hardship === 'pacifist' || s.run.hardship === 'monomorphic';
     if (!banned && u.caste_soldier) {
-      const want = { soldier: POLICY.soldierTarget, supermajor: u.caste_supermajor ? POLICY.supermajorTarget : 0, replete: c.casteTargets.replete || 0 };
-      if (want.soldier !== c.casteTargets.soldier || want.supermajor !== c.casteTargets.supermajor) this.act('setCasteTargets', want);
+      // C151: target counts scale with the workforce; re-sent when either drifts by more than 5 % (or 1 ant).
+      const m = c.adults.minor;
+      const want = { soldier: Math.max(1, Math.round(m * POLICY.soldierPerMinor)),
+        supermajor: u.caste_supermajor ? Math.round(m * POLICY.supermajorPerMinor) : 0 };
+      const off = (k) => Math.abs(want[k] - c.casteGoals[k]) > Math.max(1, 0.05 * want[k]);
+      if (c.casteFill.soldier || c.casteFill.supermajor || off('soldier') || off('supermajor')) this.act('setCasteTargets', want);
     }
     const g = q(rivals.garrison, s, d) || { soldier: 0, supermajor: 0 };
     // C136: supermajors no longer share the Barracks, so soldiers are not retired to make room for them.

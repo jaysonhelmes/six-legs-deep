@@ -587,3 +587,183 @@ export function drawMoldSpot(ctx, x, y, u, seed, pulse) {
     ctx.stroke();
   }
 }
+
+// ----------------------------------------------------------------------------------------------------------------
+// C154: reserved full-size rooms drawn as works in progress
+// ----------------------------------------------------------------------------------------------------------------
+
+/** Cell (x, y) is inside rectangle r. */
+function inR(r, x, y) {
+  return !!r && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+/** A tiny worker seen from the side (gaster, thorax, head, legs), centred at (x, y), size s px, facing dir ±1. */
+function workAnt(ctx, x, y, s, dir, bob) {
+  const yy = y - bob;
+  ctx.strokeStyle = 'rgba(30,16,8,0.9)';
+  ctx.lineWidth = Math.max(0.6, s * 0.07);
+  ctx.beginPath();
+  for (const k of [-0.18, 0, 0.18]) {
+    ctx.moveTo(x + dir * s * k, yy + s * 0.05);
+    ctx.lineTo(x + dir * s * (k - 0.1), yy + s * 0.26 + bob);
+  }
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(244,222,180,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(x - dir * s * 0.24, yy, s * 0.24, s * 0.17, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = '#2c180c';
+  ctx.beginPath();
+  ctx.ellipse(x - dir * s * 0.24, yy, s * 0.2, s * 0.14, 0, 0, TAU);
+  ctx.moveTo(x + s * 0.11, yy - s * 0.02);
+  ctx.ellipse(x, yy - s * 0.02, s * 0.11, s * 0.08, 0, 0, TAU);
+  ctx.moveTo(x + dir * s * 0.26 + s * 0.1, yy - s * 0.07);
+  ctx.ellipse(x + dir * s * 0.26, yy - s * 0.07, s * 0.1, s * 0.09, 0, 0, TAU);
+  ctx.fill();
+  // a soil pellet held in the mandibles
+  ctx.fillStyle = '#c99c66';
+  ctx.beginPath();
+  ctx.arc(x + dir * s * 0.4, yy - s * 0.02, s * 0.08, 0, TAU);
+  ctx.fill();
+}
+
+/**
+ * C154: a chamber's reserved full-size room (C137) drawn as works in progress rather than an outline: the reserved soil
+ * cells look freshly excavated but unfinished — a lighter, sandy fresh-dug wash with pick marks, a faint diagonal
+ * "under construction" hatch, a soft cut edge, timber props (posts with a cap plank, a foot block and a brace) and,
+ * close up, a worker or two carrying pellets at the face next to the room with a little spoil heap. Distinct from
+ * finished cavities (dark, furnished) and from tunnels (dark passages); cells already open (old tunnels), stone and
+ * water are not passed in and stay as they are. Deterministic per `seed` (chamber uid); the workers bob with `t` unless
+ * `still` (reduced motion). Cell coordinates; (ox, oy) is the grid origin in CSS px, `u` px per cell.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{ R: { x: number, y: number, w: number, h: number }, room: { x: number, y: number, w: number, h: number }|null,
+ *   soil: number[][], ox: number, oy: number, u: number, seed: number, strong?: boolean, t?: number, still?: boolean }} o
+ *   soil: [x, y] cells of R outside the room that are still undug soil
+ * @returns {number} cells painted
+ */
+export function drawReservedWorks(ctx, o) {
+  const { R, room, soil, ox, oy, u } = o || {};
+  if (!R || !(u > 0) || !Array.isArray(soil) || !soil.length) return 0;
+  const seed = o.seed | 0;
+  const strong = !!o.strong;
+  const px = (x) => ox + x * u;
+  const py = (y) => oy + y * u;
+  const inSoil = new Set(soil.map((c) => c[0] + ',' + c[1]));
+  const has = (x, y) => inSoil.has(x + ',' + y);
+  // fresh-dug wash
+  ctx.fillStyle = strong ? 'rgba(214,170,112,0.46)' : 'rgba(206,162,106,0.33)';
+  ctx.beginPath();
+  for (const [x, y] of soil) ctx.rect(px(x), py(y), u, u);
+  ctx.fill();
+  // under-construction hatch and pick marks, clipped to the reserved soil
+  ctx.save();
+  ctx.beginPath();
+  for (const [x, y] of soil) ctx.rect(px(x), py(y), u, u);
+  ctx.clip();
+  const L = px(R.x);
+  const T = py(R.y);
+  const Wd = R.w * u;
+  const Ht = R.h * u;
+  const gap = Math.max(6, u * 0.9);
+  ctx.strokeStyle = strong ? 'rgba(255,220,150,0.24)' : 'rgba(255,214,140,0.13)';
+  ctx.lineWidth = Math.max(1, u * 0.12);
+  ctx.beginPath();
+  for (let k = -Ht; k < Wd; k += gap) {
+    ctx.moveTo(L + k, T + Ht);
+    ctx.lineTo(L + k + Ht, T);
+  }
+  ctx.stroke();
+  if (u >= 9) {
+    ctx.strokeStyle = 'rgba(92,58,30,0.38)';
+    ctx.lineWidth = Math.max(0.6, u * 0.05);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const [x, y] of soil) {
+      if (hash01(x * 31 + seed, y * 17 + 3) < 0.35) continue;
+      const cx = px(x) + u * (0.25 + 0.5 * hash01(x + seed * 7, y));
+      const cy = py(y) + u * (0.25 + 0.5 * hash01(y + seed * 5, x + 1));
+      const a = (hash01(x, y + seed) - 0.5) * 1.2 + 0.6;
+      const l = u * 0.16;
+      for (const dd of [-0.09, 0.09]) {
+        ctx.moveTo(cx + dd * u - Math.cos(a) * l, cy - Math.sin(a) * l);
+        ctx.lineTo(cx + dd * u + Math.cos(a) * l, cy + Math.sin(a) * l);
+      }
+    }
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+  ctx.restore();
+  // a soft cut edge where the reserved soil meets untouched soil (not along the room it grows from)
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = strong ? 'rgba(255,232,180,0.7)' : 'rgba(240,206,150,0.4)';
+  ctx.beginPath();
+  for (const [x, y] of soil) {
+    const X = px(x);
+    const Y = py(y);
+    if (!has(x, y - 1) && !inR(room, x, y - 1)) { ctx.moveTo(X, Y + 0.5); ctx.lineTo(X + u, Y + 0.5); }
+    if (!has(x, y + 1) && !inR(room, x, y + 1)) { ctx.moveTo(X, Y + u - 0.5); ctx.lineTo(X + u, Y + u - 0.5); }
+    if (!has(x - 1, y) && !inR(room, x - 1, y)) { ctx.moveTo(X + 0.5, Y); ctx.lineTo(X + 0.5, Y + u); }
+    if (!has(x + 1, y) && !inR(room, x + 1, y)) { ctx.moveTo(X + u - 0.5, Y); ctx.lineTo(X + u - 0.5, Y + u); }
+  }
+  ctx.stroke();
+  if (strong) {
+    ctx.strokeStyle = 'rgba(255,226,170,0.55)';
+    ctx.setLineDash([3, 4]);
+    ctx.strokeRect(L + 0.5, T + 0.5, Wd - 1, Ht - 1);
+    ctx.setLineDash([]);
+  }
+  // timber props: a post down every third column of reserved soil, with a cap plank, a foot block and a brace
+  if (u >= 10) {
+    const cols = new Map();
+    for (const [x, y] of soil) {
+      const r = cols.get(x);
+      if (!r) cols.set(x, { y0: y, y1: y });
+      else { r.y0 = Math.min(r.y0, y); r.y1 = Math.max(r.y1, y); }
+    }
+    const wood = '#7a4c28';
+    const pw = Math.max(1.5, u * 0.14);
+    for (const [x, r] of cols) {
+      if (((x + seed) % 3 + 3) % 3 !== 0) continue;
+      const X = px(x) + u * 0.5 - pw / 2;
+      const Y0 = py(r.y0) + u * 0.08;
+      const Y1 = py(r.y1 + 1) - u * 0.04;
+      ctx.fillStyle = wood;
+      ctx.fillRect(X, Y0, pw, Y1 - Y0);
+      ctx.fillRect(X - u * 0.22, Y0, pw + u * 0.44, Math.max(1.5, u * 0.1));
+      ctx.fillRect(X - u * 0.1, Y1 - Math.max(1.5, u * 0.09), pw + u * 0.2, Math.max(1.5, u * 0.09));
+      ctx.fillStyle = 'rgba(232,186,128,0.55)';
+      ctx.fillRect(X, Y0, Math.max(0.6, pw * 0.35), Y1 - Y0);
+      if (cols.has(x + 1) && r.y1 > r.y0) {
+        ctx.strokeStyle = 'rgba(122,76,40,0.85)';
+        ctx.lineWidth = Math.max(1, u * 0.08);
+        ctx.beginPath();
+        ctx.moveTo(X + pw, Y1 - u * 0.15);
+        ctx.lineTo(X + pw + u * 0.7, Y0 + u * 0.35);
+        ctx.stroke();
+      }
+    }
+  }
+  // close up: one or two workers at the face (reserved soil touching the room) and a little spoil heap
+  if (u >= 12 && room) {
+    const face = soil.filter(([x, y]) => inR(room, x - 1, y) || inR(room, x + 1, y) || inR(room, x, y - 1) || inR(room, x, y + 1));
+    const from = face.length ? face : soil;
+    const t = Number.isFinite(o.t) ? o.t : 0;
+    const n = Math.min(2, from.length);
+    let last = -1;
+    for (let k = 0; k < n; k++) {
+      let j = Math.floor(hash01(seed + k * 13, 77) * from.length) % from.length;
+      if (j === last) j = (j + 1) % from.length;
+      last = j;
+      const [x, y] = from[j];
+      const bob = o.still ? 0 : Math.max(0, Math.sin(t * 5 + k * 2.1 + seed)) * u * 0.05;
+      const dir = inR(room, x - 1, y) ? -1 : inR(room, x + 1, y) ? 1 : (hash01(seed, k) < 0.5 ? -1 : 1);
+      workAnt(ctx, px(x) + u * 0.5, py(y) + u * 0.7, u * 0.62, dir, bob);
+    }
+    const low = from.reduce((a, c) => (c[1] > a[1] ? c : a), from[0]);
+    ctx.fillStyle = 'rgba(176,128,78,0.8)';
+    ctx.beginPath();
+    ctx.ellipse(px(low[0]) + u * 0.5, py(low[1] + 1) - u * 0.02, u * 0.32, u * 0.14, 0, Math.PI, 0);
+    ctx.fill();
+  }
+  return soil.length;
+}

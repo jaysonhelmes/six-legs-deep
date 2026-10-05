@@ -1,4 +1,4 @@
-// Cameras: surface pan/zoom (zoom 0.6–1.6 from data/surface.js MAP) clamped to the map radius, and the nest's
+// Cameras: surface pan/zoom (zoom 0.6–2.75 from data/surface.js MAP, C163) clamped to the map radius, and the nest's
 // fitted cell size with player zoom, vertical scroll, horizontal pan while zoomed past the width, and a default
 // framing around the Royal Chamber. Pure (no DOM); renderers own one instance each. Owner: WP8.
 // Contract: ARCHITECTURE §13 (render/camera.js), DESIGN §8.1 (zoom range), §7.1 (≈45 visible rows).
@@ -8,7 +8,7 @@ import { MAP } from '../data/surface.js';
 import { SQRT3, clamp, hexWorld } from './geom.js';
 
 const ZOOM_MIN = MAP && MAP.zoomMin > 0 ? MAP.zoomMin : 0.6;
-const ZOOM_MAX = MAP && MAP.zoomMax > 0 ? MAP.zoomMax : 1.6;
+const ZOOM_MAX = MAP && MAP.zoomMax > 0 ? MAP.zoomMax : 2.75;
 /** Nest cell size (CSS px) the default framing aims for: chambers readable and tappable, the colony in view. */
 export const FRAME_CELL = 13;
 

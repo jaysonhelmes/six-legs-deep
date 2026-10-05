@@ -242,7 +242,7 @@ function buildPolicy() {
   if (rv.chamber_nursery && brood >= 0.9 * st.broodSlots && grow('nursery')) return;
   if (rv.chamber_granary && s.run.res.food >= 0.85 * st.foodCap && grow('granary')) return;
   if (rv.chamber_scent_library && !s.run.nest.chambers.some((x) => x && x.type === 'scent_library') && grow('scent_library', { placeOnly: true })) return;
-  if (rv.chamber_barracks && c.casteTargets.soldier > 0 && c.adults.soldier + c.adults.supermajor + 1 >= st.berths && grow('barracks')) return;
+  if (rv.chamber_barracks && c.casteGoals.soldier > 0 && c.adults.soldier + c.adults.supermajor + 1 >= st.berths && grow('barracks')) return;
   if (rv.royal_levelup) {
     const royal = s.run.nest.chambers.find((x) => x && x.uid === 1);
     if (royal && royal.status === 'active' && grow('royal_chamber')) return;
@@ -339,7 +339,11 @@ const war = { raids: 0, wins: 0, previews: 0 };
 function military() {
   const { s, d } = game;
   const c = s.run.colony;
-  if (rv.caste_soldier && c.casteTargets.soldier !== 0.15) act('setCasteTargets', { soldier: 0.15, supermajor: 0, replete: 0 });
+  // C151 target counts: soldiers ≈ 15 % of the colony (re-sent as the colony grows)
+  const wantSoldiers = Math.max(1, Math.round(c.adults.minor * 0.15 / 0.85));
+  if (rv.caste_soldier && (c.casteFill.soldier || Math.abs(c.casteGoals.soldier - wantSoldiers) > Math.max(1, 0.05 * wantSoldiers))) {
+    act('setCasteTargets', { soldier: wantSoldiers, supermajor: 0, replete: 0 });
+  }
   if (!rv.panel_war || s.run.war.parties.length) return;
   const g = q('garrison', rivals.garrison, s, d) || { soldier: 0, supermajor: 0 };
   const army = { soldier: Math.floor(g.soldier), supermajor: Math.floor(g.supermajor) };

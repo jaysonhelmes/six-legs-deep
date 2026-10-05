@@ -146,3 +146,107 @@ test('the decoration cache paints once per chamber and repaints only when its ke
   assert.equal(cacheD.size, 0);
   assert.deepEqual(bad, []);
 });
+
+// ------------------------------------------------------------------------------------------------ C159 level adornment
+test('C159: level-scaled decor draws for every chamber type at L1 / L4 / L8, richer at each tier, deterministic', async () => {
+  const { decorTier, adornmentLayout } = await import('../src/render/nestDecor.js');
+  assert.deepEqual([1, 2, 3, 4, 6, 7, 8, 12].map(decorTier), [0, 0, 1, 1, 1, 2, 2, 2]);
+  const ctx = makeCtx();
+  for (const type of Object.keys(CHAMBERS)) {
+    const def = CHAMBERS[type];
+    const counts = [];
+    for (const L of [1, 4, 8]) {
+      const tier = decorTier(L);
+      // the chamber's footprint at that level (fixed-size types keep theirs)
+      const tall = def.grows ? Math.floor((L - 1) / 3) : 0;
+      const c = { uid: 9, type, x: 3, y: 9, w: def.grows ? def.w0 + L - 1 - tall : def.w0, h: def.grows ? def.h0 + tall : def.h0 };
+      const b = cavityBox(c);
+      for (const u of [8, 20, 40]) {
+        const box = { x: 10 + b.x0 * u, y: 20 + b.y0 * u, w: (b.x1 - b.x0) * u, h: (b.y1 - b.y0) * u };
+        const o = type === 'royal_chamber' ? { qf: 0.35, qh: 0.6, grow: 1.2, key: 'q', tier } : { tier };
+        const before0 = painted;
+        assert.doesNotThrow(() => paintDecor(ctx, type, box, u, c.uid, o), `${type} L${L} @${u}`);
+        if (u === 20) counts.push(painted - before0);
+      }
+      // same footprint, compare tiers directly: each tier paints more than the one below
+    }
+    const c = { uid: 9, type, x: 3, y: 9, w: Math.max(def.w0, 6), h: Math.max(def.h0, 3) };
+    const b = cavityBox(c);
+    const box = { x: 0, y: 0, w: (b.x1 - b.x0) * 20, h: (b.y1 - b.y0) * 20 };
+    const per = [0, 1, 2].map((tier) => {
+      const p0 = painted;
+      paintDecor(ctx, type, box, 20, 9, type === 'royal_chamber' ? { qf: 0.35, qh: 0.6, grow: 1, key: 'q', tier } : { tier });
+      return painted - p0;
+    });
+    assert.ok(per[1] > per[0] && per[2] > per[1], `${type} richer with level: ${per.join(' < ')}`);
+    assert.ok(counts.length === 3);
+    assert.deepEqual(adornmentLayout(type, 5.66, 2.75, 12, 2), adornmentLayout(type, 5.66, 2.75, 12, 2), `${type} deterministic`);
+    assert.equal(adornmentLayout(type, 5.66, 2.75, 12, 0), null, 'tier 0: no adornment');
+  }
+  assert.notDeepEqual(adornmentLayout('gallery', 9.66, 3.75, 1, 2), adornmentLayout('gallery', 9.66, 3.75, 2, 2), 'differs per chamber');
+  assert.deepEqual(bad, []);
+});
+
+test('C159: the decoration cache repaints when the level tier changes, not on every level', () => {
+  const cacheD = createDecorCache();
+  const ctx = makeCtx();
+  const c = { uid: 77, type: 'granary', x: 5, y: 40, w: 4, h: 3 };
+  const box = { x: 100, y: 200, w: 3.66 * 20, h: 2.75 * 20 };
+  const n0 = offscreens;
+  cacheD.draw(ctx, c, box, 20, 20, { tier: 1 });
+  cacheD.draw(ctx, c, box, 20, 20, { tier: 1 });
+  const n1 = offscreens;
+  assert.equal(n1 - n0, 1);
+  const p0 = painted;
+  cacheD.draw(ctx, c, box, 20, 20, { tier: 1 });
+  const same = painted - p0;
+  cacheD.draw(ctx, c, box, 20, 20, { tier: 2 });
+  assert.ok(painted - p0 > same, 'a new tier repaints the static layer');
+  assert.deepEqual(bad, []);
+});
+
+test('C159: painting every type at its top tier costs about what the plain set dressing does (cached, measured)', () => {
+  const ctx = makeCtx();
+  const time = (tier) => {
+    const t0 = process.hrtime.bigint();
+    for (let k = 0; k < 20; k++) {
+      for (const type of Object.keys(CHAMBERS)) {
+        const box = { x: 0, y: 0, w: 7.66 * 20, h: 3.75 * 20 };
+        paintDecor(ctx, type, box, 20, 100 + k, type === 'royal_chamber' ? { qf: 0.35, qh: 0.6, grow: 1, key: 'q' + k, tier } : { tier });
+      }
+    }
+    return Number(process.hrtime.bigint() - t0) / 1e6;
+  };
+  time(2);
+  const base = time(0);
+  const top = time(2);
+  // a cache repaint happens once per chamber per tier change (not per frame); keep it in the same ballpark
+  assert.ok(top < base * 4 + 20, `top tier ${top.toFixed(1)} ms vs plain ${base.toFixed(1)} ms for 340 repaints`);
+});
+
+// ------------------------------------------------------------------------------------------------ C154 reserved works
+test('C154: reserved rooms draw as works in progress (wash, hatch, props, workers) with valid values at every zoom', async () => {
+  const { drawReservedWorks } = await import('../src/render/nestArt.js');
+  const ctx = makeCtx();
+  const room = { x: 10, y: 20, w: 3, h: 2 };
+  const R = { x: 10, y: 20, w: 8, h: 4 };
+  const soil = [];
+  for (let y = R.y; y < R.y + R.h; y++) for (let x = R.x; x < R.x + R.w; x++) if (!(x < 13 && y < 22)) soil.push([x, y]);
+  for (const u of [4, 9, 12, 24, 40]) {
+    for (const strong of [false, true]) {
+      for (const still of [false, true]) {
+        const p0 = painted;
+        const n = drawReservedWorks(ctx, { R, room, soil, ox: 5, oy: -30, u, seed: 3, strong, t: 12.3, still });
+        assert.equal(n, soil.length);
+        assert.ok(painted - p0 >= 3, 'wash, hatch and edge at least');
+      }
+    }
+  }
+  assert.equal(drawReservedWorks(ctx, { R, room, soil: [], ox: 0, oy: 0, u: 20, seed: 1 }), 0, 'nothing left to dig: nothing drawn');
+  assert.equal(drawReservedWorks(ctx, null), 0);
+  // close up adds props and workers on top of the overview look
+  const far = (() => { const p0 = painted; drawReservedWorks(ctx, { R, room, soil, ox: 0, oy: 0, u: 8, seed: 3 }); return painted - p0; })();
+  const near = (() => { const p0 = painted; drawReservedWorks(ctx, { R, room, soil, ox: 0, oy: 0, u: 24, seed: 3 }); return painted - p0; })();
+  assert.ok(near > far, `close up is richer (${near} > ${far})`);
+  assert.deepEqual(bad, []);
+});

@@ -12,6 +12,7 @@ import { EVENT_RULES } from '../data/events.js';
 import { YEAR } from '../data/seasons.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { FLIGHT } from '../data/prestige.js';
+import { GEOM } from '../data/strata.js';
 import { countInRadius } from './hex.js';
 
 /** Current save schema version. Bump together with a MIGRATIONS entry and a fixture (ARCHITECTURE §7.14). */
@@ -28,15 +29,16 @@ const SKELETON = Object.freeze({
 });
 
 /**
- * C137: the original Royal Chamber's reservation: its Flight-level (FLIGHT.royalLevel) footprint with the L1 room in the
- * top-right corner (it grows left, toward the shaft side, and down; the Royal row rule keeps it from growing up). Footprint
- * formula DESIGN §7.4.
+ * C137 / C155: the original Royal Chamber's reservation: its full-size footprint (the level where footprints stop
+ * growing, GEOM.footprintMaxL = L8: 9×4) with the L1 room in the top-right corner (it grows left, toward the shaft side,
+ * and down; the Royal row rule keeps it from growing up). Its Flight-level (FLIGHT.royalLevel) room is the smaller
+ * rectangle in the same corner, so the C66 guarantee holds. Footprint formula DESIGN §7.4.
  * @param {{ x: number, y: number, w: number, h: number }} r
  * @returns {{ x: number, y: number, w: number, h: number }}
  */
 export function royalRes(r) {
   const def = CHAMBERS.royal_chamber;
-  const L = Math.max(1, Math.floor(Number(FLIGHT.royalLevel) || 5));
+  const L = Math.max(1, Math.floor(Number(GEOM.footprintMaxL) || Number(FLIGHT.royalLevel) || 5));
   const tall = Math.floor((L - 1) / 3);
   const w = Math.max(r.w, def.w0 + L - 1 - tall);
   return { x: r.x + r.w - w, y: r.y, w, h: Math.max(r.h, def.h0 + tall) };
@@ -85,7 +87,12 @@ export function createRun(seed) {
       eggs: { minor: 0, soldier: 0, supermajor: 0, replete: 0, alate: 0 },
       naniticsLeft: EGG.nanitics,
       rearRequested: 0,
-      casteTargets: { soldier: 0, supermajor: 0, replete: 0 },
+      // C151: caste TARGET COUNTS (adults + brood of that caste the queen lays toward), "Keep berths filled" toggles
+      // (target = the caste's berth cap) and whether the player (or the first Barracks / War Hall) set them this run.
+      // The old share map `casteTargets` (≤ 0.9 of eggs) is converted on the first step after load (population.js).
+      casteGoals: { soldier: 0, supermajor: 0, replete: 0 },
+      casteFill: { soldier: false, supermajor: false, replete: false },
+      casteTouched: { soldier: false, supermajor: false, replete: false },
       eggReserve: 0,
       chitinReserve: 0,   // C104: chitin held back from soldier / supermajor eggs (absolute; per run)
       fungalBrood: false,
@@ -243,7 +250,7 @@ function createMeta() {
       autoGuard: false,
       autoRear: false,
       jobPresets: [],
-      keep: { jobTargets: null, casteTargets: null },
+      keep: { jobTargets: null, casteTargets: null, casteGoals: null, casteFill: null }, // casteTargets: legacy shares (C151)
     },
     counters: {
       runs: 0, flights: 0, supercolonies: 0, speciations: 0, alatesLife: 0, kinshipEver: 0,

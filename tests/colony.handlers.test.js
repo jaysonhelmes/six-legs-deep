@@ -20,7 +20,10 @@ const REASONS = new Set(['unknown', 'paused', 'locked', 'cantAfford', 'invalid',
 /** Fields each command may write (dotted path prefixes). */
 const OWNED = {
   clickForage: ['run.res.food', 'run.fRun', 'meta.stats.foodEver', 'run.stats.foodWasted', 'run.clicks', 'meta.counters.clicks'],
-  setCasteTargets: ['run.colony.casteTargets', 'meta.automation.keep.casteTargets'],
+  setCasteTargets: ['run.colony.casteGoals', 'run.colony.casteFill', 'run.colony.casteTouched', 'meta.automation.keep.casteGoals',
+    'meta.automation.keep.casteFill', 'meta.automation.keep.casteTargets'],
+  setCasteFill: ['run.colony.casteGoals', 'run.colony.casteFill', 'run.colony.casteTouched', 'meta.automation.keep.casteGoals',
+    'meta.automation.keep.casteFill', 'meta.automation.keep.casteTargets'],
   setEggReserve: ['run.colony.eggReserve'],
   setChitinReserve: ['run.colony.chitinReserve'],
   setFungalBrood: ['run.colony.fungalBrood'],

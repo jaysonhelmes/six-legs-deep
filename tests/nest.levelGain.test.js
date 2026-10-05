@@ -74,7 +74,7 @@ test('C107: per-type lines — nursery slots, library insight, midden caps, roya
   const royal = nest.levelGain(s, d, 1);
   assert.equal(royal.lines[0].stat, 'lay');
   assert.ok(Math.abs(royal.lines[0].from - 1) < 1e-9 && Math.abs(royal.lines[0].to - 1.15) < 1e-9);
-  const mid = place(s, d, 'midden', 12, 20); // C137: x 15–21 is the queen's reserved room
+  const mid = place(s, d, 'midden', 10, 20); // C137 / C155: x 13–21 is the queen's reserved room
   const ml = nest.levelGain(s, d, mid.uid).lines;
   const dis = ml.find((l) => l.stat === 'disease');
   assert.equal(dis.sign, -1);

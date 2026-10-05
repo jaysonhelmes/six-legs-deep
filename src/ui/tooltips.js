@@ -6,13 +6,13 @@ import { h, setText, clear } from './dom.js';
 import { fmt, fmtRate, fmtCount, fmtTime, fmtMult, fmtPct } from './format.js';
 import {
   nameOf, RES_NAMES, RES_TIPS, CHAMBER_TIPS, SEASON_NAMES, SEASON_TIPS, BOTTLENECK_TIPS, unlockHint, unlockLabel, BATTLE_NAMES, PARTY_NAMES,
-  reasonText, linkText, TERRAIN_BLOCK_TIPS, plannedWaitText,
+  reasonText, linkText, TERRAIN_BLOCK_TIPS, plannedWaitText, terrainTipLines,
 } from './text.js';
 import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
 import { oldRidgeImmunity, frontInfo, frontLabel, satellitesFree, satelliteHexWhy, spanText } from './rules.js';
-import { cellInfo, chamberLinks, pocketAction, plannedWait } from '../systems/nest.js';
+import { cellInfo, chamberLinks, pocketAction, plannedWait, reservedBy, upgradeAffordable } from '../systems/nest.js';
 import { groomText } from './panels/build.js';
 import { ringOf } from '../core/hex.js';
 import { TERRAIN_ORDER } from '../data/surface.js';
@@ -119,6 +119,44 @@ export function hexTerrainLine(terrId, hex, d) {
   return blocked && TERRAIN_BLOCK_TIPS[terrId] ? TERRAIN_BLOCK_TIPS[terrId] : nameOf('terrain', terrId);
 }
 
+/**
+ * C165: a revealed hex's terrain tooltip lines: what the ground does to trails ("Sand — slow ground: counts as 1.25
+ * hexes for trails.") and any terrain note (leaf plants, aphids, footsteps, prey near a log). Impassable terrain keeps
+ * the C129 line.
+ * @param {string} terrId
+ * @param {number} hex
+ * @param {Object} d
+ * @returns {string[]}
+ */
+export function hexTerrainLines(terrId, hex, d) {
+  const pass = d && d.surface && d.surface.passable;
+  const blocked = terrId === 'stone' || (terrId === 'puddle' && !!pass && pass[hex] === 0);
+  return terrainTipLines(terrId, blocked);
+}
+
+/**
+ * C154: tooltip title for a cell of a chamber's reserved full-size room: "Reserved for Gallery (L3 → full size at L8)".
+ * @param {Object} c the chamber
+ * @param {{ level: number, fullL: number }|null} rb nest.reservedBy
+ * @returns {string}
+ */
+export function reservedTitle(c, rb) {
+  const L = Math.max(0, Math.floor(num(c && c.level)));
+  const full = rb && num(rb.fullL) > 0 ? num(rb.fullL) : 0;
+  return 'Reserved for ' + nameOf('chamber', c && c.type) + ' (L' + fmtCount(L) + (full ? ' → full size at L' + fmtCount(full) : '') + ')';
+}
+
+/** C154: the lines under reservedTitle: what the space is, a buried cache in it, and the click. */
+function reservedLines(s, d, c, i) {
+  const name = nameOf('chamber', c.type);
+  const lines = ['Being readied: the ' + name + ' grows into this space. No new tunnels or other chambers here.'];
+  let info = null;
+  try { info = cellInfo(s, d, i); } catch { info = null; }
+  if (info && info.cache) lines.push('Something is buried here: dug up when the ' + name + ' grows over it.');
+  lines.push('Click to inspect the ' + name + '.');
+  return lines;
+}
+
 function chamberBy(s, uid) {
   return arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === uid) || null;
 }
@@ -137,6 +175,12 @@ export function tipForTarget(t, s, d) {
     if (k === 'chamber' || k === 'nursery' || k === 'queen') {
       const c = chamberBy(s, num(t.id));
       if (!c) return null;
+      // C154: a cell of its reserved full-size room (the fresh-dug works around it)
+      if (t.reserved) {
+        let rb = null;
+        try { rb = reservedBy(s, d, num(t.i, -1)); } catch { rb = null; }
+        return { title: reservedTitle(c, rb), lines: reservedLines(s, d, c, num(t.i, -1)) };
+      }
       const idx = arr(s.run.nest.chambers).indexOf(c);
       const dc = obj(arr(d && d.nest && d.nest.chambers)[idx]);
       const lines = [CHAMBER_TIPS[c.type] || ''];
@@ -148,8 +192,12 @@ export function tipForTarget(t, s, d) {
       try { links = chamberLinks(s, d, c.uid); } catch { links = []; }
       for (const l of links) lines.push((l.good ? 'Link: ' : 'Penalty: ') + linkText(l));
       if (k === 'nursery') lines.push('Click to groom. ' + groomText(s, d, c.uid));
-      // C137: it grows into the faint outline around it
-      if (c.res && (c.res.w > c.w || c.res.h > c.h)) lines.push('Grows into its reserved space (the faint outline).');
+      // C137 / C154: it grows into the fresh-dug works around it
+      if (c.res && (c.res.w > c.w || c.res.h > c.h)) lines.push('Grows into its reserved space (the fresh-dug works around it).');
+      // C156: its next level can be bought right now (the ▲ badge)
+      let up = false;
+      try { up = upgradeAffordable(s, d, c.uid); } catch { up = false; }
+      if (up) lines.push('Upgrade affordable');
       return { title: nameOf('chamber', c.type) + ' L' + fmtCount(num(c.level)), lines: lines.filter(Boolean) };
     }
     // C106: a pending blueprint chamber's planned outline
@@ -252,8 +300,10 @@ export function tipForTarget(t, s, d) {
     const order = TERRAIN_ORDER.length ? TERRAIN_ORDER : TERRAIN_FALLBACK;
     const owned = d && d.surface && d.surface.owned ? d.surface.owned[hex] : 0;
     const terrId = order[num(arr(surf.terrain)[hex])] || 'grass';
-    const lines = [revealed ? hexTerrainLine(terrId, hex, d) : 'Unexplored: scouts will reveal it.'];
-    if (owned) lines.push('Your territory.');
+    const lines = revealed ? hexTerrainLines(terrId, hex, d) : ['Unexplored: scouts will reveal it.'];
+    // C162: a trail-held hex (Trunk Trails, owned code 4) is temporary territory, lost with the trail
+    if (owned === 4) lines.push('Held by trail — claim to keep.');
+    else if (owned) lines.push('Your territory.');
     // F15: while placing a satellite, say whether this hex qualifies (and why not) before the click
     const tool = getUI().tool;
     if (tool && tool.kind === 'placeSatellite' && satellitesFree(s) > 0) {

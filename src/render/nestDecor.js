@@ -2,8 +2,9 @@
 // the cavity under its contents and the ants. Each entry has a `layout` (cell units, deterministic per chamber uid and
 // footprint, memoised), a static `back` painter (rendered once into a per-chamber offscreen cache at the strata-cache
 // resolution and blitted every frame) and, for a few types, a subtle animated `anim` painter (scent wisps, heat
-// shimmer, ripples, drips, motes, glints) that draws a still frame under reduced motion. Painters take a CSS-px (or
-// cache-px) box = the cavity interior and `u` = px per cell. Owner: WP8 (ARCHITECTURE §13.5, DESIGN §7.6, §7.13).
+// shimmer, ripples, drips, motes, glints) that draws a still frame under reduced motion. C159: a level adornment layer
+// (carvings and supports from L3, ornate trim, lamps and an emblem from L7; decorTier) joins the cached static layer.
+// Painters take a CSS-px (or cache-px) box = the cavity interior and `u` = px per cell. Owner: WP8 (ARCHITECTURE §13.5, DESIGN §7.6, §7.13).
 
 import { hash01 } from './geom.js';
 import { createOffscreen } from './canvas.js';
@@ -1564,6 +1565,283 @@ DECOR.deep_vault = {
 };
 
 // ----------------------------------------------------------------------------------------------------------------
+// C159: level-scaled adornment. On top of each type's set dressing, chambers grow richer as they level: tier 0 (L1–2)
+// is the plain dressing above; tier 1 (L3–6) adds wall carvings (a frieze on the back wall), supports (pillars by the
+// walls with capitals) and more of the type's floor items; tier 2 (L7+) adds an ornate beaded trim along the vault,
+// glowing wall lamps, an emblem medallion on the back wall, a central arch rib in wide rooms and more items again.
+// Deterministic per chamber uid, footprint and tier; painted into the same per-chamber static cache (no per-frame cost).
+// ----------------------------------------------------------------------------------------------------------------
+
+/**
+ * Decoration tier for a chamber level: 0 = L1–2 (sparse), 1 = L3–6 (carvings, supports, more items), 2 = L7+ (ornate
+ * trim, glow details, emblem, extra contents).
+ * @param {number} level
+ * @returns {0|1|2}
+ */
+export function decorTier(level) {
+  const L = Math.floor(Number(level) || 0);
+  return L >= 7 ? 2 : L >= 3 ? 1 : 0;
+}
+
+/**
+ * Per-type adornment style: accent (carvings, trim; "r,g,b"), glow (lamps; "r,g,b"), the support material and the floor
+ * motif. Types without an entry use ADORN_DEFAULT.
+ */
+export const ADORN = {
+  royal_chamber: { accent: '244,206,120', glow: '255,214,130', post: 'wood', motif: 'jewels' },
+  gallery: { accent: '226,190,136', glow: '255,206,150', post: 'wood', motif: 'pads' },
+  nursery: { accent: '246,226,200', glow: '255,200,180', post: 'silk', motif: 'silk' },
+  granary: { accent: '230,200,120', glow: '255,220,140', post: 'wood', motif: 'seeds' },
+  scent_library: { accent: '190,214,255', glow: '170,220,255', post: 'wood', motif: 'drops' },
+  midden: { accent: '170,150,110', glow: '200,230,140', post: 'wood', motif: 'pebbles' },
+  barracks: { accent: '214,120,96', glow: '255,170,120', post: 'chitin', motif: 'thorns' },
+  war_hall: { accent: '226,104,84', glow: '255,150,110', post: 'chitin', motif: 'thorns' },
+  root_aphid_pen: { accent: '170,210,120', glow: '210,255,160', post: 'root', motif: 'leaves' },
+  fungus_garden: { accent: '214,230,220', glow: '150,240,220', post: 'root', motif: 'spores' },
+  repletion_hall: { accent: '240,180,90', glow: '255,190,90', post: 'wood', motif: 'drops' },
+  hibernaculum: { accent: '200,224,240', glow: '190,230,255', post: 'silk', motif: 'silk' },
+  thermal_chimney: { accent: '230,150,100', glow: '255,160,90', post: 'stone', motif: 'pebbles' },
+  gate: { accent: '200,190,170', glow: '255,210,150', post: 'stone', motif: 'pebbles' },
+  water_well: { accent: '160,210,240', glow: '140,210,255', post: 'stone', motif: 'drops' },
+  nuptial_chamber: { accent: '236,214,250', glow: '240,210,255', post: 'silk', motif: 'petals' },
+  deep_vault: { accent: '250,200,110', glow: '255,200,110', post: 'stone', motif: 'gems' },
+};
+const ADORN_DEFAULT = { accent: '226,196,150', glow: '255,214,150', post: 'wood', motif: 'pebbles' };
+const POSTS = { wood: ['#6e4426', 'rgba(232,186,128,0.5)'], chitin: ['#3a1e14', 'rgba(255,170,140,0.45)'],
+  silk: ['#d8cdb8', 'rgba(255,255,255,0.5)'], root: ['#7a6a3c', 'rgba(220,230,160,0.45)'], stone: ['#7d7266', 'rgba(255,245,230,0.4)'] };
+
+/** Adornment layout (cell units, box-relative) for tier ≥ 1. */
+function adornLayout(type, bw, bh, seed, tier) {
+  const R = rng(seed, 40 + tier);
+  const out = { tier, frieze: null, posts: [], items: [], lamps: [], arch: false, emblem: null };
+  if (bh >= 1.5) {
+    const y = Math.min(bh * 0.36, bh - 0.75);
+    const [lo, hi] = spanAt(bw, bh, y, 0.3);
+    if (hi - lo > 0.8) out.frieze = { y, lo, hi, n: Math.max(2, Math.floor((hi - lo) / 0.55)) };
+  }
+  if (bw >= 2.4 && bh >= 1.4) {
+    for (const side of [0, 1]) {
+      const yTop = Math.min(0.9, bh * 0.45);
+      const [lo, hi] = spanAt(bw, bh, yTop, 0.2);
+      out.posts.push({ x: side ? hi - 0.12 : lo + 0.12, top: yTop });
+    }
+  }
+  const n = Math.min(36, Math.round(bw * (tier >= 2 ? 2.4 : 1.3)));
+  for (let k = 0; k < n; k++) out.items.push({ x: 0.25 + R() * Math.max(0.1, bw - 0.5), y: R() * 0.14, r: 0.55 + 0.45 * R(), a: R() * Math.PI, c: R() });
+  if (tier >= 2) {
+    const m = Math.max(2, Math.min(5, Math.round(bw / 2.4)));
+    for (let k = 0; k < m; k++) {
+      const y = Math.min(bh - 0.5, bh * (0.32 + 0.2 * R()));
+      const [lo, hi] = spanAt(bw, bh, y, 0.35);
+      out.lamps.push({ x: lo + ((hi - lo) * (k + 0.5)) / m, y, r: 0.11 + 0.04 * R() });
+    }
+    out.arch = bw >= 6.5 && bh >= 2.4;
+    if (bw >= 3 && bh >= 2) out.emblem = { x: bw / 2, y: Math.min(bh * 0.3, 0.85), r: Math.min(0.32, bh * 0.14) };
+  }
+  return out;
+}
+
+/** One floor item of a motif at (x, y), size s px. */
+function motifItem(g, motif, x, y, s, it, A) {
+  switch (motif) {
+    case 'jewels':
+      pebble(g, x, y, s * 0.55, s * 0.45, it.a, it.c < 0.5 ? '#e8a640' : '#f4cf6a', 'rgba(255,255,230,0.55)');
+      break;
+    case 'seeds':
+      g.fillStyle = it.c < 0.4 ? '#e8d29a' : it.c < 0.7 ? '#c7a468' : '#3c2c20';
+      g.beginPath();
+      g.ellipse(x, y, s * 0.6, s * 0.32, it.a, 0, TAU);
+      g.fill();
+      break;
+    case 'drops':
+      g.fillStyle = `rgba(${A.glow},0.55)`;
+      g.beginPath();
+      g.moveTo(x, y - s * 0.75);
+      g.quadraticCurveTo(x + s * 0.5, y, x, y + s * 0.3);
+      g.quadraticCurveTo(x - s * 0.5, y, x, y - s * 0.75);
+      g.fill();
+      break;
+    case 'silk':
+      g.fillStyle = 'rgba(246,240,226,0.62)';
+      g.beginPath();
+      g.ellipse(x, y, s * 0.5, s * 0.32, it.a * 0.3, 0, TAU);
+      g.fill();
+      break;
+    case 'thorns':
+      g.fillStyle = '#4a261a';
+      g.beginPath();
+      g.moveTo(x - s * 0.3, y + s * 0.2);
+      g.lineTo(x + s * 0.1, y - s * 0.9);
+      g.lineTo(x + s * 0.3, y + s * 0.2);
+      g.fill();
+      break;
+    case 'leaves':
+      g.fillStyle = it.c < 0.5 ? 'rgba(120,170,80,0.7)' : 'rgba(160,190,90,0.65)';
+      g.beginPath();
+      g.ellipse(x, y, s * 0.6, s * 0.22, it.a, 0, TAU);
+      g.fill();
+      break;
+    case 'spores':
+      g.fillStyle = 'rgba(236,244,236,0.7)';
+      g.beginPath();
+      g.arc(x, y - s * 0.1, s * 0.22, 0, TAU);
+      g.fill();
+      break;
+    case 'petals':
+      g.fillStyle = 'rgba(236,222,250,0.42)';
+      g.beginPath();
+      g.ellipse(x, y, s * 0.7, s * 0.24, it.a, 0, TAU);
+      g.fill();
+      break;
+    case 'gems':
+      g.fillStyle = it.c < 0.5 ? '#7fd0e8' : '#e88fb0';
+      g.beginPath();
+      g.moveTo(x, y - s * 0.55);
+      g.lineTo(x + s * 0.4, y);
+      g.lineTo(x, y + s * 0.3);
+      g.lineTo(x - s * 0.4, y);
+      g.closePath();
+      g.fill();
+      break;
+    case 'pads':
+      fibres(g, rng(Math.round(x * 7 + y), 5), x - s * 0.5, x + s * 0.5, y, s * 0.25, 3, ['rgba(226,196,140,0.6)'], Math.max(0.5, s * 0.1));
+      break;
+    default:
+      pebble(g, x, y, s * 0.45, s * 0.32, it.a, it.c < 0.5 ? '#6b5a48' : '#857260');
+  }
+}
+
+/**
+ * Paint the level adornment of a chamber (tier ≥ 1) into the static decoration layer: frieze carvings and pillars
+ * (tier 1+), more floor items, then the beaded vault trim, a central arch rib, wall lamps with a soft glow and the
+ * emblem (tier 2).
+ */
+function paintAdorn(g, type, box, u, L) {
+  if (!L || !(L.tier > 0)) return;
+  const A = ADORN[type] || ADORN_DEFAULT;
+  const floor = box.y + box.h;
+  const bw = box.w / u;
+  const bh = box.h / u;
+  // wall carvings: a frieze of chevrons between two incised lines
+  if (L.frieze) {
+    const f = L.frieze;
+    const y = box.y + f.y * u;
+    const x0 = box.x + f.lo * u;
+    const x1 = box.x + f.hi * u;
+    const hgt = Math.min(u * 0.22, box.h * 0.12);
+    g.strokeStyle = `rgba(${A.accent},${L.tier >= 2 ? 0.34 : 0.22})`;
+    g.lineWidth = lw(u, 0.035, 0.6);
+    g.beginPath();
+    g.moveTo(x0, y - hgt);
+    g.lineTo(x1, y - hgt);
+    g.moveTo(x0, y + hgt);
+    g.lineTo(x1, y + hgt);
+    const step = (x1 - x0) / f.n;
+    for (let k = 0; k < f.n; k++) {
+      const a = x0 + step * k;
+      g.moveTo(a + step * 0.15, y + hgt * 0.6);
+      g.lineTo(a + step * 0.5, y - hgt * 0.6);
+      g.lineTo(a + step * 0.85, y + hgt * 0.6);
+    }
+    g.stroke();
+    g.strokeStyle = 'rgba(0,0,0,0.18)';
+    g.beginPath();
+    g.moveTo(x0, y + hgt + 1);
+    g.lineTo(x1, y + hgt + 1);
+    g.stroke();
+  }
+  // supports: pillars by the walls, with a capital and a base
+  const [pc, ph] = POSTS[A.post] || POSTS.wood;
+  const pw = Math.max(1.5, u * 0.16);
+  for (const p of L.posts) {
+    const x = box.x + p.x * u - pw / 2;
+    const top = box.y + p.top * u;
+    g.fillStyle = pc;
+    g.fillRect(x, top, pw, floor - top);
+    g.fillRect(x - pw * 0.6, top - pw * 0.25, pw * 2.2, pw * 0.6);
+    g.fillRect(x - pw * 0.4, floor - pw * 0.5, pw * 1.8, pw * 0.5);
+    g.fillStyle = ph;
+    g.fillRect(x, top, Math.max(0.6, pw * 0.3), floor - top);
+  }
+  // more of the type's floor items
+  const motif = A.motif;
+  for (const it of L.items) motifItem(g, motif, box.x + it.x * u, floor - u * (0.06 + it.y), u * 0.16 * it.r, it, A);
+  if (L.tier < 2) return;
+  // ornate trim: beads along the vault
+  {
+    const n = Math.max(4, Math.floor(bw / 0.45));
+    g.fillStyle = `rgba(${A.accent},0.7)`;
+    g.beginPath();
+    for (let k = 0; k <= n; k++) {
+      const yy = 0.16 + 0.02 * (k % 2);
+      const [lo, hi] = spanAt(bw, bh, yy, 0.18);
+      const x = box.x + (lo + ((hi - lo) * k) / n) * u;
+      const y = box.y + yy * u;
+      const r = u * (k % 2 ? 0.045 : 0.065);
+      g.moveTo(x + r, y);
+      g.arc(x, y, r, 0, TAU);
+    }
+    g.fill();
+    g.strokeStyle = `rgba(${A.accent},0.38)`;
+    g.lineWidth = lw(u, 0.03, 0.6);
+    g.beginPath();
+    const [lo, hi] = spanAt(bw, bh, 0.16, 0.18);
+    g.moveTo(box.x + lo * u, box.y + 0.16 * u);
+    g.lineTo(box.x + hi * u, box.y + 0.16 * u);
+    g.stroke();
+  }
+  // a central arch rib in wide rooms
+  if (L.arch) {
+    g.strokeStyle = pc;
+    g.lineWidth = Math.max(1.5, u * 0.12);
+    g.beginPath();
+    const cx = box.x + box.w / 2;
+    const r = Math.min(box.w * 0.22, box.h * 0.8);
+    g.arc(cx, floor, r, Math.PI, 0);
+    g.stroke();
+  }
+  // glow details: lamps in small wall niches
+  for (const lp of L.lamps) {
+    const x = box.x + lp.x * u;
+    const y = box.y + lp.y * u;
+    const gr = g.createRadialGradient(x, y, 0, x, y, u * 0.75);
+    gr.addColorStop(0, `rgba(${A.glow},0.32)`);
+    gr.addColorStop(1, `rgba(${A.glow},0)`);
+    g.fillStyle = gr;
+    g.fillRect(x - u * 0.75, y - u * 0.75, u * 1.5, u * 1.5);
+    g.fillStyle = 'rgba(0,0,0,0.25)';
+    g.beginPath();
+    g.ellipse(x, y + u * 0.04, u * 0.17, u * 0.2, 0, 0, TAU);
+    g.fill();
+    g.fillStyle = `rgba(${A.glow},0.95)`;
+    g.beginPath();
+    g.arc(x, y, u * lp.r, 0, TAU);
+    g.fill();
+    g.fillStyle = 'rgba(255,255,240,0.8)';
+    g.beginPath();
+    g.arc(x - u * lp.r * 0.3, y - u * lp.r * 0.3, u * lp.r * 0.35, 0, TAU);
+    g.fill();
+  }
+  // emblem: a medallion on the back wall
+  if (L.emblem) {
+    const x = box.x + L.emblem.x * u;
+    const y = box.y + L.emblem.y * u;
+    const r = L.emblem.r * u;
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    g.beginPath();
+    g.arc(x, y + 1, r * 1.15, 0, TAU);
+    g.fill();
+    g.strokeStyle = `rgba(${A.accent},0.75)`;
+    g.lineWidth = lw(u, 0.05, 0.7);
+    g.beginPath();
+    g.arc(x, y, r, 0, TAU);
+    g.stroke();
+    g.fillStyle = `rgba(${A.accent},0.55)`;
+    sparkle(g, x, y, r * 0.7, `rgba(${A.accent},0.6)`);
+  }
+}
+
+// ----------------------------------------------------------------------------------------------------------------
 // public API
 // ----------------------------------------------------------------------------------------------------------------
 
@@ -1592,18 +1870,37 @@ export function hasDecorAnim(type) {
 }
 
 /**
- * Paint a chamber's static decoration directly (uncached).
+ * C159: memoised adornment layout for a tier (null at tier 0).
+ * @returns {Object|null}
+ */
+export function adornmentLayout(type, bw, bh, seed, tier) {
+  const k = Math.max(0, Math.min(2, Math.floor(Number(tier) || 0)));
+  if (!k || !DECOR[type]) return null;
+  const key = `adorn|${type}|${seed | 0}|${bw.toFixed(3)}|${bh.toFixed(3)}|${k}`;
+  let L = LAYOUTS.get(key);
+  if (!L) {
+    L = adornLayout(type, bw, bh, seed | 0, k);
+    if (LAYOUTS.size > 300) LAYOUTS.clear();
+    LAYOUTS.set(key, L);
+  }
+  return L;
+}
+
+/**
+ * Paint a chamber's static decoration directly (uncached): the type's set dressing, then (C159) its level adornment
+ * for o.tier (decorTier of the chamber's level).
  * @param {CanvasRenderingContext2D} g
  * @param {string} type
  * @param {{ x: number, y: number, w: number, h: number }} box cavity interior, px
  * @param {number} u px per cell
  * @param {number} seed chamber uid
- * @param {{ winter?: boolean, qf?: number, qh?: number, grow?: number, key?: string }} [o]
+ * @param {{ winter?: boolean, qf?: number, qh?: number, grow?: number, key?: string, tier?: number }} [o]
  */
 export function paintDecor(g, type, box, u, seed, o = {}) {
   const def = DECOR[type];
   if (!def || !(u > 0) || !(box.w > 0) || !(box.h > 0)) return;
   def.back(g, box, u, decorLayout(type, box.w / u, box.h / u, seed, o), o);
+  if (o.tier > 0) paintAdorn(g, type, box, u, adornmentLayout(type, box.w / u, box.h / u, seed, o.tier));
 }
 
 /**
@@ -1624,7 +1921,8 @@ export function drawDecorAnim(g, type, box, u, t, seed, o = {}) {
 
 /**
  * Per-chamber offscreen cache of the static decorations, rendered at `cpp` device px per cell and blitted scaled.
- * Entries are keyed by uid and rebuilt when the type, footprint, resolution, season flag or extra key changes.
+ * Entries are keyed by uid and rebuilt when the type, footprint, resolution, season flag, level tier (C159) or extra key
+ * changes.
  */
 export function createDecorCache(max = 96) {
   const map = new Map();
@@ -1642,7 +1940,7 @@ export function createDecorCache(max = 96) {
       const bw = b.x1 - b.x0;
       const bh = b.y1 - b.y0;
       if (!(bw > 0) || !(bh > 0)) return false;
-      const key = `${c.type}|${c.w}|${c.h}|${cpp}|${o.winter ? 1 : 0}|${o.key || ''}`;
+      const key = `${c.type}|${c.w}|${c.h}|${cpp}|${o.winter ? 1 : 0}|${o.tier | 0}|${o.key || ''}`;
       let e = map.get(c.uid);
       if (!e || e.key !== key) {
         const ow = Math.max(1, Math.ceil((bw + 2 * PAD) * cpp));

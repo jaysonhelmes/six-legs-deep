@@ -27,7 +27,7 @@ export const CASTE_ORDER = deepFreeze(['minor', 'soldier', 'supermajor', 'replet
  * - house: the d.stats capacity the caste lives in ('housing' | 'berths' (Barracks: soldiers) | 'warBerths'
  *   (War Hall: supermajors, C136) | 'repleteBerths' | 'alateCells').
  * - atk / hp: per-unit base combat stats (minor = militia). size: tournament size (DESIGN §9.7).
- * - unlock: unlock key (§11) that makes the caste available on the caste slider, or null.
+ * - unlock: unlock key (§11) that makes the caste available on the caste targets (C151), or null.
  */
 export const CASTES = deepFreeze({
   queen: { id: 'queen', name: 'Queen', upkeep: 0 },

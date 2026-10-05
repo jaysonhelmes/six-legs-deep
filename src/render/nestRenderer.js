@@ -50,13 +50,17 @@ const NCELL = COLS * ROWS;
 /** C118: cultivated roots are a little greener than wild ones. */
 const ROOT_OWN = '#c4d48e';
 const ROOT_OWN_DARK = '#8fa35c';
+/** C156: the ▲ "upgrade affordable" badge shows from this cell size up (not at overview zoom) and refreshes this often. */
+const UP_MIN_CELL = 12;
+const UP_REFRESH_MS = 500;
 /** C117 / C118: short ghost labels for refused pocket moves and root columns. */
 const REASON_SHORT = Object.freeze({ 'blocked:water': 'Water in the way', 'blocked:stone': 'Stone in the way', 'blocked:open': 'Needs plain soil',
   'blocked:chamber': 'Chamber in the way', 'blocked:cache': 'Something is buried here', 'blocked:queued': 'Queued for digging',
   'blocked:backfill': 'Being backfilled', 'invalid:row': 'Too far from the pocket', 'invalid:bounds': 'Off the grid',
   'blocked:royalRoom': 'Would wall in the queen', 'blocked:route': 'No tunnel reaches it', queueFull: 'Dig queue full', hardship: 'Too deep',
   'invalid:root': 'A root grows here already', 'blocked:shaft': 'Shaft column', blocked: 'Top cell blocked', max: 'Root limit reached',
-  cantAfford: 'Cannot afford', locked: 'Needs research', busy: 'Already moving' });
+  cantAfford: 'Cannot afford', locked: 'Needs research', busy: 'Already moving',
+  'blocked:disconnect': 'Filling these tunnels cuts a chamber off', 'blocked:reserved': 'Reserved for a chamber' });
 const STAGES = (BROOD && BROOD.stages) || [0.25, 0.75];
 const MAX_BROOD_SPRITES = 30;
 const FROST_IMMUNE_FALLBACK = new Set(['royal_chamber', 'gate', 'thermal_chimney']);
@@ -286,6 +290,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   const levelMemo = { key: '', res: null };
   /** C109: adjacency links per chamber uid (nest.chamberLinks), rebuilt when the nest changes */
   const linkMemo = { key: '', map: new Map() };
+  /** C156: affordable-upgrade uids (affordableSet) */
+  const upMemo = { t: -Infinity, rev: -1, set: null };
   /** per-chamber static decoration cache (nestDecor.js), at the strata-cache resolution */
   const decorCache = decor.createDecorCache();
 
@@ -1912,14 +1918,18 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
   }
 
-  /** Decoration options for a chamber: season flag and, for the Royal Chamber, where the queen rests. */
+  /**
+   * Decoration options for a chamber: season flag, the level tier (C159: richer adornment as it levels) and, for the
+   * Royal Chamber, where the queen rests.
+   */
   function decorOpts(c, r, box, unit, winter) {
-    if (c.type !== 'royal_chamber') return { winter };
+    const tier = decor.decorTier(c.level);
+    if (c.type !== 'royal_chamber') return { winter, tier };
     const grow = 1 + Math.min(0.5, 0.07 * (Math.max(1, c.level || 1) - 1));
     const q = queenPos(c, r, unit);
     const qf = box.w > 0 ? (q.x - box.x) / box.w : 0.4;
     const qh = (box.y + box.h - q.y) / unit;
-    return { winter, grow, qf, qh, key: `${grow.toFixed(2)}|${qf.toFixed(3)}` };
+    return { winter, tier, grow, qf, qh, key: `${grow.toFixed(2)}|${qf.toFixed(3)}` };
   }
 
   /**
@@ -2006,10 +2016,12 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   }
 
   /**
-   * C137: every chamber's reserved full-size room (the cells it will grow into) as a faint dashed outline with a light
-   * wash over the part it does not fill yet; brighter while a placement / relocation ghost is up or for the hovered /
-   * selected chamber. Planned blueprint chambers show their saved reservation fainter, in the planned blue. Drawn under
-   * the chambers.
+   * C137 / C154: every chamber's reserved full-size room (the cells it will grow into), drawn as works in progress: the
+   * reserved soil it does not fill yet looks freshly excavated but unfinished (art.drawReservedWorks: sandy fresh-dug
+   * wash, pick marks, a faint construction hatch, timber props and, close up, workers at the face), brighter (with its
+   * dashed extent) while a placement / relocation ghost is up or for the hovered / selected chamber. Cells already open
+   * (old tunnels), stone and water inside are left as they are. Planned blueprint chambers show their saved reservation
+   * as a faint dashed outline in the planned blue. Drawn under the chambers.
    */
   function drawReservations(ctx, s) {
     const chs = s.run.nest.chambers || [];
@@ -2039,7 +2051,22 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       ctx.strokeRect(x + 0.5, y + 0.5, R.w * v.cell - 1, R.h * v.cell - 1);
       ctx.setLineDash([]);
     };
-    for (const c of chs) if (c && c.res) one(c.res, c, placing || focus.has(c.uid), false);
+    const cells = s.run.nest.cells;
+    for (const c of chs) {
+      if (!c || !c.res || !(c.res.w > 0) || !(c.res.h > 0)) continue;
+      if (c.w >= c.res.w && c.h >= c.res.h) continue; // grown to full size
+      const R = c.res;
+      const soil = [];
+      for (let yy = R.y; yy < R.y + R.h; yy++) {
+        for (let xx = R.x; xx < R.x + R.w; xx++) {
+          if (xx >= c.x && xx < c.x + c.w && yy >= c.y && yy < c.y + c.h) continue;
+          if (xx < 0 || yy < 0 || xx >= COLS || yy >= ROWS) continue;
+          if (cells[yy * COLS + xx] === CELL.SOIL) soil.push([xx, yy]);
+        }
+      }
+      art.drawReservedWorks(ctx, { R, room: c, soil, ox: v.ox, oy: v.oy, u: v.cell, seed: c.uid,
+        strong: placing || focus.has(c.uid), t: time, still: reduced });
+    }
     for (const p of safe(() => nestSys.plannedChambers(s), []) || []) if (p.res) one(p.res, p, false, true);
   }
 
@@ -2077,10 +2104,44 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
   }
 
+  /**
+   * C156: uids of the chambers whose next level is affordable right now (nest.affordableUpgrades), refreshed at most
+   * every UP_REFRESH_MS of wall time, or at once when the nest changes; only while the badge can show (cell ≥ UP_MIN_CELL).
+   */
+  function affordableSet(s, d) {
+    const now = nowMs();
+    const rev = s.run.nest.rev;
+    if (upMemo.set && upMemo.rev === rev && now - upMemo.t < UP_REFRESH_MS && now >= upMemo.t) return upMemo.set;
+    upMemo.t = now;
+    upMemo.rev = rev;
+    upMemo.set = new Set(safe(() => nestSys.affordableUpgrades(s, d), []) || []);
+    return upMemo.set;
+  }
+
+  /** C156: the small ▲ "upgrade affordable" badge under a chamber's level badge. */
+  function drawUpBadge(ctx, x, y, r) {
+    ctx.fillStyle = 'rgba(18,10,5,0.82)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(150,222,120,0.75)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#a8f08a';
+    ctx.beginPath();
+    ctx.moveTo(x, y - r * 0.55);
+    ctx.lineTo(x + r * 0.55, y + r * 0.4);
+    ctx.lineTo(x - r * 0.55, y + r * 0.4);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function drawLabels(ctx, W) {
     const v = view();
     const u = v.cell;
     if (!labelQueue.length) return;
+    // C156: chambers whose next level is affordable now get a small ▲ under the level badge (hidden at overview zoom)
+    const ups = u >= UP_MIN_CELL ? affordableSet(S(), D()) : null;
     // badges
     const br = clamp(u * 0.34, 5.5, 8.5);
     ctx.font = `700 ${Math.round(br * 1.25)}px system-ui, sans-serif`;
@@ -2115,6 +2176,10 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
       ctx.fillStyle = '#ffe08a';
       ctx.fillText(L.c.status === 'growing' ? '↑' : String(Math.max(0, L.c.level | 0) || '·'), bx, by + 0.5);
+      if (ups && ups.has(L.c.uid) && L.box.h >= br * 4.4) {
+        drawUpBadge(ctx, bx, by + br * 2.05, br * 0.78);
+        ctx.fillStyle = '#ffe08a';
+      }
       // C109: link badge left of the level badge when the chamber receives an adjacency bonus (red: a hygiene hit)
       const links = (linkMemo.map.get(L.c.uid) || []).filter((l) => l.receiver === 'self');
       if (links.length && L.box.w >= br * 5.4) drawLinkBadge(ctx, bx - br * 2 - 3, by, br * 0.9, links.some((l) => !l.good), links.some((l) => l.good));
@@ -2665,7 +2730,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     if (featMemo.key !== key) {
       featMemo.key = key;
       const a = safe(() => nestSys.pocketAction(s, d, tool.pocket, { x, y }), null);
-      featMemo.res = a ? { ok: a.ok, tint: a.ok ? 'green' : 'red', reason: a.reason, work: a.work } : { ok: false, tint: 'red', reason: 'invalid' };
+      featMemo.res = a ? { ok: a.ok, tint: a.ok ? 'green' : 'red', reason: a.reason, work: a.work, fill: a.fill || [] } : { ok: false, tint: 'red', reason: 'invalid' };
     }
     return { type: 'pocket', x, y, w: p.w, h: p.h, res: featMemo.res };
   }
@@ -2686,10 +2751,14 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.setLineDash([4, 3]);
     ctx.strokeRect(x + 0.5, y + 0.5, g.w * v.cell - 1, g.h * v.cell - 1);
     ctx.setLineDash([]);
+    // C157: tunnel cells under the new spot are filled in as part of the move (soil-brown hatch)
+    const fill = ok && g.res && Array.isArray(g.res.fill) ? g.res.fill : [];
+    if (fill.length) hatchCells(ctx, fill, v, 'rgba(196,150,96,0.85)', Math.max(4, v.cell * 0.35));
     let text = '';
     if (!ok) text = g.res && g.res.reason ? String(g.res.reason) : 'invalid';
     else if (g.type === 'root') text = 'Root to row ' + (g.y + g.h - 1);
-    else text = 'Move here' + (g.res && g.res.work > 0 ? ' · ' + Math.round(g.res.work) + ' work' : '');
+    else text = 'Move here' + (fill.length ? ' · fills ' + fill.length + ' tunnel cell' + (fill.length === 1 ? '' : 's') : '')
+      + (g.res && g.res.work > 0 ? ' · ' + Math.round(g.res.work) + ' work' : '');
     if (!ok) text = REASON_SHORT[text] || 'Cannot go here';
     ctx.font = '600 10px system-ui, sans-serif';
     ctx.textAlign = 'left';
@@ -3533,10 +3602,10 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         ctx.drawImage(cache.canvas, 0, r0 * cache.cpp, COLS * cache.cpp, (r1 - r0) * cache.cpp, v.ox, v.oy + r0 * v.cell, COLS * v.cell, (r1 - r0) * v.cell);
       }
     }
+    drawReservations(ctx, s); // C154: under the cache hints, so discoloured soil in a reserved room still shows
     drawHints(ctx, s, d);
     syncLinks(s, d);
     drawPlanned(ctx, s);
-    drawReservations(ctx, s);
     drawShaftPass(ctx, H);
     drawChambers(ctx, s, d, unit, W, H);
     drawHousePip(ctx, s, d, unit);
@@ -3637,7 +3706,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   }
 
   /**
-   * Hit-test (priority: pupa > mold > flood water > queen > dig face > chamber > cache hint > cell).
+   * Hit-test (priority: pupa > mold > flood water > queen > dig face > chamber > reserved room cell (its chamber, C154) > cache hint > planned > pocket > shaft > cell).
    * @param {number} cssX
    * @param {number} cssY
    * @returns {{ view: 'nest', kind: string, id?: number, i?: number } | null}
@@ -3676,6 +3745,13 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
     const k = geo.at[i];
     if (k >= 0 && chs[k]) return { view: 'nest', kind: chs[k].type === 'nursery' ? 'nursery' : 'chamber', id: chs[k].uid };
+    // C154: a cell of a chamber's reserved full-size room (discoloured fresh-dug soil, an old tunnel or a cache hint in
+    // it) selects / inspects that chamber (kind 'chamber' even for a Nursery: a click here never grooms). A revealed water
+    // pocket inside keeps its own inspect view (drain / move it to clear the room).
+    if (s.run.nest.cells[i] !== CELL.WATER) {
+      const rb = safe(() => nestSys.reservedBy(s, d, i), null);
+      if (rb && chs.some((c) => c && c.uid === rb.uid)) return { view: 'nest', kind: 'chamber', id: rb.uid, reserved: true, i };
+    }
     const hints = hintCells(s, d);
     if (hints.includes(i)) return { view: 'nest', kind: 'cacheHint', i };
     // C106: a planned (pending blueprint) chamber; i = its top-left cell

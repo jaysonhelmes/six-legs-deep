@@ -160,6 +160,7 @@ export const TERRAIN_COLORS = Object.freeze({
 export const SURFACE = Object.freeze({
   void: '#1d2318', voidEdge: '#2b3524', fog: '#18200f', fogEdge: '#2a3620', shimmer: '#e9f7d8',
   player: '#f2b134', playerDark: '#a8741a', border: '#ffe08a', mound: '#8a5d38', moundDark: '#5d3c22',
+  trailHeld: '#fff0b8',   // C162: territory held only by a trail (Trunk Trails): paler tint, fine hatch, dashed border
   trail: '#f3d9a4', trailHerder: '#f0a830', trailLeaf: '#7fd36a', trailLycaenid: '#a99cf0',
   raid: '#ff3b30', beetle: '#ffcf33', gift: '#e85d75', giftRibbon: '#ffe08a', selection: '#ffffff', hover: '#fff3c4',
   daughter: '#f6c66b', claimOk: '#5ed17a', claimBad: '#e5484d', flag: '#ff7a3d', text: '#fbf3e0', textShadow: '#141a10',
@@ -232,7 +233,7 @@ export const SEASON_WASH = Object.freeze({
 });
 
 /** Territory overlay tints by owned code (1 auto, 2 claimed, 3 conquered, 4 trunk). */
-export const OWNED_TINT = Object.freeze({ 1: '#f2b134', 2: '#ffd166', 3: '#ef8a3a', 4: '#c6e06a' });
+export const OWNED_TINT = Object.freeze({ 1: '#f2b134', 2: '#ffd166', 3: '#ef8a3a', 4: '#fff0b8' });   // 4: held by trail (C162)
 
 /**
  * Terrain colours for a terrain id in a season.

@@ -14,7 +14,7 @@ import { fmt, fmtCount, fmtRate, fmtMult, fmtPct, fmtTime, fmtCost, MAX_LABEL } 
 import {
   nameOf, RES_NAMES, JOB_TIPS, CHAMBER_TIPS, placementRuleLines, levelGainText, adjacencyLines, RESEARCH_TIPS, TRAIT_TIPS, FED_TIPS,
   GENOME_TIPS, HARDSHIP_TIPS, EDICT_TIPS, SPECIES_TIPS, SEASON_NAMES, EVENT_COPY, CHOICE_TIPS, CHOICE_LABELS, BOTTLENECK_NAMES,
-  BOTTLENECK_TIPS, TAB_NAMES, SUBTAB_NAMES, ADAPT_TIPS,
+  BOTTLENECK_TIPS, TAB_NAMES, SUBTAB_NAMES, ADAPT_TIPS, TERRAIN_NOTES, terrainCostText,
 } from './text.js';
 import { chamberKey, maxInstances, queueLimit } from './panels/build.js';
 import { SHORTCUTS } from './panels/settings.js';
@@ -35,7 +35,7 @@ import { LAYER_ORDER, LAYERS, MICRO, DIG, GEOM } from '../data/strata.js';
 import { EGG, LAY, BROOD, HUNGRY, PHEROMONE, CAPS, NUTRITION } from '../data/economy.js';
 import { SEASON_ORDER, SEASON_MODS, YEAR, FROST } from '../data/seasons.js';
 import { SOURCE_ORDER, SOURCES } from '../data/sources.js';
-import { MAP, SCOUT, TRAIL, SLOTS, ABILITIES, TERRITORY, MOUND } from '../data/surface.js';
+import { MAP, SCOUT, TRAIL, SLOTS, ABILITIES, TERRITORY, MOUND, TERRAIN, TERRAIN_ORDER } from '../data/surface.js';
 import { ACTIONS, REWARDS, TACTICAL, RAIDS } from '../data/combat.js';
 import { RIVALS, TRAITS as RIVAL_TRAITS, BOSSES, ELDER, GROWTH } from '../data/rivals.js';
 import { EVENT_ORDER, EVENTS } from '../data/events.js';
@@ -343,7 +343,7 @@ const RESOURCES = [
       ['moults of newly hatched ants', (s) => isShown(s, 'caste_soldier')], ['Middens', (s) => chamberShown(s, 'midden')]],
     to: [['soldier eggs', (s) => casteShown(s, 'soldier')], ['supermajor eggs', (s) => casteShown(s, 'supermajor')],
       ['military Adaptations', (s) => isShown(s, 'adapt_military')], ['the Gate', (s) => chamberShown(s, 'gate')]],
-    rules: (s) => gated(s, ['No cap.', ['The chitin reserve slider keeps an amount back from soldier eggs.', (s2) => casteShown(s2, 'soldier')]]),
+    rules: (s) => gated(s, ['No cap.', ['The chitin reserve slider keeps an amount back from soldier and supermajor eggs (also with Keep berths filled).', (s2) => casteShown(s2, 'soldier')]]),
     tab: 'colony', links: [['source:dead_insect', nameOf('source', 'dead_insect')]] },
   { res: 'honeydew', key: 'res_honeydew', cap: 'honeydewCap',
     from: ['Herders milking aphid colonies', ['Root Aphid Pens', (s) => chamberShown(s, 'root_aphid_pen')], 'a trace from flower patches',
@@ -423,10 +423,10 @@ function extraText(extra) {
 }
 
 const CASTE_HOW = {
-  minor: 'Every egg is a minor worker unless the caste sliders ask for something else.',
-  soldier: 'Set a soldier share on the caste slider (Colony tab). The queen lays one when a berth is free and chitin is there.',
-  supermajor: 'Set a supermajor share on the caste slider. Each needs a free War Hall berth, chitin and fungus.',
-  replete: 'Set a replete share on the caste slider. Repletes hang from the ceiling and do not work.',
+  minor: 'Every egg is a minor worker once each caste has reached its target (Colony tab → Castes).',
+  soldier: 'Set a soldier target on the Colony tab (−/+, type a number, or Max = your Barracks berths), or tick Keep berths filled to follow the berths. It switches on by itself when your first Barracks opens. The queen lays soldiers until soldiers plus soldier brood reach the target, then workers. Each egg needs a free berth and chitin above the chitin reserve.',
+  supermajor: 'Set a supermajor target on the Colony tab (or Max = your War Hall berths), or tick Keep berths filled; it switches on by itself when your first War Hall opens. Each egg needs a free War Hall berth, chitin above the chitin reserve, and fungus.',
+  replete: 'Set a replete target on the Colony tab (or Max = your Repletion Hall berths), or tick Keep berths filled. Each egg needs honeydew. Repletes hang from the ceiling and do not work.',
   alate: 'Rear them in Prestige → Flight (Rear 1 / Rear 5, or Auto-rear). Each one boosts your next Flight.',
 };
 
@@ -460,7 +460,7 @@ const DEF_QUEEN = {
         'The first ' + EGG.nanitics + ' eggs of a run cost half (nanitics).',
         'Brood takes ' + BROOD.baseSec + ' s to develop' + (isShown(s, 'panel_colony') ? ', shortened by nurses: up to ' + BROOD.maxNursePerSlot + ' nurses per brood slot help.' : '.'),
         ['Spring lays ×' + SEASON_MODS.spring.lay + ' and raises brood faster; winter slows both.', (s2) => isShown(s2, 'season_dial')],
-        ['Soldier and other caste eggs cost more and wait for their own berth.', (s2) => casteShown(s2, 'soldier')],
+        ['Caste targets come first: the caste furthest below its target (adults plus brood) is laid, then workers. Caste eggs cost more and wait for their own berth.', (s2) => casteShown(s2, 'soldier')],
         'Out of food: the colony turns Hungry, laying stops until food is back above ' + upct(HUNGRY.endFrac) + ' of the cap.',
       ]) },
     ],
@@ -743,7 +743,7 @@ const DEF_CHAMBERS = CHAMBER_ORDER.map((id) => ({
       ['You have', live((s2) => ownedText(s2, id))],
       ['Limit', def.maxInst === 'perPocket' ? 'one per revealed water pocket (now ' + fmtCount(maxI) + ')' : fmtCount(maxI) + (maxI === 1 ? ' chamber' : ' chambers')],
       ['Footprint', def.w0 + '×' + def.h0 + ' cells at L1; ' + (def.grows ? 'grows one row or column per level up to L' + GEOM.footprintMaxL
-        + ' into the full-size space it reserves when placed (F picks the corner it starts in)' : 'does not grow')],
+        + ' into the full-size space it reserves when placed (drawn as fresh-dug works around it; F picks the corner it starts in)' : 'does not grow')],
     ];
     if (id !== 'royal_chamber' || maxI > 1) {
       kv.push(['Place cost', costText(def.place) + (maxI > 1 ? ' (food ×' + def.placeGrowth + ' for each one you already have)' : '')]);
@@ -987,6 +987,25 @@ const DEF_SURFACE = [
     }),
   },
   {
+    // C165: every terrain's effect (trail cost from data/surface.js TERRAIN move, plus spawn / event notes)
+    id: 'surface:terrain', section: 'surface', gate: () => true,
+    sig: () => '',
+    build: () => ({
+      title: 'Terrain', kw: 'terrain ground sand grass leaf litter garden path tree root stone puddle log slow fast move cost',
+      blocks: [
+        { p: 'Every hex a trail crosses adds its ground’s cost to the trail’s length d: slow ground makes a trail count as longer (more travel time), fast ground as shorter.' },
+        { table: { head: ['Terrain', 'Trail cost', 'Effect'], rows: TERRAIN_ORDER.map((id) => {
+          const def = TERRAIN[id] || {};
+          const cost = def.move == null ? 'Impassable' : (Math.round(def.move * 100) / 100) + (def.move === 1 ? ' hex' : ' hexes');
+          const fx = def.move == null ? '' : def.move > 1 ? 'Slow ground.' : def.move < 1 ? 'Fast ground.' : '';
+          return [def.name || nameOf('terrain', id), cost, [fx, TERRAIN_NOTES[id] || ''].filter(Boolean).join(' ') || '—'];
+        }) } },
+        { note: 'Hover a hex on the Above map to see its ground: “Sand — slow ground: ' + (terrainCostText('sand') || '') + '.”' },
+      ],
+      links: [{ entry: 'surface:trails', label: 'Trails' }],
+    }),
+  },
+  {
     id: 'surface:territory', section: 'surface', gate: (s) => isShown(s, 'hex_claim') || isShown(s, 'panel_rivals'),
     sig: (s) => [isShown(s, 'hex_claim'), isShown(s, 'mound'), isShown(s, 'panel_war'), hasResearch(s, 'trunk_trails')].map(Number).join(''),
     build: (s) => ({
@@ -999,7 +1018,7 @@ const DEF_SURFACE = [
           ['Claim a revealed hex next to your land for ' + TERRITORY.claimBase + ' × ' + TERRITORY.claimGrowth + '^claims pheromone. A claim over your cap becomes a channel that fills as pheromone regrows.',
             (s2) => isShown(s2, 'hex_claim')],
           ['Conquering a rival gives you all of its land.', (s2) => isShown(s2, 'panel_war')],
-          ['Trunk Trails: every hex of your trails is yours, from any entrance.', (s2) => hasResearch(s2, 'trunk_trails')],
+          ['Trunk Trails: every hex of your trails is yours, from any entrance, but only while the trail exists (hatched, dashed border). Claim a trail-held hex to keep it.', (s2) => hasResearch(s2, 'trunk_trails')],
           'Every owned hex adds ' + pct(TERRITORY.yieldPerHex) + ' to surface yields (at most ' + pct(TERRITORY.yieldMax) + '). Sources on owned hexes yield ×' + TERRITORY.ownedSource + '.',
           ['Trails entirely inside your land cannot be raided.', (s2) => isShown(s2, 'raid_warnings')],
           ['Your peak territory this run raises the alates of the next Flight.', (s2) => isShown(s2, 'panel_prestige')],

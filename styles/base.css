@@ -139,7 +139,7 @@ html, body {
 }
 body { touch-action: manipulation; }
 button, input, select, textarea { font: inherit; color: inherit; }
-button { cursor: pointer; }
+button { cursor: var(--cur-pointer, pointer); }
 button:disabled { cursor: not-allowed; }
 :focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--r-sm); }
 [hidden] { display: none !important; }
