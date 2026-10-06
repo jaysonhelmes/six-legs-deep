@@ -17,13 +17,14 @@ import { FIELD_GUIDE } from '../data/fieldGuide.js';
 import { TRAITS as BLOODLINE } from '../data/bloodline.js';
 import { FEDERATION } from '../data/federation.js';
 import { GENOME, SPECIES } from '../data/genome.js';
-import { HARDSHIPS, SITES, BOONS, EDICTS, FLIGHT } from '../data/prestige.js';
+import { HARDSHIPS, SITES, BOONS, EDICTS, FLIGHT, AUTO_FLIGHT } from '../data/prestige.js';
 import { UNLOCKS } from '../data/unlocks.js';
 import { LAYERS, GEOM } from '../data/strata.js';
 import { TERRAIN } from '../data/surface.js';
 import { YEAR } from '../data/seasons.js';
 import { DRAINAGE } from '../data/soilFeatures.js';
 import { fmt, fmtTime, fmtCount, fmtRate, fmtPct, fmtMult } from './format.js';
+import { ringOf } from '../core/hex.js';   // C184 source tooltips
 
 // ---------------------------------------------------------------------------------------------------------------
 // Generic naming
@@ -52,7 +53,7 @@ export function humanize(id) {
 /** Fallback display names (used only when the data table has no entry yet). */
 const FALLBACK_NAMES = {
   chamber: { royal_chamber: 'Royal Chamber', gallery: 'Gallery', nursery: 'Nursery', granary: 'Granary', scent_library: 'Scent Library',
-    midden: 'Midden', barracks: 'Barracks', war_hall: 'War Hall', root_aphid_pen: 'Root Aphid Pen', fungus_garden: 'Fungus Garden', repletion_hall: 'Repletion Hall',
+    midden: 'Midden', barracks: 'Barracks', war_hall: 'War Hall', carapace_store: 'Carapace Store', carapace_workshop: 'Carapace Workshop', root_aphid_pen: 'Root Aphid Pen', fungus_garden: 'Fungus Garden', repletion_hall: 'Repletion Hall',
     hibernaculum: 'Hibernaculum', thermal_chimney: 'Thermal Chimney', gate: 'Gate', water_well: 'Water Well', nuptial_chamber: 'Nuptial Chamber',
     deep_vault: 'Deep Vault' },
   job: { forager: 'Forager', digger: 'Digger', nurse: 'Nurse', scout: 'Scout', herder: 'Herder', leafcutter: 'Leafcutter', gardener: 'Gardener',
@@ -118,7 +119,7 @@ export const RES_TIPS = Object.freeze({
   soil: 'Dug out by diggers. Pays for chamber levels and the Mound.',
   insight: 'Earned by scouting and libraries. Spent on research.',
   pheromone: 'Regenerates over time. Fuels Mark, Rally, Frenzy and claims.',
-  chitin: 'From insects, hunts, battles, moults and Middens. Soldiers need it.',
+  chitin: 'From insects, hunts, battles, moults and Middens. Soldiers need it. Capped.',
   honeydew: 'Milked from aphids by herders. Feeds the queen and repletes.',
   leaves: 'Cut by leafcutters. Gardeners turn them into fungus.',
   fungus: 'Grown in gardens. Feeds the colony and supermajors.',
@@ -184,7 +185,50 @@ export function blueprintNote(e) {
   // C158: Bloodline traits Deep Spring and Root Memory
   if (r === 'well:spring') return { text: 'Deep Spring: a spring wells up beside the Water Well\'s planned spot.', kind: 'good', priority: 'low' };
   if (r === 'root:memory') return { text: 'Root Memory: a root grows down to the planned ' + nameOf('chamber', e && e.chamberType) + '.', kind: 'good', priority: 'low' };
+  // C177: a paid cultivated root for a planned Root Aphid Pen
+  if (r === 'root:cultivated') return { text: 'Blueprint: a cultivated root grows down to the planned ' + nameOf('chamber', e && e.chamberType) + '.', kind: 'good', priority: 'low' };
   return { text: 'Blueprint: the ' + nameOf('chamber', e && e.chamberType) + ' spot can no longer be used.', kind: 'info', priority: 'low' };
+}
+
+/**
+ * C173: toast for a waterStruck event: a placement (or a dig) hit a water pocket nobody had found. The pocket now shows
+ * and the placement was not made.
+ * @param {{ chamberType?: string }} e
+ * @returns {{ text: string, kind: string, priority: string }}
+ */
+export function waterStruckText(e) {
+  const t = e && typeof e.chamberType === 'string' ? e.chamberType : '';
+  return { text: 'You struck water! A hidden water pocket is in the way' + (t ? ' of the ' + nameOf('chamber', t) : '')
+    + '. It shows now: pick another spot.', kind: 'info', priority: 'high' };
+}
+
+/** C175: words for why a blueprint chamber moved (blueprintAdjusted reason). */
+export const ADJUST_REASONS = Object.freeze({
+  water: 'water was in its planned spot',
+  'water:struck': 'it struck hidden water',
+  'well:moved': 'it goes next to this run\'s water',
+  'well:spring': 'Deep Spring welled up a spring for it',
+  'water:moved': 'a water pocket is being moved next to it',
+  'nuptial:moved': 'its planned spot had no route for an exit shaft',
+  'root:memory': 'Root Memory grows a root to it',
+  'root:cultivated': 'a cultivated root grows to it',
+});
+
+/**
+ * C175: event-log line for a blueprintAdjusted event ("Blueprint: Gallery moved 2 cells (water was in its planned spot).").
+ * @param {{ chamberType?: string, from?: { x: number, y: number }, to?: { x: number, y: number }, reason?: string }} e
+ * @returns {{ text: string, kind: string, priority: string }}
+ */
+export function blueprintAdjustedText(e) {
+  const name = nameOf('chamber', e && e.chamberType);
+  const f = (e && e.from) || {};
+  const t = (e && e.to) || {};
+  const dist = Math.abs(num0(t.x, 0) - num0(f.x, 0)) + Math.abs(num0(t.y, 0) - num0(f.y, 0));
+  const why = ADJUST_REASONS[e && e.reason] || 'its planned spot could not be used';
+  const r = String((e && e.reason) || '');
+  if (r === 'water:moved') return { text: 'Blueprint: a water pocket is moved next to the planned ' + name + '.', kind: 'info', priority: 'low' };
+  if (r.startsWith('root:') || r === 'well:spring' || dist === 0) return { text: 'Blueprint: ' + name + ' — ' + why + '.', kind: 'info', priority: 'low' };
+  return { text: 'Blueprint: ' + name + ' moved ' + fmtCount(dist) + ' cell' + (dist === 1 ? '' : 's') + ' (' + why + ').', kind: 'info', priority: 'low' };
 }
 
 /** Player text for known "code:detail" reasons (every detail a system validator can return; ARCHITECTURE §7.4). */
@@ -192,6 +236,7 @@ export const REASON_DETAILS = Object.freeze({
   // nest: digging, placement, growth, backfill
   'blocked:stone': 'Blocked by stone. Acid Excavation digs it.',
   'blocked:water': 'Water pocket in the way.',
+  'water:struck': 'You struck a hidden water pocket there.',
   'blocked:chamber': 'Another chamber is in the way.',
   'blocked:disconnect': 'That would cut a chamber off from every entrance.',
   'blocked:route': 'No tunnel route reaches that spot.',
@@ -320,6 +365,10 @@ export const REASON_BY_COMMAND = Object.freeze({
   buyMound: { requirements: 'Higher Mound levels need ' + nameOr(RESEARCH, 'mound_building', 'Mound Building') + ' research.' },
   rearAlate: { requirements: 'Needs an active Nuptial Chamber.' },
   dispatchGuard: { 'invalid:nest': 'Your garrison defends the nest on its own.' },
+  // C185
+  clearAntlion: { 'requirements:soldiers': 'Clearing the pit needs ' + ((EVENTS.ev_antlion_pit && EVENTS.ev_antlion_pit.num.soldiers) || 3)
+    + ' soldiers at home (garrison).', notFound: 'The antlion pit is gone.' },
+  assignEscorts: { 'invalid:count': 'No soldiers at home to send as escorts.' },
   fly: { requirements: 'Flight requirements not met yet: see the checklist.' },
   supercolony: { requirements: 'Supercolony requirements not met yet: see the checklist.' },
   speciate: { requirements: 'Speciation requirements not met yet: see the checklist.' },
@@ -364,8 +413,16 @@ export const WAIT_TEXT = Object.freeze({
   'wait:water': 'a revealed water pocket with room (dig near water to reveal one)',
   'wait:path': 'no access tunnel can reach it yet (stone, water or a reserved space in the way)',
   'wait:access': 'digging access tunnel',
-  // C158: Bloodline traits
+  // C158: Bloodline traits; C177: a root for a planned Root Aphid Pen
   'wait:root': 'Root Memory is growing a root down to it',
+  'wait:rootGrow': 'a cultivated root is growing down to it',
+  'wait:rootResearch': 'no root to touch — research ' + nameOr(RESEARCH, 'root_cultivation', 'Root Cultivation') + ' to grow one to it',
+  'wait:rootCap': 'no root to touch, and the cultivated-root limit is reached',
+  'wait:rootCost': 'no root to touch — saving up to grow one (Build → Cultivated roots)',
+  'wait:rootPath': 'no root to touch, and stone, water or a shaft blocks every column a root could grow down',
+  // C173 / C176: water
+  'water:struck': 'struck a hidden water pocket — finding a new spot',
+  'wait:waterMove': 'a water pocket is being moved next to it',
   'wait:spring': 'Deep Spring wells up a spring at its spot on the next check',
   'blocked:reserved': 'another chamber will grow into that space',
   'wait:next': 'queues on the next check',
@@ -516,6 +573,8 @@ export const CHAMBER_TIPS = Object.freeze({
   midden: 'Fewer diseases, +2% output. Keep away from nurseries.',
   barracks: '+8 soldier berths. Near an entrance: instant deploy.',
   war_hall: '+4 supermajor berths per level. Deep: row 30 or lower.',
+  carapace_store: 'Stores more chitin: raises the chitin cap.',
+  carapace_workshop: 'More chitin from every source; recycles fallen soldiers.',
   root_aphid_pen: 'Passive honeydew. Must touch a root.',
   fungus_garden: 'Gardener slots and fungus storage. Best in clay.',
   repletion_hall: '+5 berths for repletes.',
@@ -538,6 +597,11 @@ export const CHAMBER_ABOUT = Object.freeze({
   midden: 'The colony\'s refuse heap: fewer diseases, a little more output and some chitin. Keep it away from nurseries and gardens.',
   barracks: 'Berths for soldiers: +' + FXN('barracks', 'berths', 8) + ' per level, and more soldier attack. Near an entrance the garrison deploys at once.',
   war_hall: 'Berths for supermajors: +' + FXN('war_hall', 'berths', 4) + ' per level. Every supermajor egg needs a free War Hall berth; it is dug deep.',
+  carapace_store: 'Stacks of shed plates and husks: raises how much chitin the colony can hold (+' + FXN('carapace_store', 'chitinCap', 300)
+    + ' at level 1, growing ×' + FXN('carapace_store', 'capGrowth', 1.6) + ' a level).',
+  carapace_workshop: 'Workers shape chitin with their mandibles: +' + Math.round(FXN('carapace_workshop', 'chitinBoost', 0.1) * 100)
+    + '% chitin from every source per level (up to +' + Math.round(FXN('carapace_workshop', 'boostMax', 1) * 100)
+    + '%), and some chitin back from every soldier that falls.',
   root_aphid_pen: 'Root aphids give honeydew without herders and boost your herders. It must touch a root.',
   fungus_garden: 'Holds leaves and fungus and gives gardener slots. Clay suits it best, and a Water Well next to it helps.',
   repletion_hall: 'Berths for repletes, the living honey pots that raise your food cap.',
@@ -596,6 +660,7 @@ export const GAIN_LABELS = Object.freeze({
   leafCap: 'Leaf cap', fungusCap: 'Fungus cap', repleteBerths: 'replete berths', shelter: 'brood sheltered from frost',
   upkeep: 'Winter upkeep', winterForage: 'Winter forage penalty', gateHp: 'Defender HP at the gate', theft: 'Food stolen by raids',
   alateCells: 'alate cells', offline: 'offline cap', alates: 'Flight alates', lay: 'Lay rate',
+  chitinCap: 'Chitin storage', chitinBoost: 'Chitin from all sources', chitinRecycle: 'Chitin per fallen soldier',
 });
 
 /** Whole numbers as counts ("33"), fractions with one decimal ("12.1"). */
@@ -689,8 +754,15 @@ export const ADAPT_TIPS = Object.freeze({
   serrated_mandibles: 'Soldier and supermajor attack ×1.10.',
   thick_cuticle: 'Soldier and supermajor health ×1.10.',
   sweet_tooth: 'Honeydew ×1.15.',
-  queens_feast: 'Lay rate ×1.25.',
+  queens_feast: 'Lay rate ×1.1.',
   long_legs: 'Trails lose less to distance.',
+});
+
+/** C200: Archive copy (Research tab, one permanent track per branch). */
+export const ARCHIVE_TEXT = Object.freeze({
+  name: 'Archive',
+  keep: 'kept through Flights and Supercolonies',
+  tip: 'A permanent record of this branch. Each level adds +1% to the main output of the branch for the rest of this era. It is kept through Nuptial Flights and Supercolonies and resets at Speciation.',
 });
 
 /** Research effect tooltips. */
@@ -761,7 +833,7 @@ export const TRAIT_TIPS = Object.freeze({
   nanitic_vigor: 'First 25 eggs half price; first 50 workers ×3.',
   remembered_paths: 'Runs start with two trails at half strength.',
   ancestral_blueprint: 'Save a nest layout that auto-queues each run.',
-  automaton_instincts: 'Automatic jobs, Adaptation autobuyer, +2 dig queue.',
+  automaton_instincts: '+2 dig queue; your job targets carry into every run.',
   hardy_workers: 'Forage, herding and leafcutting ×1.4.',
   deep_diggers: 'Dig work ×1.4.',
   keen_antennae: 'Rings 0–4 revealed at start; scouts ×2.',
@@ -794,8 +866,9 @@ export function oldRidgeHint() {
 
 /** Federation tooltips. */
 export const FED_TIPS = Object.freeze({
-  automated_brood: 'Automatic jobs; last caste and job targets carry over.',
+  automated_brood: 'Automatic jobs every run; caste and job targets carry over.',
   blueprint_memory: 'Five blueprint slots; blueprint cells dig ×5.',
+  architects_table: 'Edit saved blueprint layouts by hand. Needs Blueprint Library.',
   autobuyers: 'Auto-buy Adaptations, chamber levels and Mound levels.',
   auto_flight: 'Fly automatically at your chosen trigger.',
   aquifer_access: 'Dig the aquifer, rows 74–79.',
@@ -811,7 +884,7 @@ export const FED_TIPS = Object.freeze({
 
 /** Genome tooltips. */
 export const GENOME_TIPS = Object.freeze({
-  genetic_memory: 'Innate research survives Speciation.',
+  genetic_memory: "This cycle's Innate research survives Speciation.",
   haplodiploid_fecundity: 'Lay rate ×2.',
   eusocial_leap: 'Each era starts with key Federation automation.',
   metapleural_glands: 'Immune to disease events.',
@@ -941,6 +1014,8 @@ export const UNLOCK_HINTS = Object.freeze({
   chamber_water_well: 'Reveal a water pocket underground.',
   caste_supermajor: 'Research Supermajors.',
   chamber_war_hall: 'Research Supermajors.',
+  chamber_carapace_store: 'Collect your first chitin, or research Polymorphism.',
+  chamber_carapace_workshop: 'Build a Barracks, or research Phalanx.',
   adapt_long_legs: 'Research Tandem Running.',
   ability_frenzy: 'Research Frenzy Signal.',
   panel_map: 'Draw a second trail or claim a hex.',
@@ -1022,7 +1097,7 @@ export const CHOICE_TIPS = Object.freeze({
   ev_rainstorm: { seal: 'No foraging for 60 s, no flood.', keep: 'Keep foraging; topsoil chambers may flood.' },
   ev_ophiocordyceps: { quarantine: 'Foragers −20% for 2 min; outbreak ends.', ignore: 'Infection spreads; infected ants die.' },
   ev_ladybug_raid: { send: 'Five garrison soldiers chase them off.', wait: 'That aphid colony yields half for 5 min.' },
-  ev_antlion_pit: { send: 'Three garrison soldiers clear the pit.', wait: 'The trail keeps losing workers until rerouted.' },
+  ev_antlion_pit: { send: 'Three garrison soldiers clear the pit.', wait: 'Losses go on until you reroute or click the pit.' },
   ev_horned_lizard: { reroute: 'Reroute the trail around it, free.', mob: 'Drive it off and gain food.', ignore: 'The trail loses workers.' },
   ev_fungal_blight: { quarantine: 'Lose 30% of your fungus.', clean: 'Click the garden 20 times within 15 s.' },
   ev_army_ant_column: { evacuate: 'No foraging for 60 s, lose 5% food.', fight: 'Battle the column for huge loot.' },
@@ -1186,6 +1261,7 @@ export function eventToast(e, s = null) {
       return { text: rivalName(e.rival) + ' raid ' + tgt + ' in ' + fmtTime(e.warn || 0) + '!', kind: 'danger', priority: 'high' };
     }
     case 'raidResult':
+      if (e.calledOff === 'fallen') return { text: 'Raid called off — their nest has fallen.', kind: 'good', priority: 'high' };   // C186
       if (e.win) return { text: 'Raid repelled!', kind: 'good', priority: 'high' };
       return {
         text: 'Raid lost: ' + fmt(e.foodLost || 0) + ' food, ' + fmtCount(e.broodLost || 0) + ' brood, ' + fmtCount(e.workersLost || 0) + ' workers.',
@@ -1199,6 +1275,9 @@ export function eventToast(e, s = null) {
     case 'winterSoon': return { text: 'Winter in ' + fmtTime(Number(YEAR && YEAR.forecastSec) || 60) + ': shallow brood will freeze.', kind: 'info', priority: 'high' };
     case 'seasonChanged': return { text: (SEASON_NAMES[e.id] || humanize(e.id)) + ': ' + (SEASON_TIPS[e.id] || ''), kind: 'season', priority: 'low' };
     case 'blueprintDropped': return blueprintNote(e);
+    case 'blueprintAdjusted': return blueprintAdjustedText(e);
+    case 'blueprintPlaced': return { text: 'Blueprint: ' + nameOf('chamber', e.chamberType) + ' queued.', kind: 'info', priority: 'low' };
+    case 'waterStruck': return waterStruckText(e);
     case 'chamberActivated': return { text: chamberName(e.uid, e.chamberType) + ' complete.', kind: 'good', priority: 'low' };
     case 'cacheFound': return { text: 'Found a ' + humanize(e.kind) + ': +' + fmt(e.amount || 0) + ' ' + (RES_NAMES[e.res] || '').toLowerCase() + '.', kind: 'good', priority: 'low' };
     case 'softcapHit': return { text: (RES_NAMES[e.stat] || humanize(e.stat)) + ' production is now softcapped.', kind: 'info', priority: 'low' };
@@ -1220,6 +1299,11 @@ export function eventToast(e, s = null) {
     case 'supercolonyComplete': return { text: 'Supercolony formed: +' + fmtCount(e.kinship || 0) + ' kinship.', kind: 'gold', priority: 'high' };
     case 'speciationComplete': return { text: 'Speciation: +' + fmtCount(e.genes || 0) + ' genes.', kind: 'gold', priority: 'high' };
     case 'giftOpened': return { text: 'A Saved Find opens!', kind: 'gold', priority: 'low' };
+    // C188: scout expeditions
+    case 'expeditionFind': return { text: 'Scouts found a ' + (FIND_NAMES[e.kind] || nameOf('source', e.kind)).toLowerCase() + ' at the map edge!', kind: 'gold', priority: 'high' };
+    case 'findClaimed': return { text: e.text || 'Find claimed.', kind: 'good', priority: 'high' };
+    // C182: a trail that cannot get round a temporary obstacle
+    case 'trailDetour': return e.mode === 'paused' ? { text: 'A trail is blocked with no way round: paused until it clears.', kind: 'bad', priority: 'low' } : null;
     case 'commandRejected': return { text: reasonText(e.reason, e.cmd && e.cmd.type), kind: 'bad', priority: 'low' };
     default: return null;
   }
@@ -1288,3 +1372,225 @@ export function terrainTipLines(id, blocked = false) {
 /** C130: Colony History (Prestige tab): the layer that ended each recorded run, and its currency. */
 export const HISTORY_LAYERS = Object.freeze({ run: 'Nuptial Flight', cycle: 'Supercolony', era: 'Speciation' });
 export const HISTORY_GAINS = Object.freeze({ run: 'alates', cycle: 'kinship', era: 'genes' });
+
+// ---------------------------------------------------------------------------------------------------------------
+// C166–C172: automation, landing and blueprint-unlock copy (prestige engineer)
+// ---------------------------------------------------------------------------------------------------------------
+
+/** C166: what the Auto-Flight 'peak' trigger does, with the data numbers. */
+export function autoFlightPeakText() {
+  const pct = Math.round((1 - AUTO_FLIGHT.drop) * 100);
+  return 'Flies once your alates per minute has been at least ' + pct + "% below this run's best for " + AUTO_FLIGHT.holdSec + ' s'
+    + ' (after ' + Math.round(AUTO_FLIGHT.minSec / 60) + ' min). While the rate keeps rising it waits. Seasons do not count: the rate is measured without flight weather.';
+}
+
+/** C166: how Auto-Flight lands. */
+export const AUTO_LANDING_TEXT = 'Lands at once: it picks the site and boon that help early growth most (lay rate, nearby food, insight), '
+  + 'skipping ones you already have covered, and starts in spring if you own Seasonal Wisdom.';
+
+/** C166: Auto-Supercolony in words. */
+export const AUTO_SUPER_TEXT = "Merges automatically once the trigger is met and every requirement is done, keeping this cycle's Royal Edict.";
+
+/** C166: where the automation toggles live (the old Federation Automation box). */
+export const AUTO_POINTER_TEXT = 'Automation switches sit where they act: Auto-Flight in Flight, Auto-Supercolony in Supercolony, '
+  + 'the Adaptation autobuyer in Adaptations, chamber and Mound autobuyers in Build.';
+
+/** C171: landing-chooser notes for traits that do not apply to the landing itself. */
+export const LANDING_SHOP_NOTES = Object.freeze({
+  wide_wings: 'Applies to your next flight, not this landing.',
+  brood_bank: 'Applies to this landing: keeps part of the colony that just flew.',
+});
+
+/**
+ * C170: Build-tab hint when saved blueprints exist but new ones cannot be saved (Ancestral Blueprint resets at a
+ * Supercolony unless kept as an Heirloom; Blueprint Library is the lasting unlock). '' when saving works or nothing is saved.
+ * @param {Object} s state
+ * @returns {string}
+ */
+export function blueprintSaveHint(s) {
+  const lvl = (m, id) => (m && Number.isFinite(m[id]) && m[id] > 0 ? m[id] : 0);
+  const canSave = lvl(s && s.cycle && s.cycle.traits, 'ancestral_blueprint') > 0 || lvl(s && s.era && s.era.federation, 'blueprint_memory') > 0;
+  const saved = Array.isArray(s && s.era && s.era.blueprints) ? s.era.blueprints.filter(Boolean).length : 0;
+  if (canSave || saved === 0) return '';
+  return 'Your saved layouts are kept, but saving new ones needs ' + nameOf('trait', 'ancestral_blueprint') + ' (Bloodline; it resets at a Supercolony unless kept as an Heirloom) or '
+    + nameOf('federation', 'blueprint_memory') + ' (Federation).';
+}
+
+/**
+ * C180 (task: Build tab Blueprints section): the hint when saved layouts exist but nothing lets the player save new
+ * ones (no Ancestral Blueprint, no Blueprint Library). '' otherwise.
+ * @param {Object} s state
+ * @returns {string}
+ */
+export function blueprintLockHint(s) {
+  const lvl = (m, id) => (m && Number.isFinite(m[id]) && m[id] > 0 ? m[id] : 0);
+  const canSave = lvl(s && s.cycle && s.cycle.traits, 'ancestral_blueprint') > 0 || lvl(s && s.era && s.era.federation, 'blueprint_memory') > 0;
+  const saved = Array.isArray(s && s.era && s.era.blueprints) ? s.era.blueprints.filter(Boolean).length : 0;
+  if (canSave || saved === 0) return '';
+  return 'Blueprint saving needs ' + nameOf('trait', 'ancestral_blueprint') + ' (Bloodline) or ' + nameOf('federation', 'blueprint_memory')
+    + ' (Federation). Your saved layouts are kept.';
+}
+
+/** C180: the Blueprints section line while the Architect's Table (Federation) is not owned. */
+export const BLUEPRINT_EDIT_LOCKED = 'Edit saved layouts by hand with ' + nameOf('federation', 'architects_table') + ' (Federation).';
+
+/** C170: Manual lines on what unlocks blueprint saving. */
+export const BLUEPRINT_UNLOCK_LINES = Object.freeze([
+  'Saving a layout needs ' + nameOf('trait', 'ancestral_blueprint') + ' (Bloodline, 1 slot) or ' + nameOf('federation', 'blueprint_memory') + ' (Federation, 5 slots).',
+  'Bloodline traits reset at every Supercolony unless you keep them as Heirlooms, so ' + nameOf('trait', 'ancestral_blueprint') + ' must be bought again (or kept) each cycle; '
+    + nameOf('federation', 'blueprint_memory') + ' lasts the whole era.',
+  'Saved layouts themselves are never lost to a Flight or a Supercolony; without either unlock they wait until you can save and switch layouts again.',
+]);
+
+// ---------------------------------------------------------------------------------------------------------------
+// C182–C189 (map and combat pass): detours, source tooltips, trail slots, raid alert, expeditions
+// ---------------------------------------------------------------------------------------------------------------
+
+/** C184: who works a trail of each job, for "per forager" lines. */
+const JOB_WORKER = Object.freeze({ forager: 'forager', herder: 'herder', leafcutter: 'leafcutter' });
+
+/** C184: a per-worker yield number (0.6, 0.01, 0.005). */
+function yNum(v) {
+  const x = Number(v) || 0;
+  return String(Math.round(x * 1e4) / 1e4);
+}
+
+/**
+ * C184: "Food 0.6 + Chitin 0.01 per forager" — what a source gives each worker per second (base, before bonuses), or
+ * '' for a source that is not a worker trail target.
+ * @param {string} type source id
+ * @returns {string}
+ */
+export function sourceGivesText(type) {
+  const def = SOURCES[type];
+  if (!def || !def.job || !JOB_WORKER[def.job]) return '';
+  const parts = Object.keys(def.y || {}).filter((k) => def.y[k] > 0).map((k) => (RES_NAMES[k] || humanize(k)) + ' ' + yNum(def.y[k]));
+  return parts.length ? parts.join(' + ') + ' per ' + JOB_WORKER[def.job] : '';
+}
+
+/**
+ * C184: tooltip / Selected-box lines for a source: what it gives (resources and per-worker yields), how much is left
+ * and in which unit, regrowth or lifetime, this season's factor, and for aphid colonies the level and the progress to
+ * the next one (+1 per levelSec while ≥ herdFrac herded, up to maxLevel). Prey and the termite mound: the hunt.
+ * @param {Object} s state
+ * @param {Object} d derived
+ * @param {Object} src source record
+ * @returns {string[]}
+ */
+export function sourceTipLines(s, d, src) {
+  const def = src ? SOURCES[src.type] : null;
+  if (!def) return [];
+  const lines = [];
+  const ring = ringOf(Number(src.hex) || 0);
+  const primary = Object.keys(def.y || {})[0] || 'food';
+  const unit = (RES_NAMES[primary] || humanize(primary)).toLowerCase();
+  if (def.job === 'lycaenid') {
+    const minEsc = Number(def.minEscorts) || 0;
+    lines.push('Honeydew ' + yNum(def.y.honeydew * (def.perRing ? ring : 1)) + '/s (' + yNum(def.y.honeydew) + ' × ring ' + ring + ') while '
+      + minEsc + ' escort soldiers guard its trail.');
+    lines.push('Its trail carries no workers but uses a trail slot.');
+  } else if (def.job) {
+    lines.push(sourceGivesText(src.type) + ' (each second, before bonuses).');
+    const cap = def.capPerLevel ? def.capPerLevel * Math.max(1, Number(src.level) || 1) : def.cap;
+    if (cap > 0) lines.push('Capacity ' + fmtCount(cap) + ' ' + (JOB_WORKER[def.job] || 'worker') + 's at full pay; more still help, less each.');
+  } else if (def.hunt && def.hunt.apPerRing) {
+    const chitin = def.hunt.chitinPerRing * ring * (def.hunt.chitinMult || 1);
+    lines.push('Hunt it: power ' + fmt(def.hunt.apPerRing * ring) + ' to beat. Reward ' + fmtTime(def.hunt.foodSec) + ' of food + '
+      + fmt(chitin) + ' chitin.');
+  } else if (def.hunt) {
+    lines.push('Raid it for ' + fmtTime(def.hunt.foodSec) + ' of food + ' + fmt(def.hunt.chitinPerRing * ring) + ' chitin per raid.');
+  }
+  if (def.stock) {
+    const stock = Math.max(0, Number(src.stock) || 0);
+    const max = Math.max(0, Number(src.max) || 0);
+    if (src.data && src.data.unsized) lines.push('Stock: sized when it is first seen.');
+    else {
+      lines.push('Stock ' + fmt(stock) + ' / ' + fmt(max) + ' ' + unit + (def.stock.regrow > 0
+        ? ': regrows ' + yNum(def.stock.regrow * 100) + '% of max per second.' : ': gone when empty.'));
+    }
+  } else if (def.job) {
+    lines.push('Never runs out.');
+  }
+  const rot = def.fx && def.fx.rotAfter > 0 ? def.fx.rotAfter : 0;
+  if (rot > 0) {
+    const age = Number(src.age) || 0;
+    lines.push(age < rot ? 'Starts rotting in ' + fmtTime(Math.ceil(rot - age)) + '.' : 'Rotting: ' + yNum(def.fx.rotPerSec * 100) + '% of max lost per second.');
+  }
+  if (Number(src.ttl) >= 0) lines.push('Gone in ' + fmtTime(Math.ceil(Number(src.ttl))) + '.');
+  const sid = d && d.season ? d.season.srcId || d.season.id : null;
+  const f = sid && sid !== 'neutral' && def.season && Number.isFinite(def.season[sid]) ? def.season[sid] : 1;
+  if (def.job && f !== 1) lines.push(f === 0 ? 'Dormant this season (×0).' : 'This season ×' + yNum(f) + '.');
+  if (def.capPerLevel && def.fx && def.fx.levelSec > 0) {
+    const L = Math.max(1, Number(src.level) || 1);
+    const maxL = def.fx.maxLevel || 1;
+    if (L >= maxL) lines.push('Level ' + L + ' / ' + maxL + ' (max).');
+    else {
+      const need = (def.fx.herdFrac || 1) * def.capPerLevel * L;
+      let herders = 0;
+      const dts = d && d.surface && Array.isArray(d.surface.trails) ? d.surface.trails : [];
+      for (const t of (s && s.run && s.run.surface && s.run.surface.trails) || []) {
+        if (!t || t.src !== src.uid) continue;
+        const e = dts.find((x) => x && x.uid === t.uid);
+        herders += Number(e ? e.workers : t.workers) || 0;
+      }
+      const prog = Math.min(1, Math.max(0, (Number(src.herdT) || 0) / def.fx.levelSec));
+      lines.push('Level ' + L + ' / ' + maxL + ': ' + Math.floor(prog * 100) + '% to level ' + (L + 1) + '.');
+      const per = def.fx.levelSec % 60 === 0 ? def.fx.levelSec / 60 + ' min' : fmtTime(def.fx.levelSec);
+      lines.push('+1 level per ' + per + ' while ≥ ' + fmtCount(Math.ceil(need)) + ' herders work it (now '
+        + fmtCount(herders) + ').');
+    }
+  }
+  if (src.data && src.data.find) lines.push('Found by your scouts beyond the border.');
+  return lines;
+}
+
+/**
+ * C182: a trail's detour state in words: { short: row badge, line: explanation } or null when on its own route.
+ * @param {{ mode: string, why: string }|null} info trails.detourInfo
+ * @returns {{ short: string, line: string } | null}
+ */
+export function detourText(info) {
+  if (!info) return null;
+  const what = info.why === 'molehill' ? 'a molehill' : 'a flooded puddle';
+  if (info.mode === 'paused') {
+    return { short: 'Paused', line: 'Paused: ' + what + ' blocks the way and there is no way round. It reopens when that clears.' };
+  }
+  return { short: 'Detour', line: 'Detour round ' + what + ': free and temporary; the trail returns to its route when it clears.' };
+}
+
+/**
+ * C184: "Trails 7 / 11" — trail slots used / available.
+ * @param {number} used
+ * @param {number} slots
+ * @returns {string}
+ */
+export function trailSlotsText(used, slots) {
+  return 'Trails ' + fmtCount(Math.max(0, Number(used) || 0)) + ' / ' + fmtCount(Math.max(0, Number(slots) || 0));
+}
+
+/** C188: names and tooltips of the scout expedition finds that are map objects. */
+export const FIND_NAMES = Object.freeze({ fossil_cache: 'Fossil cache', lost_queen: 'Lost queen' });
+export const FIND_TIPS = Object.freeze({
+  fossil_cache: 'Found by your scouts. Click to dig it up for insight.',
+  lost_queen: 'A lost queen found by your scouts. Click to take her in.',
+});
+
+/**
+ * C187: the raid alert of the Map tab: what the colony can do about the incoming raid right now.
+ * @param {{ trailRaid: boolean, garrison: number, guardSent: boolean, polymorphism: boolean, escorts: number }} o
+ * @returns {{ text: string, action: 'dispatch'|'view'|null }}
+ */
+export function raidAlertCopy(o) {
+  const g = Math.max(0, Math.floor(Number(o.garrison) || 0));
+  const raise = o.polymorphism ? 'raise soldiers (soldier eggs, Colony tab)' : 'research ' + nameOf('research', 'polymorphism') + ' to raise soldiers';
+  if (o.trailRaid) {
+    if (o.guardSent) return { text: 'The garrison is on its way to the trail.', action: 'view' };
+    if (g > 0) return { text: 'Send the garrison (' + fmtCount(g) + ') to defend the trail.', action: 'dispatch' };
+    if (o.escorts > 0) {
+      return { text: 'No soldiers at home: the trail’s ' + fmtCount(o.escorts) + ' escorts fight alone. For more, ' + raise + '.', action: null };
+    }
+    return { text: 'No soldiers at home — ' + raise + '. Escorts on a trail defend it from raids.', action: null };
+  }
+  if (g > 0) return { text: 'Your garrison (' + fmtCount(g) + ') defends the entrance automatically.', action: 'view' };
+  return { text: 'No soldiers at home — ' + raise + '; the garrison defends the entrance automatically.', action: null };
+}

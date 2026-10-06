@@ -135,3 +135,30 @@ export const FOUNDING_STORES = deepFreeze([null, { food: 500, soil: 100 }, { foo
 
 /** Automation cadence (ARCHITECTURE §8.6 "1 Hz"): passes per run second, and a bound on passes per (offline) tick. */
 export const AUTOMATION = deepFreeze({ passSec: 1, maxPassesPerTick: 60 });
+
+/**
+ * Auto-Flight 'peak' trigger (C166): the run must be at least `minSec` old, and the weather-free alates/min (the
+ * unfloored projection without the seasonal / Flight Day weather factor, so a season change never trips it) must stay
+ * below `drop` × this run's best weather-free rate for `holdSec` seconds in a row.
+ */
+export const AUTO_FLIGHT = deepFreeze({ minSec: 480, holdSec: 30, drop: 0.97 });
+
+/**
+ * Auto-Flight landing pick (C166): every landing option scores the sum of its tags' `sites` points (+ `seasonSites` for
+ * the season the run starts in), every boon its `boons` points (+ `seasonBoons`), plus the situational bonuses below;
+ * the highest score wins (ties: the first offered). `season` = the starting season auto-flight picks with Seasonal
+ * Wisdom. The points favour early growth: lay rate, food sources, insight.
+ */
+export const AUTO_LANDING = deepFreeze({
+  sites: { site_rich_loam: 3, site_seed_meadow: 2, site_aphid_dense: 3, site_hostile_neighbours: -1, site_stony_ground: 1,
+    site_garden_path: 1, site_wet_hollow: 1, site_sunny_slope: 1 },
+  seasonSites: { summer: { site_seed_meadow: 2, site_sunny_slope: 1 }, autumn: { site_seed_meadow: 3, site_sunny_slope: 1 } },
+  boons: { boon_royal_vigor: 5, boon_next_to_aphids: 4, boon_rich_prey: 3, boon_old_trails: 3, boon_insight_cache: 3,
+    boon_scouts_lead: 2, boon_peaceful_start: 2, boon_long_spring: 1, boon_chitin_hoard: 1, boon_blueprint_rush: 1 },
+  seasonBoons: { spring: { boon_long_spring: 3 } },
+  blueprintRush: 5,        // added to boon_blueprint_rush while a blueprint is active
+  pacifistPeace: 2,        // added to boon_peaceful_start in a Pacifist run (no soldiers to defend)
+  rememberedOldTrails: -2, // added to boon_old_trails with Remembered Paths (trails are drawn anyway)
+  keenScouts: -2,          // added to boon_scouts_lead with Keen Antennae (rings 0–4 are revealed anyway)
+  season: 'spring',
+});

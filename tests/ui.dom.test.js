@@ -740,21 +740,26 @@ test('F11: the landing chooser offers a Bloodline shop; Seasonal Wisdom bought t
   assert.deepEqual(errors, []);
 });
 
-test('F10: Automaton Instincts owners get the Adaptation autobuyer switch in the Bloodline sub-tab', () => {
+test('C166: the Adaptation autobuyer switch sits in the Adaptations tab and needs Federation Autobuyers', () => {
   const calls = [];
   game.actions.do = (type, args) => { calls.push({ type, args }); return { ok: true, reason: null }; };
   setRevealAll(true);
-  ui.openTab('prestige', 'bloodline');
+  ui.openTab('adaptations');
   tick();
-  const sec = root.querySelector('.panel-prestige .auto-trait');
-  assert.ok(sec && sec.hidden, 'hidden without the trait');
+  const sec = root.querySelector('.panel-adaptations .auto-adapt');
+  assert.ok(sec && sec.hidden, 'hidden without Autobuyers');
   game.s.cycle.traits.automaton_instincts = 1;
   tick();
-  assert.equal(sec.hidden, false, 'shown with Automaton Instincts, no Federation needed');
+  assert.equal(sec.hidden, true, 'Automaton Instincts no longer grants it');
+  game.s.era.federation.autobuyers = 1;
+  tick();
+  assert.equal(sec.hidden, false, 'shown with Federation Autobuyers');
   const input = sec.querySelector('input');
   input.checked = true;
   input.dispatchEvent(new FEvent('change'));
-  assert.deepEqual(calls.at(-1), { type: 'setAutomation', args: { patch: { autobuy: { on: true, adaptations: true } } } });
+  assert.deepEqual(calls.at(-1), { type: 'setAutomation', args: { patch: { autobuy: { on: true, adaptations: true, chambers: false, mound: false } } } });
+  delete game.s.era.federation.autobuyers;
+  delete game.s.cycle.traits.automaton_instincts;
   assert.deepEqual(errors, []);
 });
 

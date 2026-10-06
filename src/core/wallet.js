@@ -3,14 +3,19 @@
 // Resource keys: run resources → s.run.res; alates → s.cycle.alates; kinship → s.era.kinship; genes → s.meta.genes.
 // ARCH-R: timeToAfford also returns -1 when a capped resource (food, honeydew, leaves, fungus, pheromone) is needed
 // beyond its current cap, since production can never reach it.
+// C199 (WP2): chitin is capped at d.stats.chitinCap. grant() multiplies chitin by d.stats.chitinBoost (Carapace
+// Workshops; opts.boost false skips it) and lets it overflow to CHITIN.overflow × cap (opts.overflow false: up to the
+// cap only, e.g. moults); incomeSeconds('chitin') is measured on the unboosted income, so the boost is applied once.
 
 import { CLAMP_MAX, FOOD_OVERFLOW } from '../data/balance.js';
+import { CHITIN } from '../data/economy.js';
 import { clampNum } from './math.js';
 
 const RUN_RES = Object.freeze(['food', 'soil', 'insight', 'pheromone', 'chitin', 'honeydew', 'leaves', 'fungus']);
 const RUN_SET = new Set(RUN_RES);
 /** Resources clamped at a derived cap (key into d.stats). Food has its own overflow rule. */
-const CAP_KEY = Object.freeze({ food: 'foodCap', honeydew: 'honeydewCap', leaves: 'leafCap', fungus: 'fungusCap', pheromone: 'pheromoneCap' });
+const CAP_KEY = Object.freeze({ food: 'foodCap', honeydew: 'honeydewCap', leaves: 'leafCap', fungus: 'fungusCap', pheromone: 'pheromoneCap',
+  chitin: 'chitinCap' });
 
 /** @returns {boolean} true if `k` is a wallet resource key */
 function isRes(k) {
@@ -87,6 +92,7 @@ export function missing(s, cost) {
 export function spend(s, cost) {
   if (!canAfford(s, cost)) return false;
   for (const k of Object.keys(cost)) setRes(s, k, getRes(s, k) - cost[k]);
+  logFlow(s, 'spend', cost);
   return true;
 }
 
@@ -108,6 +114,7 @@ export function refund(s, d, cost, frac = 1) {
     const cur = getRes(s, k);
     const cap = capOf(d, k);
     setRes(s, k, Math.max(cur, Math.min(cap, cur + amt)));
+    logFlow(s, 'grant', { [k]: getRes(s, k) - cur }, 'refund');
   }
 }
 
@@ -115,17 +122,28 @@ export function refund(s, d, cost, frac = 1) {
  * One-shot reward.
  * food: added up to d.stats.foodCap (FOOD_OVERFLOW × cap with overflow); the excess goes to run.stats.foodWasted;
  *   with countFRun the FULL amount is added to run.fRun and meta.stats.foodEver.
+ * chitin (C199): × d.stats.chitinBoost (unless boost is false), up to CHITIN.overflow × chitinCap (chitinCap with
+ *   overflow false).
  * honeydew / leaves / fungus / pheromone clamp at their d.stats caps; others clamp at CLAMP_MAX.
  * @param {import('./types.js').State} s
  * @param {import('./types.js').Derived} d
  * @param {import('./types.js').ResKey} res
  * @param {number} amount
- * @param {{ overflow?: boolean, countFRun?: boolean }} [opts]
+ * @param {{ overflow?: boolean, countFRun?: boolean, boost?: boolean }} [opts]
  * @returns {number} the amount actually added
  */
-export function grant(s, d, res, amount, { overflow = false, countFRun = true } = {}) {
+export function grant(s, d, res, amount, { overflow, countFRun = true, boost = true } = {}) {
   if (!isRes(res) || !(amount > 0) || !Number.isFinite(amount)) return 0;
   const cur = getRes(s, res);
+  if (res === 'chitin') {
+    const b = boost && d && d.stats && Number.isFinite(d.stats.chitinBoost) && d.stats.chitinBoost > 0 ? d.stats.chitinBoost : 1;
+    const want = clampNum(amount * b);
+    const cap = capOf(d, 'chitin') * (overflow === false ? 1 : CHITIN.overflow);
+    const added = Math.max(0, Math.min(want, cap - cur));
+    setRes(s, 'chitin', cur + added);
+    if (added > 0) logFlow(s, 'grant', { chitin: added });
+    return added;
+  }
   if (res === 'food') {
     const cap = capOf(d, 'food') * (overflow ? FOOD_OVERFLOW : 1);
     const added = Math.max(0, Math.min(amount, cap - cur));
@@ -136,11 +154,13 @@ export function grant(s, d, res, amount, { overflow = false, countFRun = true } 
       s.run.fRun = clampNum(s.run.fRun + amount);
       s.meta.stats.foodEver = clampNum(s.meta.stats.foodEver + amount);
     }
+    logFlow(s, 'grant', { food: amount }); // the full amount: the part over the cap is counted in foodWasted
     return added;
   }
   const cap = capOf(d, res);
   const added = Math.max(0, Math.min(amount, cap - cur));
   setRes(s, res, cur + added);
+  if (added > 0) logFlow(s, 'grant', { [res]: added });
   return added;
 }
 
@@ -159,6 +179,7 @@ export function incomeSeconds(d, res, sec, min = 0) {
   let rate = 0;
   if (r && typeof r.avg === 'number' && Number.isFinite(r.avg)) rate = r.avg;
   else if (r && Number.isFinite(r.gross)) rate = r.gross;
+  if (res === 'chitin' && d && d.stats && Number.isFinite(d.stats.chitinBoost) && d.stats.chitinBoost > 1) rate /= d.stats.chitinBoost;
   const v = sec * rate;
   return Number.isFinite(v) ? Math.max(min, v) : min;
 }
@@ -200,5 +221,93 @@ export function scaleCost(cost, k) {
   if (!cost || typeof cost !== 'object') return null;
   const out = {};
   for (const key of Object.keys(cost)) out[key] = cost[key] * k;
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Flow log (ARCHITECTURE §18 C191): a small per-run ring of one-second buckets recording what spend() paid and what
+// grant() / refund() added, keyed by the "flow tag" of whoever is paying or earning (core/step.js sets 'cmd:<type>'
+// around each command and the system name around each system tick). The UI reads it for the Stats tab's resource
+// breakdown and the resource tooltips. Not saved and not part of the state: it lives in a WeakMap keyed by s.run, so a
+// new run (or a load) starts empty. Purely additive: nothing in the simulation reads it.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Seconds of history kept (the UI shows the last 60 s). */
+export const FLOW_LOG_SEC = 64;
+/** @type {WeakMap<Object, { buckets: Array<Object|null> }>} */
+const flowLogs = new WeakMap();
+let flowTag = null;
+
+/**
+ * Set the flow tag for the spends and grants that follow ('cmd:placeChamber', 'population', …; null = untagged).
+ * @param {string|null} tag
+ * @returns {string|null} the previous tag
+ */
+export function setFlowTag(tag) {
+  const prev = flowTag;
+  flowTag = typeof tag === 'string' && tag ? tag : null;
+  return prev;
+}
+
+/** The current flow tag (tests). */
+export function getFlowTag() {
+  return flowTag;
+}
+
+/** Record amounts into the bucket of the current run second. */
+function logFlow(s, kind, amounts, tagOverride = null) {
+  const run = s && s.run;
+  if (!run || typeof run !== 'object' || !amounts) return;
+  const t = Number.isFinite(run.time) ? run.time : 0;
+  const sec = Math.floor(t);
+  let log = flowLogs.get(run);
+  if (!log) {
+    log = { buckets: new Array(FLOW_LOG_SEC).fill(null) };
+    flowLogs.set(run, log);
+  }
+  const i = ((sec % FLOW_LOG_SEC) + FLOW_LOG_SEC) % FLOW_LOG_SEC;
+  let b = log.buckets[i];
+  if (!b || b.sec !== sec) {
+    b = { sec, spend: {}, grant: {} };
+    log.buckets[i] = b;
+  }
+  const tag = tagOverride || flowTag || 'other';
+  const box = b[kind];
+  for (const k of Object.keys(amounts)) {
+    const v = amounts[k];
+    if (!(v > 0) || !Number.isFinite(v)) continue;
+    const byTag = box[k] || (box[k] = {});
+    byTag[tag] = (byTag[tag] || 0) + v;
+  }
+}
+
+/**
+ * Totals over the last `windowSec` run seconds (the current, partial second included):
+ * { spend: { res: { tag: amount } }, grant: { res: { tag: amount } }, sec } where sec = the seconds covered
+ * (min(windowSec, run time)). Amounts are totals, not rates.
+ * @param {import('./types.js').State} s
+ * @param {number} [windowSec=60]
+ * @returns {{ spend: Object<string, Object<string, number>>, grant: Object<string, Object<string, number>>, sec: number }}
+ */
+export function flowTotals(s, windowSec = 60) {
+  const out = { spend: {}, grant: {}, sec: 0 };
+  const run = s && s.run;
+  if (!run) return out;
+  const t = Number.isFinite(run.time) ? run.time : 0;
+  const w = Math.max(1, Math.min(FLOW_LOG_SEC - 1, Math.floor(windowSec)));
+  out.sec = Math.min(w, t);
+  const log = flowLogs.get(run);
+  if (!log) return out;
+  const now = Math.floor(t);
+  for (const b of log.buckets) {
+    if (!b || b.sec > now || now - b.sec >= w) continue;
+    for (const kind of ['spend', 'grant']) {
+      for (const res of Object.keys(b[kind])) {
+        const dst = out[kind][res] || (out[kind][res] = {});
+        const src = b[kind][res];
+        for (const tag of Object.keys(src)) dst[tag] = (dst[tag] || 0) + src[tag];
+      }
+    }
+  }
   return out;
 }

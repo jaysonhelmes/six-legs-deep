@@ -190,14 +190,15 @@ canvas { display: block; }
 /* stage: the view switcher (#view-tabs) picks one of four views on every layout (C96). data-view is the effective view
    set by app.js: 'split' = Above stacked over Below, 'side' = Below | seam | Above, 'above' / 'below' = one canvas.
    Wide layouts tuck the switcher into the overlay row; medium and narrow give it its own row under the canvas. */
+/* C197: --above-track / --below-track (set by app.js while the player has dragged the divider) override the default split */
 #app[data-view='split'] #stage {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) var(--flow-h) minmax(0, 1fr) auto;
+  grid-template-rows: auto var(--above-track, minmax(0, 1fr)) var(--flow-h) var(--below-track, minmax(0, 1fr)) auto;
   grid-template-areas: 'hud' 'above' 'flow' 'below' 'overlay';
 }
-#app[data-layout='wide-tall'][data-view='split'] #stage { grid-template-rows: auto minmax(0, 55fr) var(--flow-h) minmax(0, 45fr) auto; }
+#app[data-layout='wide-tall'][data-view='split'] #stage { grid-template-rows: auto var(--above-track, minmax(0, 55fr)) var(--flow-h) var(--below-track, minmax(0, 45fr)) auto; }
 #app[data-view='side'] #stage {
-  grid-template-columns: minmax(0, 30fr) 22px minmax(0, 45fr);
+  grid-template-columns: var(--below-track, minmax(0, 30fr)) 22px var(--above-track, minmax(0, 45fr));
   grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas: 'hud hud hud' 'below flow above' 'overlay overlay overlay';
 }
@@ -212,7 +213,7 @@ canvas { display: block; }
   grid-template-areas: 'hud' 'below' 'overlay';
 }
 #app:is([data-layout='medium'], [data-layout='narrow'])[data-view='split'] #stage {
-  grid-template-rows: auto minmax(0, 1fr) var(--flow-h) minmax(0, 1fr) auto auto;
+  grid-template-rows: auto var(--above-track, minmax(0, 1fr)) var(--flow-h) var(--below-track, minmax(0, 1fr)) auto auto;
   grid-template-areas: 'hud' 'above' 'flow' 'below' 'overlay' 'tabs';
 }
 #app:is([data-layout='medium'], [data-layout='narrow'])[data-view='side'] #stage {
@@ -228,13 +229,15 @@ canvas { display: block; }
   grid-template-areas: 'hud' 'below' 'overlay' 'tabs';
 }
 /* flipped (#view-flip): Below over Above when stacked, Above | seam | Below side by side. Each canvas keeps its size. */
-#app[data-flip='true'][data-view='split'] #stage { grid-template-areas: 'hud' 'below' 'flow' 'above' 'overlay'; }
-#app[data-flip='true'][data-layout='wide-tall'][data-view='split'] #stage { grid-template-rows: auto minmax(0, 45fr) var(--flow-h) minmax(0, 55fr) auto; }
+#app[data-flip='true'][data-view='split'] #stage { grid-template-areas: 'hud' 'below' 'flow' 'above' 'overlay';
+  grid-template-rows: auto var(--below-track, minmax(0, 1fr)) var(--flow-h) var(--above-track, minmax(0, 1fr)) auto; }
+#app[data-flip='true'][data-layout='wide-tall'][data-view='split'] #stage { grid-template-rows: auto var(--below-track, minmax(0, 45fr)) var(--flow-h) var(--above-track, minmax(0, 55fr)) auto; }
 #app[data-flip='true'][data-view='side'] #stage {
-  grid-template-columns: minmax(0, 45fr) 22px minmax(0, 30fr);
+  grid-template-columns: var(--above-track, minmax(0, 45fr)) 22px var(--below-track, minmax(0, 30fr));
   grid-template-areas: 'hud hud hud' 'above flow below' 'overlay overlay overlay';
 }
 #app[data-flip='true']:is([data-layout='medium'], [data-layout='narrow'])[data-view='split'] #stage {
+  grid-template-rows: auto var(--below-track, minmax(0, 1fr)) var(--flow-h) var(--above-track, minmax(0, 1fr)) auto auto;
   grid-template-areas: 'hud' 'below' 'flow' 'above' 'overlay' 'tabs';
 }
 #app[data-flip='true']:is([data-layout='medium'], [data-layout='narrow'])[data-view='side'] #stage {
@@ -315,6 +318,20 @@ canvas { display: block; }
 #flow-strip { position: relative; min-width: 0; overflow: hidden; border-radius: var(--r-sm); }
 #canvas-seam { position: absolute; inset: 0; width: 100%; height: 100%; }
 #app[data-view='side'] #flow-strip { writing-mode: vertical-rl; }
+/* C197: the flow strip is the divider between the two canvases: drag it to resize them (double-click resets) */
+#app:not([data-inset='true'])[data-view='split'] #flow-strip { cursor: row-resize; touch-action: none; }
+#app:not([data-inset='true'])[data-view='side'] #flow-strip { cursor: col-resize; touch-action: none; }
+#app:not([data-inset='true']):is([data-view='split'], [data-view='side']) #flow-strip::after {
+  content: ''; position: absolute; z-index: 2; pointer-events: none; border-radius: 999px; background: var(--line); opacity: 0.55;
+  transition: opacity 0.15s, background 0.15s;
+  left: 50%; top: 50%; width: 36px; height: 4px; transform: translate(-50%, -50%);
+}
+#app[data-view='side']:not([data-inset='true']) #flow-strip::after { width: 4px; height: 36px; }
+#app:not([data-inset='true']) #flow-strip:hover::after, #app[data-dragging='split'] #flow-strip::after, #flow-strip:focus-visible::after { opacity: 1; background: var(--accent); }
+#flow-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#app[data-dragging='split'], #app[data-dragging='split'] * { user-select: none; -webkit-user-select: none; }
+#app[data-dragging='split'][data-view='split'] { cursor: row-resize; }
+#app[data-dragging='split'][data-view='side'] { cursor: col-resize; }
 
 /* ------------------------------------------------------------------ photo mode: hide the UI chrome */
 #app[data-photo='true'] #rail,

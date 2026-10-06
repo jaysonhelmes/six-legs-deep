@@ -3,10 +3,12 @@
 // ARCH-R: DESIGN §25.3 lists "per-layer timings", but the state schema (§4) records no per-layer timestamps; the panel
 // shows which layers have been reached (from meta.stats.deepestRow) instead.
 
-import { h, setText } from '../dom.js';
-import { fmt, fmtCount, fmtTime } from '../format.js';
-import { nameOf } from '../text.js';
-import { num, arr, obj } from '../reveal.js';
+import { h, setText, clear, show, toggleClass } from '../dom.js';
+import { fmt, fmtCount, fmtTime, fmtRate } from '../format.js';
+import { nameOf, RES_NAMES } from '../text.js';
+import { num, arr, obj, isShown } from '../reveal.js';
+import { RAIL_RES } from '../hud.js';
+import { activeTracker, STAT_RES, STATS_WINDOW_SEC } from '../resourceStats.js';
 import { adultsTotal } from '../../core/state.js';
 import { LAYER_ORDER, LAYERS } from '../../data/strata.js';
 import { diapauseInfo } from '../hud.js';
@@ -125,9 +127,69 @@ function safeAdults(s) {
  * @param {HTMLElement} root
  * @param {{ game: Object, ui: Object, bridge: Object }} ctx
  */
-export function createPanel(root) {
+export function createPanel(root, ctx = {}) {
   const el = h('div', { class: 'panel panel-stats' });
   root.appendChild(el);
+  // C191: per-resource income and spending over the last 60 s (one resource at a time, picked by chip)
+  let flowRes = 'food';
+  const flowChips = h('div', { class: 'flow-chips', role: 'group', attrs: { 'aria-label': 'Resource' } });
+  const chipEls = {};
+  for (const res of STAT_RES) {
+    const b = h('button', { type: 'button', class: 'chip flow-chip', dataset: { res }, attrs: { 'aria-pressed': 'false' },
+      on: { click: () => { flowRes = res; last = null; if (ctx.game) update(ctx.game.s, ctx.game.d); } } },
+    h('i', { class: 'ico ico-' + res, attrs: { 'aria-hidden': 'true' } }), h('span', { text: RES_NAMES[res] || res }));
+    chipEls[res] = b;
+    flowChips.appendChild(b);
+  }
+  const flowSum = h('p', { class: 'flow-sum' });
+  const inList = h('ol', { class: 'flow-list flow-in' });
+  const outList = h('ol', { class: 'flow-list flow-out' });
+  const flowNote = h('p', { class: 'note flow-note' });
+  el.appendChild(h('section', { class: 'sec res-flows' }, h('h3', { class: 'sec-title', text: 'Resources · last ' + STATS_WINDOW_SEC + ' s' }), flowChips, flowSum,
+    h('div', { class: 'flow-cols' },
+      h('div', { class: 'flow-col' }, h('h4', { class: 'flow-h', text: 'Where it came from' }), inList),
+      h('div', { class: 'flow-col' }, h('h4', { class: 'flow-h', text: 'What used it' }), outList)),
+    flowNote));
+  // C190: the event log
+  el.appendChild(h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Event log' }),
+    h('p', { class: 'note', text: 'Events and their outcomes, raids, blueprints, milestones and prestige, with their run time.' }),
+    h('button', { type: 'button', class: 'btn btn-small', text: 'Open event log', on: { click: () => { if (ctx.dialogs && ctx.dialogs.eventLog) ctx.dialogs.eventLog(); } } })));
+  let last = null;
+  function flowRows(list, items, max, sign) {
+    clear(list);
+    if (!items.length) { list.appendChild(h('li', { class: 'flow-row flow-none', text: 'Nothing' })); return; }
+    for (const x of items) {
+      const bar = h('span', { class: 'flow-bar-fill' });
+      bar.style.width = Math.max(2, Math.round((x.rate / max) * 100)) + '%';
+      list.appendChild(h('li', { class: 'flow-row' }, h('span', { class: 'flow-label', text: x.label }),
+        h('span', { class: 'flow-val', text: sign + fmtRate(x.rate) }), h('span', { class: 'flow-bar' }, bar)));
+    }
+  }
+  function updateFlows(s, d) {
+    const vis = (res) => {
+      if (res === 'leaves') return isShown(s, 'fungus_widget');
+      const def = RAIL_RES.find((x) => x.res === res);
+      return def ? isShown(s, def.key) : false;
+    };
+    for (const res of STAT_RES) show(chipEls[res], vis(res));
+    if (!vis(flowRes)) flowRes = 'food';
+    for (const res of STAT_RES) {
+      toggleClass(chipEls[res], 'active', res === flowRes);
+      chipEls[res].setAttribute('aria-pressed', res === flowRes ? 'true' : 'false');
+    }
+    const tr = activeTracker();
+    if (!tr) { setText(flowSum, 'Statistics start when the game is running.'); return; }
+    const b = tr.breakdown(s, d, flowRes);
+    const max = Math.max(1e-9, ...b.inflow.map((x) => x.rate), ...b.outflow.map((x) => x.rate));
+    const sig = flowRes + '|' + b.inflow.map((x) => x.key + fmtRate(x.rate)).join(',') + '|' + b.outflow.map((x) => x.key + fmtRate(x.rate)).join(',');
+    setText(flowSum, 'In ' + fmtRate(b.totalIn) + ' · out ' + fmtRate(b.totalOut) + ' · net ' + (b.net >= 0 ? '+' : '') + fmtRate(b.net));
+    toggleClass(flowSum, 'neg', b.net < -1e-9);
+    setText(flowNote, 'Averaged over the last ' + fmtTime(Math.round(Math.min(STATS_WINDOW_SEC, b.sec))) + ' of this run. One-off amounts (clicks, events, purchases) are spread over the window.');
+    if (sig === last) return;
+    last = sig;
+    flowRows(inList, b.inflow, max, '+');
+    flowRows(outList, b.outflow, max, '−');
+  }
   const cells = [];
   for (const [title, rows] of SECTIONS) {
     const dl = h('dl', { class: 'kv kv-stats' });
@@ -148,20 +210,23 @@ export function createPanel(root) {
     layerList.appendChild(li);
   }
 
+  function update(s, d) {
+    if (!s || !s.run || !s.meta) return;
+    try { updateFlows(s, d); } catch (err) { setText(flowSum, '—'); }
+    for (const [dd, fn] of cells) {
+      let t;
+      try { t = fn(s, d); } catch { t = '—'; }
+      setText(dd, t);
+    }
+    const deepest = num(s.meta.stats && s.meta.stats.deepestRow);
+    for (const [li, y0] of layerItems) {
+      const reached = deepest >= y0;
+      if (li.classList.contains('reached') !== reached) li.classList.toggle('reached', reached);
+    }
+  }
+
   return {
-    update(s, d) {
-      if (!s || !s.run || !s.meta) return;
-      for (const [dd, fn] of cells) {
-        let t;
-        try { t = fn(s, d); } catch { t = '—'; }
-        setText(dd, t);
-      }
-      const deepest = num(s.meta.stats && s.meta.stats.deepestRow);
-      for (const [li, y0] of layerItems) {
-        const reached = deepest >= y0;
-        if (li.classList.contains('reached') !== reached) li.classList.toggle('reached', reached);
-      }
-    },
+    update,
     destroy() {
       if (el.parentNode) el.parentNode.removeChild(el);
     },

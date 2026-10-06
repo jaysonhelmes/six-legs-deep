@@ -7,15 +7,17 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost, clear } from
 import { fmt, fmtRate, fmtCount, fmtTime, fmtPct } from '../format.js';
 import {
   nameOf, reasonText, WAR_TIPS, TACTIC_TIPS, PARTY_NAMES, BATTLE_NAMES, RAID_PHASES, RES_NAMES,
+  sourceTipLines, detourText, trailSlotsText, raidAlertCopy,
 } from '../text.js';
 import { isShown, hasResearch, fedLevel, num, arr, obj } from '../reveal.js';
-import { previewTrail, bestOrigin, trailOverlap } from '../../systems/trails.js';
-import { claimCost, canClaim, sourceAt } from '../../systems/surface.js';
+import { previewTrail, bestOrigin, trailOverlap, detourInfo } from '../../systems/trails.js';
+import { claimCost, canClaim, sourceAt, expeditionInfo } from '../../systems/surface.js';
 import { previewAction, garrison as garrisonOf } from '../../systems/rivals.js';
 import { ringOf } from '../../core/hex.js';
 import { SOURCES } from '../../data/sources.js';
 import { TERRAIN_ORDER, TRAIL, ABILITIES, SCOUT } from '../../data/surface.js';
 import { ACTIONS } from '../../data/combat.js';
+import { EVENTS } from '../../data/events.js';
 import { RESEARCH } from '../../data/research.js';
 import { makeAct, sliderRow, progressBar, note, armedButton, subTabStrip } from './common.js';
 import {
@@ -184,6 +186,66 @@ export function rivalStatus(s, d, r) {
   return { text: 'Hostile', cls: 'warn', tip: f ? frontRule(f) : '' };
 }
 
+/**
+ * C185: context-menu items for a Lycaenid trail (or its caterpillar): add escorts straight from the map. Each item is
+ * { label, type, args }; an empty list for other trails. +1 / +5 are capped by the soldiers at home (with none, the
+ * command's refusal says so).
+ * @param {Object} s
+ * @param {Object} d
+ * @param {Object|null} trail
+ * @returns {Array<{ label: string, type: string, args: Object }>}
+ */
+export function escortMenuItems(s, d, trail) {
+  if (!trail || trail.job !== 'lycaenid') return [];
+  const min = num(SOURCES.lycaenid_caterpillar && SOURCES.lycaenid_caterpillar.minEscorts, 5);
+  const cur = Math.max(0, Math.floor(num(trail.escorts)));
+  const home = Math.floor(getGarrison(s, d).soldier);
+  const add = (k) => cur + (home >= 1 ? Math.min(k, home) : k);
+  return [
+    { label: 'Add escort (+1) · Escorts ' + fmtCount(cur) + '/' + fmtCount(min), type: 'assignEscorts', args: { uid: trail.uid, n: add(1) } },
+    { label: 'Add escorts (+5)', type: 'assignEscorts', args: { uid: trail.uid, n: add(5) } },
+  ];
+}
+
+/**
+ * C185 / C188: context-menu items for an event object on the map: an antlion pit offers "Send N soldiers to clear"
+ * (clearAntlion, the card's rule, any time while the pit exists); expedition finds offer their click.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {number} uid event object uid
+ * @returns {Array<{ label: string, type: string, args: Object }>}
+ */
+export function eventObjectMenuItems(s, d, uid) {
+  const o = arr(s.run && s.run.events && s.run.events.objects).find((x) => x && x.uid === uid);
+  if (!o) return [];
+  if (o.kind === 'antlion') {
+    const n = num(EVENTS.ev_antlion_pit && EVENTS.ev_antlion_pit.num.soldiers, 3);
+    return [{ label: 'Send ' + n + ' soldiers to clear', type: 'clearAntlion', args: { uid } }];
+  }
+  if (o.kind === 'fossil_cache') return [{ label: 'Dig up the fossils', type: 'clickEventObject', args: { uid } }];
+  if (o.kind === 'lost_queen') return [{ label: 'Take in the lost queen', type: 'clickEventObject', args: { uid } }];
+  return [];
+}
+
+/**
+ * C187: the Map tab's raid alert for the most urgent raid in its warning: what can be done now (dispatch the garrison
+ * to a trail raid), what happens on its own (the garrison defends the entrance), or what is needed (soldiers).
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {{ raid: Object, text: string, action: 'dispatch'|'view'|null } | null}
+ */
+export function raidAlertInfo(s, d) {
+  const raids = arr(s.run && s.run.war && s.run.war.raids).filter((r) => r && r.phase === 'warning');
+  if (!raids.length) return null;
+  const raid = raids.slice().sort((a, b) => num(a.warn) - num(b.warn))[0];
+  const tgt = obj(raid.target);
+  const trail = tgt.type === 'trail' ? arr(s.run.surface && s.run.surface.trails).find((t) => t && t.uid === tgt.uid) : null;
+  const g = getGarrison(s, d);
+  const copy = raidAlertCopy({ trailRaid: !!trail, garrison: g.soldier + g.supermajor, guardSent: num(raid.guard) > 0,
+    polymorphism: hasResearch(s, 'polymorphism'), escorts: trail ? num(trail.escorts) : 0 });
+  return { raid, text: copy.text, action: copy.action };
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // War form
 // ---------------------------------------------------------------------------------------------------------------
@@ -225,6 +287,10 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
   const sSol = sliderRow('Soldiers', { min: 0, max: 0, step: 1 }, (v) => { st.soldier = v; st.touched = true; refresh(); }, { live: true });
   const sSup = sliderRow('Supermajors', { min: 0, max: 0, step: 1 }, (v) => { st.supermajor = v; st.touched = true; refresh(); }, { live: true });
   const sMin = sliderRow('Minors', { min: 0, max: 0, step: 1 }, (v) => { st.minor = v; st.touched = true; refresh(); }, { live: true });
+  // C187: the auto-retreat setting lives with the war party (War tab and the chooser); 100% = never retreat
+  const retreat = sliderRow('Auto-retreat at losses', { min: 0, max: 100, step: 5,
+    tip: 'Your parties pull back once this share has fallen. 100% never retreats.' },
+  (v) => act('setSetting', { key: 'retreatAt', value: Math.max(0, Math.min(1, v / 100)) }, null, retreat.input));
   const allBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Send everything',
     on: { click: () => { st.touched = false; st.soldier = Infinity; st.supermajor = Infinity; refresh(); } } });
 
@@ -243,7 +309,7 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
 
   const el = h('div', { class: 'war-form' },
     h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Target' }), select),
-    kindRow, notesEl, sSol.el, sSup.el, sMin.el, h('div', { class: 'row-end' }, allBtn),
+    kindRow, notesEl, sSol.el, sSup.el, sMin.el, h('div', { class: 'row-end' }, allBtn), retreat.el,
     h('div', { class: 'odds' }, winEl, lossEl, lootEl, marchEl, reasonEl, raiseEl),
     h('div', { class: 'btn-row' }, launch, bribe), emptyNote);
 
@@ -357,6 +423,10 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
     sMin.set(st.minor, { max: minorPool, text: fmtCount(st.minor) + ' / ' + fmtCount(minorPool), fmt: (v) => fmtCount(v) + ' / ' + fmtCount(minorPool) });
     show(sSup.el, maxSup > 0 || isShown(s, 'caste_supermajor'));
     show(sMin.el, isTour);
+    const rAt = num(s.meta && s.meta.settings ? s.meta.settings.retreatAt : NaN, 0.6);
+    const rFmt = (v) => (v >= 100 ? 'Never' : fmtPct(v / 100, { signed: false }));
+    retreat.set(Math.round(rAt * 100), { text: rFmt(Math.round(rAt * 100)), fmt: rFmt });
+    show(retreat.el, !isTour);
     const hasTarget = !!(st.target && st.kind);
     show(launch, hasTarget);
     setText(launch, isTour ? 'Choose border hex' : 'Launch ' + (PARTY_NAMES[st.kind] || '').toLowerCase());
@@ -476,11 +546,18 @@ export function createPanel(root, { game, ui, bridge }) {
   // --- raid alert (main view) ---
   const raidAlert = h('div', { class: 'alert alert-danger' });
   const raidAlertText = h('span');
-  raidAlert.append(raidAlertText, h('button', { type: 'button', class: 'btn btn-small btn-danger', text: 'Defend',
-    on: { click: () => ui.setUI({ subTab: 'war' }) } }));
+  // C187: the button does what can be done now (send the garrison to a trail raid) or opens the War tab; with nothing
+  // to do (no soldiers) there is no button, and the text says what is needed
+  let alertRaid = 0;
+  const defendBtn = h('button', { type: 'button', class: 'btn btn-small btn-danger', text: 'Defend',
+    on: { click: (ev) => {
+      if (defendBtn.__action === 'dispatch') act('dispatchGuard', { raid: alertRaid }, ev, defendBtn);
+      ui.setUI({ subTab: 'war' });
+    } } });
+  raidAlert.append(raidAlertText, defendBtn);
 
   // --- trails ---
-  const slotsEl = h('span', { class: 'sec-meta' });
+  const slotsEl = h('span', { class: 'sec-meta', dataset: { tip: 'Trail slots used / available. Research, Mound levels, outposts and satellites add slots.' } });
   const pherEl = h('span', { class: 'sec-meta' });
   const frenzyBtn = h('button', { type: 'button', class: 'btn btn-small', dataset: { tip: abilityTip('frenzy') },
     on: { click: (ev) => act('frenzy', {}, ev, frenzyBtn) } });
@@ -516,10 +593,12 @@ export function createPanel(root, { game, ui, bridge }) {
     on: { click: () => toggleTool('placeSatellite') } });
   // F15: the satellite rule and how many hexes qualify, before the player clicks
   const satHint = h('p', { class: 'note sat-hint' });
+  // C188: scouts beyond the border once the map is fully revealed
+  const expNote = h('p', { class: 'note exp-note', dataset: { tip: 'With no hexes left to reveal, scouts explore beyond the map edge and bring back rare finds there.' } });
   const terrSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Territory' }),
     h('dl', { class: 'kv' }, h('dt', { text: 'Hexes owned' }), h('dd', null, terrOwned), h('dt', { text: 'Peak this run' }), h('dd', null, terrPeak),
       claimDt, claimDd),
-    channelEl, h('div', { class: 'btn-row' }, claimToolBtn, flagToolBtn, satToolBtn), satHint);
+    channelEl, h('div', { class: 'btn-row' }, claimToolBtn, flagToolBtn, satToolBtn), satHint, expNote);
 
   // --- rivals ---
   const rivalList = h('div', { class: 'list rival-list' });
@@ -553,6 +632,7 @@ export function createPanel(root, { game, ui, bridge }) {
     const name = h('span', { class: 'row-title' });
     const meta = h('span', { class: 'row-meta' });
     const yieldEl = h('span', { class: 'row-yield' });
+    const detourEl = h('span', { class: 'badge badge-warn trail-detour' });   // C182
     const sBar = progressBar('bar-strength');
     const wCount = h('span', { class: 'num' });
     const eCount = h('span', { class: 'num' });
@@ -578,14 +658,14 @@ export function createPanel(root, { game, ui, bridge }) {
       on: { click: () => ui.setUI({ tool: { kind: 'reroute', uid }, selection: { view: 'surface', kind: 'trail', id: uid } }) } });
     const delBtn = armedButton('Delete', (ev, b) => act('deleteTrail', { uid }, ev, b));
     const row = h('div', { class: 'trail-row card', dataset: { uid: String(uid) } },
-      h('div', { class: 'row-head' }, name, meta, yieldEl), sBar.el,
+      h('div', { class: 'row-head' }, name, detourEl, meta, yieldEl), sBar.el,
       h('div', { class: 'row-controls' }, workers, escorts),
       h('div', { class: 'btn-row' }, markBtn, rallyBtn, rerouteBtn, delBtn));
     row.addEventListener('click', (ev) => {
       if (ev.target && typeof ev.target.closest === 'function' && ev.target.closest('button')) return;
       bridge.select({ view: 'surface', kind: 'trail', id: uid });
     });
-    row.__r = { name, meta, yieldEl, sBar, wCount, eCount, escorts, markBtn, rallyBtn, delBtn, wMinus, wPlus };
+    row.__r = { name, meta, yieldEl, detourEl, sBar, wCount, eCount, escorts, markBtn, rallyBtn, delBtn, wMinus, wPlus };
     return row;
   }
 
@@ -608,6 +688,17 @@ export function createPanel(root, { game, ui, bridge }) {
       + (dt.priority ? ' · chitin priority' : ''));
     r.meta.title = [ov ? 'Trunk Trails: ' + ov.shared + ' of its ' + ov.total + ' hexes are shared with another trail, so it yields ×' + ov.mult.toFixed(2) + '.' : '',
       dt.priority ? 'Chitin is short for soldier eggs: free foragers fill this trail first.' : ''].filter(Boolean).join(' ');
+    // C182: on a detour round a molehill / spring puddle, or paused with no way round
+    let dinfo = null;
+    try { dinfo = detourInfo(s, t); } catch { dinfo = null; }
+    const dtext = detourText(dinfo);
+    show(r.detourEl, !!dtext);
+    if (dtext) {
+      setText(r.detourEl, dtext.short);
+      if (r.detourEl.getAttribute('data-tip') !== dtext.line) r.detourEl.setAttribute('data-tip', dtext.line);
+      toggleClass(r.detourEl, 'badge-danger', dinfo.mode === 'paused');
+      toggleClass(r.detourEl, 'badge-warn', dinfo.mode !== 'paused');
+    }
     const res = trailRes(t.job);
     const out = num(dt.out);
     setText(r.yieldEl, '+' + fmtRate(out).replace('/s', ' ' + (RES_NAMES[res] || res).toLowerCase() + '/s'));
@@ -666,8 +757,9 @@ export function createPanel(root, { game, ui, bridge }) {
       const attack = h('button', { type: 'button', class: 'btn btn-danger', text: 'Hunt…',
         on: { click: () => { const src = sourceBy(game.s, uid); if (src) { form.setTarget({ type: 'source', uid }); ui.setUI({ subTab: 'war' }); } } } });
       const preview = h('p', { class: 'muted' });
-      selBox.append(title, info, preview, h('div', { class: 'btn-row' }, forage, draw, attack));
-      selRefs = { kind: 'source', uid, title, stockDd, levelDd, ttlDd, ringDd, forage, draw, attack, preview };
+      const gives = h('ul', { class: 'src-gives muted' });   // C184: what it gives, stock unit, regrowth, level progress
+      selBox.append(title, info, gives, preview, h('div', { class: 'btn-row' }, forage, draw, attack));
+      selRefs = { kind: 'source', uid, title, stockDd, levelDd, ttlDd, ringDd, forage, draw, attack, preview, gives };
       return;
     }
     const hex = sel.hex;
@@ -709,8 +801,17 @@ export function createPanel(root, { game, ui, bridge }) {
       }
       setText(selRefs.title, nameOf('source', src.type));
       setText(selRefs.ringDd, String(ringOf(num(src.hex))));
-      setText(selRefs.stockDd, num(src.stock, -1) < 0 ? 'Endless' : fmt(num(src.stock)) + ' / ' + fmt(num(src.max)));
-      setText(selRefs.levelDd, src.type === 'aphid_colony' ? 'Level ' + num(src.level, 1) : '—');
+      const unit = (RES_NAMES[Object.keys(obj(SOURCES[src.type] && SOURCES[src.type].y))[0]] || 'food').toLowerCase();
+      setText(selRefs.stockDd, num(src.stock, -1) < 0 ? 'Endless' : fmt(num(src.stock)) + ' / ' + fmt(num(src.max)) + ' ' + unit);
+      setText(selRefs.levelDd, src.type === 'aphid_colony' ? 'Level ' + num(src.level, 1) + ' / ' + num(SOURCES.aphid_colony.fx && SOURCES.aphid_colony.fx.maxLevel, 3) : '—');
+      let gl = [];
+      try { gl = sourceTipLines(s, d, src).filter((l) => !/^Stock |^Gone in /.test(l)); } catch { gl = []; }
+      const gsig = gl.join('|');
+      if (selRefs.gives.__sig !== gsig) {
+        selRefs.gives.__sig = gsig;
+        clear(selRefs.gives);
+        for (const l of gl) selRefs.gives.appendChild(h('li', { text: l }));
+      }
       setText(selRefs.ttlDd, num(src.ttl, -1) < 0 ? '—' : fmtTime(num(src.ttl)));
       const clickable = isClickableSource(src.type);
       show(selRefs.forage, clickable);
@@ -906,13 +1007,20 @@ export function createPanel(root, { game, ui, bridge }) {
       show(warView, view === 'war');
 
       const raids = arr(s.run.war && s.run.war.raids).filter((r) => r && r.phase !== 'done');
-      const warn = raids.find((r) => r.phase === 'warning');
-      show(raidAlert, !!warn && view === 'main');
-      if (warn) setText(raidAlertText, 'Raid incoming in ' + fmtTime(num(warn.warn)) + '!');
+      const alert = raidAlertInfo(s, d);   // C187
+      show(raidAlert, !!alert && view === 'main');
+      if (alert) {
+        alertRaid = alert.raid.uid;
+        setText(raidAlertText, 'Raid incoming in ' + fmtTime(num(alert.raid.warn)) + '! ' + alert.text);
+        defendBtn.__action = alert.action;
+        show(defendBtn, !!alert.action);
+        setText(defendBtn, alert.action === 'dispatch' ? 'Defend' : 'War tab');
+      }
 
       if (view === 'main') {
         const surf = obj(s.run.surface);
-        setText(slotsEl, fmtCount(num(d.surface && d.surface.slotsUsed)) + ' / ' + fmtCount(num(d.surface && d.surface.slots, 3)) + ' slots');
+        // C184: 'Trails 7 / 11' (used / available)
+        setText(slotsEl, trailSlotsText(num(d.surface && d.surface.slotsUsed, arr(surf.trails).length), num(d.surface && d.surface.slots, 3)).replace(/^Trails /, ''));
         show(pherEl, isShown(s, 'res_pheromone'));
         setText(pherEl, 'Pheromone ' + fmt(num(s.run.res.pheromone)));
         show(frenzyBtn, isShown(s, 'ability_frenzy'));
@@ -948,6 +1056,14 @@ export function createPanel(root, { game, ui, bridge }) {
             ? 'Satellite: needs ' + rule + '. None yet: claim or conquer land further out.'
             : (tool && tool.kind === 'placeSatellite' ? 'Click ' : 'Satellite: needs ') + rule + ' (' + fmtCount(n) + ' qualify).');
           toggleClass(satHint, 'warn', n === 0);
+        }
+        let ex = null;
+        try { ex = expeditionInfo(s, d); } catch { ex = null; }
+        show(expNote, !!(ex && ex.active));
+        if (ex && ex.active) {
+          setText(expNote, ex.full
+            ? 'Scouts beyond the border: ' + ex.found + '/' + ex.max + ' finds this season. More next season.'
+            : 'Scouts beyond the border: ' + Math.floor(ex.prog * 100) + '% to the next find (' + ex.found + '/' + ex.max + ' this season).');
         }
         show(rivalSec, isShown(s, 'panel_rivals'));
         const rivals = arr(s.run.rivals && s.run.rivals.list).filter((r) => r && r.sighted);

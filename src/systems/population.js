@@ -24,6 +24,10 @@
 // C103: each hatched adult sheds MOLT.perHatch chitin (once caste_soldier or res_chitin is unlocked); d.rates.chitin.molts.
 // C104: soldier / supermajor eggs spend only chitin above run.colony.chitinReserve (skipped like a full berth at or
 //   below it); chitinNeed [q] tells trails.allocate when chitin trails get the auto-fill first.
+// C199: the reserve never exceeds the chitin cap (chitinReserveMax [q]: the last ladder step or d.stats.chitinCap,
+//   whichever is lower; setChitinReserve clamps to it and tick() lowers a stored reserve above it); moult chitin fills
+//   up to the cap only (no one-shot overflow) and is × chitinBoost (wallet.grant); chitinNeed wants chitin only up to
+//   the cap, since trails cannot fill past it.
 // C151: caste TARGET COUNTS replace the caste-share sliders. run.colony.casteGoals[c] = adults + brood of the caste the
 //   queen lays toward (largest deficit first, then minors); casteFill[c] ("Keep berths filled") makes the target the
 //   caste's berth cap (soldiers: Barracks berths, supermajors: War Hall berths, repletes: Repletion Hall berths). Fill
@@ -289,6 +293,10 @@ export function killAdults(s, d, caste, n, cause, { job = null } = {}) {
   const k = Math.min(clampNum(n), before);
   if (!(k > 0)) return 0;
   col.adults[caste] = clampNum(before - k);
+  // C201: Carapace Workshops recycle chitin from fallen soldiers and supermajors (not from retirement, which never kills)
+  if ((caste === 'soldier' || caste === 'supermajor') && d && d.nest && d.nest.agg && d.nest.agg.chitinRecycle > 0) {
+    grant(s, d, 'chitin', k * d.nest.agg.chitinRecycle);
+  }
   if (caste === 'minor') {
     let rem = k;
     if (own(JOBS, job)) {
@@ -492,10 +500,21 @@ function extraMax(s, caste, form, have) {
   return Infinity;
 }
 
-/** C104: the chitin reserve (absolute chitin held back from soldier / supermajor eggs), clamped to the slider range. */
-export function chitinReserve(s) {
+/**
+ * [q] C199: the largest chitin reserve allowed: the last ladder step, or the chitin cap (d.stats.chitinCap) if lower.
+ * @param {import('../core/types.js').Derived} [d]
+ * @returns {number}
+ */
+export function chitinReserveMax(d) {
   const steps = SLIDERS.chitinReserveSteps;
-  return clampNum(num(s.run.colony.chitinReserve), 0, steps[steps.length - 1]);
+  const top = steps[steps.length - 1];
+  const cap = d && d.stats ? d.stats.chitinCap : undefined;
+  return typeof cap === 'number' && Number.isFinite(cap) && cap >= 0 ? Math.min(top, cap) : top;
+}
+
+/** C104: the chitin reserve (absolute chitin held back from soldier / supermajor eggs), clamped to the slider range (C199: and the cap, given d). */
+export function chitinReserve(s, d) {
+  return clampNum(num(s.run.colony.chitinReserve), 0, chitinReserveMax(d));
 }
 
 /** Stock of resource r an egg of the caste may spend: military castes only spend chitin above the reserve (C104). */
@@ -522,7 +541,7 @@ function eggsByExtras(s, caste) {
  * @returns {{ needed: boolean, reserve: number, next: number, wanted: boolean }}
  */
 export function chitinNeed(s, d) {
-  const reserve = chitinReserve(s);
+  const reserve = chitinReserve(s, d);
   const col = s.run.colony;
   let next = Infinity;
   let fallback = Infinity;
@@ -537,7 +556,8 @@ export function chitinNeed(s, d) {
   }
   const wanted = Number.isFinite(next);
   if (!wanted) next = Number.isFinite(fallback) ? fallback : 0;
-  const needed = allowed && (wanted || reserve > 0) && num(s.run.res.chitin) < reserve + next - EPS;
+  const cap = d && d.stats && typeof d.stats.chitinCap === 'number' && d.stats.chitinCap >= 0 ? d.stats.chitinCap : Infinity;
+  const needed = allowed && (wanted || reserve > 0) && num(s.run.res.chitin) < Math.min(cap, reserve + next) - EPS;
   return { needed, reserve, next, wanted };
 }
 
@@ -755,7 +775,7 @@ function develop(s, d, econDt, env) {
     }
     s.run.stats.hatched = clampNum(num(s.run.stats.hatched) + n);
     env.emit('hatched', { caste, n });
-    if (moltsOn(s)) molt += grant(s, d, 'chitin', n * MOLT.perHatch);
+    if (moltsOn(s)) molt += grant(s, d, 'chitin', n * MOLT.perHatch, { overflow: false });
   }
   return molt;
 }
@@ -803,6 +823,8 @@ export function tick(s, d, dt, env) {
   const econDt = step > 0 ? (env && env.econDt > 0 ? env.econDt : step) : 0;
   if (!(step > 0)) return;
   convertLegacyCasteTargets(s, d);   // C151: pre-C151 share saves, once
+  const resMax = chitinReserveMax(d);   // C199: a reserve above the chitin cap could never be met by income
+  if (num(s.run.colony.chitinReserve) > resMax) s.run.colony.chitinReserve = clampNum(resMax);
   autoFill(s, d);
   layEggs(s, d, econDt, env);
   moltRate(d, develop(s, d, econDt, env), econDt);
@@ -914,15 +936,14 @@ export const handlers = {
     },
   },
 
-  /** setChitinReserve { amount }: C104, chitin held back from soldier / supermajor eggs (0..last ladder step). */
+  /** setChitinReserve { amount }: C104, chitin held back from soldier / supermajor eggs (0..last ladder step; C199: clamped to the chitin cap). */
   setChitinReserve: {
     validate(s, d, cmd) {
       const steps = SLIDERS.chitinReserveSteps;
       return inRange(cmd.amount, 0, steps[steps.length - 1]) ? null : 'invalid';
     },
     apply(s, d, cmd) {
-      const steps = SLIDERS.chitinReserveSteps;
-      s.run.colony.chitinReserve = clampNum(cmd.amount, 0, steps[steps.length - 1]);
+      s.run.colony.chitinReserve = clampNum(cmd.amount, 0, chitinReserveMax(d));
     },
   },
 

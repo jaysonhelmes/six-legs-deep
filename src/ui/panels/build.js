@@ -6,7 +6,7 @@
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtMult, fmtRate } from '../format.js';
 import { nameOf, CHAMBER_TIPS, CHAMBER_ABOUT, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText,
-  plannedWaitText } from '../text.js';
+  plannedWaitText, blueprintLockHint, BLUEPRINT_EDIT_LOCKED } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks, unneededTunnels, pocketAction, pocketAt,
   rootCap, rootCost, plannedWaits, plannedWait } from '../../systems/nest.js';
@@ -22,16 +22,18 @@ import { FLIGHT } from '../../data/prestige.js';
 import { BROOD } from '../../data/economy.js';
 import { CLICK_CAP, GRID } from '../../data/balance.js';
 import { makeAct, note, progressBar, armedButton, subTabStrip } from './common.js';
+import { buildAutoBox } from './automation.js';
 
 const GRID_COLS = (GRID && GRID.cols) || 40;
 
 /** Chamber ids when data/chambers.js is still empty (DESIGN §7.6 order). */
 export const CHAMBER_FALLBACK = Object.freeze(['royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks',
-  'war_hall', 'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber', 'deep_vault']);
+  'war_hall', 'carapace_store', 'carapace_workshop', 'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate',
+  'water_well', 'nuptial_chamber', 'deep_vault']);
 /** Default instance limits when data is missing (DESIGN §7.6). */
 const MAX_INST_FALLBACK = Object.freeze({ royal_chamber: 1, gallery: 4, nursery: 3, granary: 3, scent_library: 2, midden: 2, barracks: 2,
   war_hall: 2, root_aphid_pen: 2, fungus_garden: 3, repletion_hall: 2, hibernaculum: 2, thermal_chimney: 1, gate: 1, water_well: 'perPocket',
-  nuptial_chamber: 1, deep_vault: 1 });
+  nuptial_chamber: 1, deep_vault: 1, carapace_store: 2, carapace_workshop: 1 });
 const DIRS = ['left', 'right', 'up', 'down'];
 const DIR_LABELS = { left: '← Left', right: 'Right →', up: '↑ Up', down: '↓ Down' };
 const STATUS_NAMES = { digging: 'Digging', active: 'Active', growing: 'Enlarging', relocating: 'Relocating' };
@@ -252,11 +254,21 @@ export function chamberHotkeyAction(s, d, hk) {
  * Refused with a reason when that type is locked or at its instance limit. null = not a chamber reference.
  * @param {Object} s
  * @param {Object} d
+ * C180: Q toggles: when the current tool already places a chamber (of the referenced type, or any type when no chamber
+ * is referenced), the result is { clear: true } and the caller clears the tool (exits build mode).
  * @param {Object|null} ref uistate hover or selection ({ view: 'nest', kind: 'chamber'|'nursery'|'queen', id: uid })
- * @returns {null | { tool?: { kind: 'placeChamber', chamber: string }, reject?: string }}
+ * @param {Object|null} [tool] the active uistate tool
+ * @returns {null | { tool?: { kind: 'placeChamber', chamber: string }, reject?: string, clear?: boolean }}
  */
-export function placeAnotherAction(s, d, ref) {
-  if (!ref || ref.view !== 'nest' || !(ref.kind === 'chamber' || ref.kind === 'nursery' || ref.kind === 'queen') || !s || !s.run) return null;
+export function placeAnotherAction(s, d, ref, tool = null) {
+  const placing = !!(tool && tool.kind === 'placeChamber');
+  const isRef = !!ref && ref.view === 'nest' && (ref.kind === 'chamber' || ref.kind === 'nursery' || ref.kind === 'queen');
+  if (placing && !isRef) return { clear: true };
+  if (placing && s && s.run) {
+    const c0 = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === num(ref.id, 0));
+    if (!c0 || c0.type === tool.chamber) return { clear: true };
+  }
+  if (!isRef || !s || !s.run) return null;
   const uid = num(ref.id, 0);
   const ch = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === uid);
   if (!ch) return null;
@@ -351,7 +363,7 @@ function q(fn, fallback) {
  * @param {HTMLElement} root
  * @param {{ game: Object, ui: Object, bridge: Object }} ctx
  */
-export function createPanel(root, { game, ui, bridge }) {
+export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const act = makeAct(game, bridge);
   const el = h('div', { class: 'panel panel-build' });
   root.appendChild(el);
@@ -444,13 +456,19 @@ export function createPanel(root, { game, ui, bridge }) {
   const plannedAll = armedButton('Cancel all planned', (ev, b) => act('cancelPlanned', { all: true }, ev, b));
   const plannedBox = h('div', { class: 'planned-box' }, h('div', { class: 'row-between' }, h('span', { class: 'sub-title', text: 'Planned (waiting)' }), plannedAll),
     plannedList);
-  const bpSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Blueprints' }),
-    h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster. Use applies one now as well.' }), plannedBox, bpList);
+  // C180: saved layouts but no way to save new ones (blueprintLockHint); the Architect's Table edit hint
+  const bpLockNote = h('p', { class: 'note bp-lock' });
+  const bpEditNote = h('p', { class: 'note bp-edit-lock', text: BLUEPRINT_EDIT_LOCKED });
+  const bpIntro = h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster. Use applies one now as well.' });
+  const bpSec = h('section', { class: 'sec bp-sec' }, h('h3', { class: 'sec-title', text: 'Blueprints' }), bpIntro, bpLockNote, plannedBox, bpList, bpEditNote);
 
   // camera help for the nest view (render/nestInput.js; the full list is in Settings → Keyboard and view controls)
   const viewHelp = note('Nest view: wheel scrolls, Ctrl + wheel or pinch zooms, the crown button (top-right) frames the queen.');
   viewHelp.classList.add('view-help');
   mainView.append(toolBanner, queueSec, chamberSec, moundSec, rootSec, bpSec, viewHelp);
+  // C166 / C170 (prestige engineer): chamber-level and Mound autobuyers + the blueprint-save hint (ui/panels/automation.js)
+  const autoBox = buildAutoBox({ game, bridge });
+  mainView.insertBefore(autoBox.el, viewHelp);
 
   // --- inspect ---
   const inspTitle = h('h3', { class: 'sec-title' });
@@ -680,8 +698,13 @@ export function createPanel(root, { game, ui, bridge }) {
       dataset: { tip: 'Apply now: queue what fits, plan the rest. Also after every flight.' },
       on: { click: (ev) => act('loadBlueprint', { slot }, ev, load) } });
     const del = armedButton('Delete', (ev, b) => act('deleteBlueprint', { slot }, ev, b));
-    const row = h('div', { class: 'bp-row card' }, h('div', { class: 'row-head' }, name, meta), h('div', { class: 'btn-row' }, input, save, load, del));
-    row.__r = { name, meta, load, del };
+    // C180: hand-edit a saved layout in the blueprint editor (Federation Architect's Table)
+    const edit = h('button', { type: 'button', class: 'btn btn-small btn-ghost bp-edit', text: 'Edit…',
+      dataset: { tip: 'Open this layout in the blueprint editor: move, add or remove chambers and tunnels. Your colony is not touched.' },
+      on: { click: () => { if (dialogs && typeof dialogs.blueprintEditor === 'function') dialogs.blueprintEditor(slot); } } });
+    const btns = h('div', { class: 'btn-row' }, input, save, load, edit, del);
+    const row = h('div', { class: 'bp-row card' }, h('div', { class: 'row-head' }, name, meta), btns);
+    row.__r = { name, meta, load, del, edit, input, save, btns };
     return row;
   }
 
@@ -690,8 +713,12 @@ export function createPanel(root, { game, ui, bridge }) {
     const bp = arr(s.era && s.era.blueprints)[slot] || null;
     setText(r.name, bp ? bp.name || 'Layout ' + (slot + 1) : 'Empty slot ' + (slot + 1));
     setText(r.meta, bp ? fmtCount(arr(bp.chambers).length) + ' chambers' + (num(s.era.activeBlueprint, -1) === slot ? ' · active' : '') : '');
+    // C180: without Ancestral Blueprint / Blueprint Library the saved layouts are only listed (kept, not usable)
+    const canUse = traitLevel(s, 'ancestral_blueprint') > 0 || fedLevel(s, 'blueprint_memory') > 0;
+    show(r.btns, canUse);
     show(r.load, !!bp);
     show(r.del, !!bp);
+    show(r.edit, !!bp && fedLevel(s, 'architects_table') > 0);
     toggleClass(row, 'active', !!bp && num(s.era.activeBlueprint, -1) === slot);
   }
 
@@ -933,7 +960,13 @@ export function createPanel(root, { game, ui, bridge }) {
       // blueprints
       const bpOn = traitLevel(s, 'ancestral_blueprint') > 0 || fedLevel(s, 'blueprint_memory') > 0;
       const pend = arr(s.run.nest.bpPending).filter(Boolean);
-      show(bpSec, bpOn || pend.length > 0);
+      const lockHint = blueprintLockHint(s);
+      const savedN = arr(s.era && s.era.blueprints).filter(Boolean).length;
+      show(bpSec, bpOn || pend.length > 0 || !!lockHint);
+      show(bpIntro, bpOn);
+      show(bpLockNote, !!lockHint);
+      setText(bpLockNote, lockHint);
+      show(bpEditNote, bpOn && savedN > 0 && fedLevel(s, 'architects_table') <= 0);
       show(plannedBox, pend.length > 0);
       if (pend.length) {
         if (plannedAll.__disarm) plannedAll.__disarm();
@@ -958,7 +991,12 @@ export function createPanel(root, { game, ui, bridge }) {
       if (bpOn) {
         const slots = Array.from({ length: bpSlots(s) }, (_, i) => i);
         syncList(bpList, slots, (i) => i, createBpRow, (row, i) => updateBpRow(row, i, s));
-      }
+      } else if (lockHint) {
+        // C180: the kept layouts, listed (no buttons) while saving is locked
+        const slots = arr(s.era.blueprints).map((b, i) => (b ? i : -1)).filter((i) => i >= 0);
+        syncList(bpList, slots, (i) => i, createBpRow, (row, i) => updateBpRow(row, i, s));
+      } else syncList(bpList, [], (i) => i, createBpRow, null);
+      autoBox.update(s);
     },
     destroy() {
       if (el.parentNode) el.parentNode.removeChild(el);

@@ -34,7 +34,7 @@ const FLAT = { spring: 1, summer: 1, autumn: 1, winter: 1 };
 /** Source ids in display / iteration order (DESIGN §8.4 plus termite_swarm, §18 C7). */
 export const SOURCE_ORDER = deepFreeze(['crumb_scatter', 'seed_patch', 'flower_patch', 'dead_insect', 'leaf_plant', 'aphid_colony',
   'prey_caterpillar', 'prey_cricket', 'prey_beetle', 'fallen_fruit', 'picnic_spill', 'termite_mound', 'lycaenid_caterpillar',
-  'harvester_stash', 'termite_swarm']);
+  'harvester_stash', 'termite_swarm', 'rich_seed_patch', 'beetle_carcass']);
 
 /** Source table keyed by id. */
 export const SOURCES = deepFreeze({
@@ -138,6 +138,21 @@ export const SOURCES = deepFreeze({
     id: 'termite_swarm', name: 'Termite swarm', job: 'forager',
     y: { food: 5, chitin: 0.05 }, cap: 30, stock: null,
     spawn: { mode: 'event', rMin: 2, rMax: 6, ttl: 45, terrain: null },   // ARCH-R: DESIGN gives no ring; 2–6 chosen
+    season: { ...FLAT }, hunt: null, fx: {},
+  },
+  // C188: scout expedition finds (DESIGN §8.3), placed on the map's edge ring by surface.js (EXPEDITION in data/surface.js)
+  rich_seed_patch: {
+    id: 'rich_seed_patch', name: 'Rich seed patch', job: 'forager',
+    y: { food: 1 }, cap: 20,
+    stock: { base: 600, sec: 240, regrow: 0, dynamic: false },
+    spawn: { mode: 'expedition', ttl: 300, terrain: null },
+    season: { ...FLAT }, hunt: null, fx: {},
+  },
+  beetle_carcass: {
+    id: 'beetle_carcass', name: 'Beetle carcass', job: 'forager',
+    y: { food: 0.3, chitin: 0.05 }, cap: 20,
+    stock: { base: 250, sec: 90, regrow: 0, dynamic: false },
+    spawn: { mode: 'expedition', ttl: 300, terrain: null },
     season: { ...FLAT }, hunt: null, fx: {},
   },
 });

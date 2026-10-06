@@ -108,14 +108,14 @@ const HANDLERS = {
   'systems/adaptations.js': ['buyAdaptation'],
   'systems/nest.js': ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill', 'reorderQueue',
     'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint', 'cancelPlanned', 'backfillUnneeded', 'drainPocket',
-    'relocatePocket', 'growRoot'],
+    'relocatePocket', 'growRoot', 'editBlueprint'],
   'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'buyMound', 'moveAphids'],
   'systems/trails.js': ['drawTrail', 'rerouteTrail', 'deleteTrail', 'assignWorkers', 'assignEscorts', 'mark', 'rally', 'frenzy', 'massRecruit'],
   'systems/rivals.js': ['launchParty', 'recallParty', 'reinforce', 'battleAction', 'bribe', 'tournament', 'tournamentChoice'],
   'systems/raids.js': ['dispatchGuard'],
-  'systems/research.js': ['buyResearch', 'buyRefinement'],
+  'systems/research.js': ['buyResearch', 'buyRefinement', 'buyArchive'],
   'systems/seasons.js': ['setChronobiology'],
-  'systems/events.js': ['eventChoice', 'clickEventObject', 'scrapeMold', 'bailFlood', 'cleanBlight'],
+  'systems/events.js': ['eventChoice', 'clickEventObject', 'scrapeMold', 'bailFlood', 'cleanBlight', 'clearAntlion'],
   'systems/golden.js': ['clickBeetle', 'clickPupa', 'openGift'],
   'systems/prestige.js': ['fly', 'chooseLanding', 'supercolony', 'speciate', 'setHeirlooms', 'placeSatellite'],
   'systems/traits.js': ['buyTrait', 'buyFederation', 'buyGenome'],
@@ -288,13 +288,13 @@ test('[post-integration] data content: documented ORDER arrays, table sizes and 
     const got = (await load(rel))[name].length;
     if (got !== n) problems.push(rel + ': ' + name + ' has ' + got + ' entries, DESIGN has ' + n);
   };
-  await size('data/chambers.js', 'CHAMBER_ORDER', 17); // C136 War Hall
+  await size('data/chambers.js', 'CHAMBER_ORDER', 19); // C136 War Hall, C179 Carapace Store / Workshop
   await size('data/adaptations.js', 'ADAPTATION_ORDER', 10);
   await size('data/research.js', 'RESEARCH_ORDER', 58);
   await size('data/events.js', 'EVENT_ORDER', 28);
   await size('data/achievements.js', 'ACH_ORDER', 81);
   await size('data/fieldGuide.js', 'FG_ORDER', 40);
-  await size('data/sources.js', 'SOURCE_ORDER', 15);
+  await size('data/sources.js', 'SOURCE_ORDER', 17); // C188 expedition finds (rich seed patch, beetle carcass)
   const src = (await load('data/sources.js')).SOURCE_ORDER;
   if (!src.includes('termite_swarm')) problems.push('data/sources.js: termite_swarm missing (C7)');
   if (src.includes('gift')) problems.push('data/sources.js: gift must not be a source');

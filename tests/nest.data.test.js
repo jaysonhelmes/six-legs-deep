@@ -30,8 +30,8 @@ test('strata: six contiguous layers covering rows 0–79 with DESIGN work and re
   assert.ok(Object.isFrozen(LAYERS) && Object.isFrozen(LAYERS.clay) && Object.isFrozen(DIG.floodRows));
 });
 
-test('chambers: 17 entries in DESIGN order with the §6.3 shape', () => {
-  assert.equal(CHAMBER_ORDER.length, 17);
+test('chambers: 19 entries in DESIGN order with the §6.3 shape', () => {
+  assert.equal(CHAMBER_ORDER.length, 19);
   assert.deepEqual(Object.keys(CHAMBERS).sort(), [...CHAMBER_ORDER].sort());
   const keys = ['id', 'name', 'unlock', 'maxInst', 'instBonus', 'w0', 'h0', 'grows', 'rowMin', 'rowMax', 'rule', 'place', 'placeGrowth',
     'f0', 's0', 'g', 'levelExtra', 'maxL', 'maxLBonus', 'frostImmune', 'fx'];
@@ -45,13 +45,15 @@ test('chambers: 17 entries in DESIGN order with the §6.3 shape', () => {
     assert.ok(Object.isFrozen(c) && Object.isFrozen(c.fx));
   }
   // F_place = 4 × F0 unless the table lists it (royal, hibernaculum extras, water well)
-  for (const id of ['gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'root_aphid_pen', 'fungus_garden',
-    'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'nuptial_chamber', 'deep_vault']) {
+  for (const id of ['gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'carapace_store',
+    'carapace_workshop', 'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'nuptial_chamber',
+    'deep_vault']) {
     assert.equal(CHAMBERS[id].place.food, 4 * CHAMBERS[id].f0, id);
   }
   assert.deepEqual(CHAMBERS.hibernaculum.place, { food: 8000, honeydew: 150 });
   assert.deepEqual(CHAMBERS.gate.place, { food: 2000, chitin: 20 });
   assert.deepEqual(CHAMBERS.gate.levelExtra, { chitin: 5 });
+  assert.deepEqual(CHAMBERS.carapace_workshop.place, { food: 3000, chitin: 30 });
   assert.equal(CHAMBERS.royal_chamber.place.food, 1e5);
   assert.equal(CHAMBERS.royal_chamber.placeGrowth, 10);
   assert.deepEqual(CHAMBERS.royal_chamber.instBonus, [{ trait: 'polygyny', add: 1 }, { federation: 'queens_council', add: 2 }]);
@@ -66,7 +68,7 @@ test('chambers: 17 entries in DESIGN order with the §6.3 shape', () => {
     scent_library: [3, 2, 2, 0, 2.00], midden: [2, 2, 2, 8, 1.60], barracks: [3, 2, 2, 0, 1.70], war_hall: [4, 2, 2, 0, 1.80], root_aphid_pen: [3, 2, 2, 0, 1.75],
     fungus_garden: [3, 3, 3, 0, 1.70], repletion_hall: [3, 2, 2, 0, 1.80], hibernaculum: [4, 2, 2, 10, 1.50],
     thermal_chimney: [2, 4, 1, 6, 2.00], gate: [2, 2, 1, 10, 1.70], water_well: [2, 3, 'perPocket', 1, 1], nuptial_chamber: [5, 3, 1, 4, 2.00],
-    deep_vault: [4, 3, 1, 8, 2.50],
+    deep_vault: [4, 3, 1, 8, 2.50], carapace_store: [2, 2, 2, 0, 1.60], carapace_workshop: [3, 2, 1, 10, 1.75],
   };
   for (const [id, [w, h, inst, maxL, g]] of Object.entries(table)) {
     const c = CHAMBERS[id];
@@ -94,6 +96,8 @@ test('chamber fx keys match the §6.3 contract table', () => {
     water_well: { gardenAdj: 1.30 },
     nuptial_chamber: { cellsBase: 10, cellsPer: 5, cellsMax: 25, cellsMaxCourt: 50 },
     deep_vault: { offlineSec: 3600, alates: 0.05 },
+    carapace_store: { chitinCap: 300, capGrowth: 1.6 },
+    carapace_workshop: { chitinBoost: 0.10, boostMax: 1.0, recycle: 0.25 },
   };
   for (const id of CHAMBER_ORDER) assert.deepEqual(CHAMBERS[id].fx, fx[id], id);
 });
@@ -105,6 +109,7 @@ test('unlock keys are the §11 keys', () => {
     root_aphid_pen: 'chamber_root_aphid_pen', fungus_garden: 'chamber_fungus_garden', repletion_hall: 'chamber_repletion_hall',
     hibernaculum: 'chamber_hibernaculum', thermal_chimney: 'chamber_thermal_chimney', gate: 'chamber_gate',
     water_well: 'chamber_water_well', nuptial_chamber: 'chamber_nuptial_chamber', deep_vault: 'chamber_deep_vault',
+    carapace_store: 'chamber_carapace_store', carapace_workshop: 'chamber_carapace_workshop',
   };
   for (const id of CHAMBER_ORDER) assert.equal(CHAMBERS[id].unlock, want[id], id);
   assert.equal(CHAMBERS.royal_chamber.levelUnlock, 'royal_levelup');
@@ -121,7 +126,8 @@ test('adjacency rules and soil-feature tables', () => {
   assert.equal(ADJACENCY.adj_nursery_royal.path, GEOM.adjPathMax);
   assert.equal(ADJACENCY.prox_barracks_entrance.path, GEOM.barracksPath);
   assert.deepEqual(ROOTS, { min: 6, max: 10, yMin: 6, yMax: 25 });
-  assert.deepEqual(STONES, { min: 4, max: 8, size: 3, yMin: 8, yMax: 55 });
+  assert.deepEqual(STONES, { min: 4, max: 8, size: 3, yMin: 8, yMax: 55, blobMin: 3, blobMax: 6,
+    shapes: { pebble: 2, bar: 3, block: 2, slab: 2, ell: 3, blob: 4, boulder: 1 } });
   assert.deepEqual(WATER, { min: 2, max: 3, sizeMin: 2, sizeMax: 3, yMin: 40, yMax: 70 });
   assert.deepEqual(CACHES.kinds.seed_cache, { weight: 4, res: 'food', sec: 90, min: 50 });
   assert.deepEqual(CACHES.kinds.beetle_husk, { weight: 3, res: 'chitin', sec: 60, min: 25 });

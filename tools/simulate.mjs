@@ -63,6 +63,7 @@ const POLICY = Object.freeze({
   adaptFoodFrac: 0.5,                  // … or ≤ 50 % of stored food
   adaptChitinFrac: 0.25,               // chitin-costing Adaptations only when they cost ≤ 25 % of stored chitin (soldier eggs need it)
   chitinReserve: 50,                   // with soldiers unlocked and less chitin than this, keep a trail on a dead insect
+  workshopSec: 1200,                   // C199: place the Carapace Workshop from 20 min into a run
   maxQueue: 4,                         // do not queue new chambers past this many dig jobs
   libraries: 2,                        // Scent Libraries to place (DESIGN §7.6 max instances)
   // C151 caste target counts: soldiers / supermajors per minor adult (≈ the old 15 % / 5 % egg shares)
@@ -289,7 +290,7 @@ export class Bot {
     const c = s.run.colony;
     const { counts, m } = this.jobTargets();
     if (m <= 0) return;
-    const autoOk = !!(s.run.research.age_polyethism || (s.cycle.traits.automaton_instincts || 0) > 0 || (s.era.federation.automated_brood || 0) > 0);
+    const autoOk = !!(s.run.research.age_polyethism || (s.era.federation.automated_brood || 0) > 0); // C166: not automaton_instincts
     if (autoOk && this.rv.job_presets) {
       if (!c.autoJobs) this.act('setAutoJobs', { on: true });
       const targets = {};
@@ -505,6 +506,16 @@ export class Bot {
     // or Library level (granaries otherwise soak up the soil those need).
     if (u.chamber_granary && s.run.res.food >= POLICY.storageFill * st.foodCap && (!this.soilBinding || this.capBlocks(['gallery', 'scent_library']))
       && this.growType('granary')) return;
+    // C198: while the lay rate binds, grow the queens first: the cheapest Royal Chamber level, or another Royal Chamber
+    // once Polygyny / Queens' Council allow one (the lay rate no longer scales with colony scale).
+    if (royal && u.royal_levelup && royal.level >= POLICY.royalTargetLevel && s.run.bottleneck.id === 'bn_lay_rate'
+      && this.growType('royal_chamber')) return;
+    // C199: chitin storage. A Carapace Store when chitin sits near its cap; one Carapace Workshop (chitin ×1.1 per level)
+    // from POLICY.workshopSec into a run (a run-1 player is busy with the first conquest before that).
+    if (u.chamber_carapace_store && (s.run.res.chitin || 0) >= POLICY.storageFill * (st.chitinCap ?? Infinity)
+      && this.growType('carapace_store')) return;
+    if (u.chamber_carapace_workshop && s.run.time >= POLICY.workshopSec && this.chambersOf('carapace_workshop').length === 0
+      && this.growType('carapace_workshop', { placeOnly: true })) return;
     // 3. Economy chambers.
     if (u.chamber_scent_library && this.chambersOf('scent_library').length < POLICY.libraries && this.growType('scent_library', { placeOnly: true })) return;
     if (u.chamber_midden && this.chambersOf('midden').length === 0 && this.growType('midden', { placeOnly: true })) return;
@@ -519,6 +530,7 @@ export class Bot {
     // rate, which matters only while housing is free (a housing-capped colony lays nothing).
     if (agg.libraryInsight > 0 && this.growType('scent_library', { levelOnly: true })) return;
     if (royal && u.royal_levelup && !housingFull && this.growType('royal_chamber', { levelOnly: true })) return;
+    if (this.chambersOf('carapace_workshop').length > 0 && this.growType('carapace_workshop', { levelOnly: true })) return;
     // 4. Mound (soil sink) when soil is plentiful.
     if (u.mound) {
       const mc = q(surface.moundCost, s);
@@ -683,7 +695,7 @@ export class Bot {
 
   automationToggles() {
     const s = this.g.s;
-    const on = (s.era.federation.autobuyers || 0) > 0 || (s.cycle.traits.automaton_instincts || 0) > 0;
+    const on = (s.era.federation.autobuyers || 0) > 0; // C166: the Adaptation autobuyer is Federation-only
     if (on && !s.meta.automation.autobuy.on) this.act('setAutomation', { patch: { autobuy: { on: true } } });
   }
 

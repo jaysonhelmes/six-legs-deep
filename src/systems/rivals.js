@@ -1003,11 +1003,33 @@ function secure(s, d, r, env) {
   if (env) env.emit('conquest', { uid: r.uid, rivalType: r.type, tier: r.tier });
 }
 
+/**
+ * C186: a fallen rival's raids still in their warning are called off at once (like a bribe), not when the warning ends
+ * (the C90 check in raids.beginFight stays as the fallback): the raid leaves war.raids (its chip and arrow go), waiting
+ * guards go home, and raidResult { win: true, calledOff: 'fallen' } reports it ("Raid called off — their nest has
+ * fallen"). The raiders died with their nest. A raid already fighting finishes (C90).
+ */
+function callOffRaids(s, r, env) {
+  const war = s.run.war;
+  const raids = war.raids;
+  for (let i = raids.length - 1; i >= 0; i--) {
+    const raid = raids[i];
+    if (!raid || raid.rival !== r.uid || raid.phase !== 'warning') continue;
+    raids.splice(i, 1);
+    for (const p of war.parties) if (p.kind === 'guard' && p.target && p.target.uid === raid.uid && p.state === 'out') p.state = 'home';
+    if (env) {
+      env.emit('raidResult', { uid: raid.uid, win: true, foodLost: 0, broodLost: 0, workersLost: 0, target: { ...raid.target }, rival: r.uid,
+        calledOff: 'fallen' });
+    }
+  }
+}
+
 /** A rival nest falls to an assault (DESIGN §9.4): kill chitin now, spoils now or when the whole Front has fallen. */
 function conquer(s, d, r, kills, env) {
   r.alive = false;
   r.n = 0;
   r.fallenAt = num(s.run.time);
+  callOffRaids(s, r, env);
   const m = conquestMult(s);
   combat.grantReward(s, d, { chitin: REWARDS.chitinPerKillTier * r.tier * kills * m }, env);
   if (r.type === 'great_rival' && r.group) {

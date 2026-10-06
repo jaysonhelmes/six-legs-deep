@@ -36,6 +36,7 @@ test('drift guard: model formulas equal prestige.js projections', () => {
     s.run.colony.alatesReared = MODEL.reared;
     assert.equal(alatesFor(fRun), projectAlates(s, d), 'alates at f_run ' + fRun);
   }
+  s.run.fRun = 0; // C168: projectKinship adds the run's projected alates; none here
   for (const a of [5000, 123456, 1e9]) {
     s.cycle.alatesCycle = a;
     assert.equal(kinshipFor(a), projectKinship(s, d), 'kinship at ' + a);

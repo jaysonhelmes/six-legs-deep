@@ -51,6 +51,23 @@ export const TERRAIN = deepFreeze({
 export const SCOUT = deepFreeze({ base: 10, exp: 1.2, insightPerRing: 0.75, forceExp: 0.6, flagPriority: 3, cartographer: 1.5 });
 
 /**
+ * C188: scout expeditions (DESIGN §8.3). Once no frontier hex is left inside the map radius, the scout force works
+ * beyond the border at its scouting rate (scouts^0.6 × multipliers) and each `cost × growth^(finds this season)`
+ * scout-seconds brings back a find on a free, revealed hex of the edge ring (ring = map radius), at most perSeason
+ * per season. Offline the work banks up to one find (it is placed on return). Each find lasts `ttl` seconds.
+ * finds: weighted pick. Sources (rich_seed_patch, beetle_carcass: data/sources.js) are trail targets; objects
+ * (fossil_cache, lost_queen) are clicked once: fossil = max(insightMin, insightSec of insight income); lost queen =
+ * lay ×layMult for laySec.
+ */
+export const EXPEDITION = deepFreeze({ cost: 240, growth: 2, perSeason: 2, ttl: 300,
+  finds: [
+    { id: 'rich_seed_patch', kind: 'source', w: 3 },
+    { id: 'beetle_carcass', kind: 'source', w: 3 },
+    { id: 'fossil_cache', kind: 'object', w: 2, insightSec: 120, insightMin: 40 },
+    { id: 'lost_queen', kind: 'object', w: 1, layMult: 1.5, laySec: 120 },
+  ] });
+
+/**
  * Trails (DESIGN §8.5). Extras: achRise (ach_double_bridge strength rise ×1.1), achSMax (ach_highway S_max +5),
  * allocChunks (auto-fill chunks, ARCHITECTURE §8.3 "≤ 50 chunks").
  */

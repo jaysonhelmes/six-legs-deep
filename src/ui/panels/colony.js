@@ -7,7 +7,7 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../do
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
 import { nameOf, JOB_TIPS, CASTE_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
-import { broodSummary, housingBrood, chitinReserve, casteStatus } from '../../systems/population.js';
+import { broodSummary, housingBrood, chitinReserve, casteStatus, chitinReserveMax } from '../../systems/population.js';
 import { idleMinors, jobCap, withTarget, effectiveTargets } from '../../systems/jobs.js';
 import { eggCost } from '../../systems/stats.js';
 import { JOB_ORDER, JOBS, TARGET_UI } from '../../data/jobs.js';
@@ -190,7 +190,7 @@ export function createPanel(root, { game, ui, bridge }) {
     h('div', { class: 'pipe-cell', dataset: { tip: 'Pupae: almost ready to hatch.' } }, h('i', { class: 'ico ico-pupa' }), pupaN, h('span', { class: 'pipe-label', text: 'Pupae' })));
   const slotBar = progressBar('bar-brood');
   const houseBar = progressBar('bar-house');
-  const layEl = h('dd');
+  const layEl = h('dd', { dataset: { tipKey: 'lay' } });   // C192: hover for every factor of the lay rate
   const eggCostEl = h('span', { class: 'cost' });
   const naniticEl = h('p', { class: 'note' });
   const reserve = sliderRow('Egg reserve', { min: 0, max: Math.round(RESERVE_MAX * 100), step: 5, tip: 'Keep food for purchases: the queen will not spend it.' },
@@ -442,7 +442,10 @@ export function createPanel(root, { game, ui, bridge }) {
     tSl.out.style.minWidth = '3.2em';
     const chip = h('div', { class: 'job-chip', dataset: { job: id, tip: JOB_TIPS[id] }, draggable: true },
       h('i', { class: 'ico ico-job-' + id, attrs: { 'aria-hidden': 'true' } }),
-      h('span', { class: 'job-name', text: nameOf('job', id) }), n, cap, target, h('span', { class: 'job-btns' }, minus, plus), tSl.el);
+      h('span', { class: 'job-name', text: nameOf('job', id) }),
+      // C195: count, cap and the bottleneck bias share one row, so the bias % sits right after the count (it used to land
+      // under the +/− buttons in narrow cells)
+      h('span', { class: 'job-count' }, n, cap, target), h('span', { class: 'job-btns' }, minus, plus), tSl.el);
     // Sliding the target thumb must not start a chip drag (a draggable ancestor swallows range drags in some browsers).
     tSl.input.addEventListener('pointerdown', () => { chip.draggable = false; });
     for (const t of ['pointerup', 'pointercancel', 'change', 'blur']) tSl.input.addEventListener(t, () => { chip.draggable = true; });
@@ -569,7 +572,8 @@ export function createPanel(root, { game, ui, bridge }) {
         if (milVis) {
           const amt = q(() => chitinReserve(s), num(c.chitinReserve));
           const label = (v) => fmtCount(CHITIN_STEPS[Math.max(0, Math.min(CHITIN_STEPS.length - 1, Math.round(v)))]) + ' chitin';
-          chitinRes.set(chitinStepIndex(amt), { disabled: s.run.hardship === 'monomorphic' || s.run.hardship === 'pacifist',
+          const maxIdx = chitinStepIndex(q(() => chitinReserveMax(d), CHITIN_STEPS[CHITIN_STEPS.length - 1]));
+          chitinRes.set(chitinStepIndex(amt), { max: maxIdx, disabled: s.run.hardship === 'monomorphic' || s.run.hardship === 'pacifist',
             text: fmtCount(amt) + ' chitin', fmt: label });
         }
         const g = obj(d && d.combat && d.combat.garrison);
@@ -602,10 +606,10 @@ export function createPanel(root, { game, ui, bridge }) {
           + (left >= 0.005 ? ' · ' + fmtPct(left, { signed: false }) + ' of workers stay idle' : '')
           + '. Workers are reassigned every 5 s; a share a job cannot use goes to foragers.');
       }
-      const autoAvail = isShown(s, 'job_presets') || hasResearch(s, 'age_polyethism') || traitLevel(s, 'automaton_instincts') > 0 || fedLevel(s, 'automated_brood') > 0;
+      const autoAvail = isShown(s, 'job_presets') || hasResearch(s, 'age_polyethism') || fedLevel(s, 'automated_brood') > 0; // C166: not Automaton Instincts
       show(autoRow, autoAvail);
       setProp(autoBox, 'checked', !!c.autoJobs);
-      const thrAvail = hasResearch(s, 'response_thresholds') || traitLevel(s, 'automaton_instincts') > 0 || fedLevel(s, 'automated_brood') > 0;
+      const thrAvail = hasResearch(s, 'response_thresholds') || fedLevel(s, 'automated_brood') > 0;
       show(thrRow, thrAvail);
       setProp(thrBox, 'checked', !!c.thresholdJobs);
       show(presetRow, hasResearch(s, 'hive_mind'));

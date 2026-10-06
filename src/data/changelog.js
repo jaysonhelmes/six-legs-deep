@@ -10,6 +10,48 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.11.0',
+    date: '2026-10-05',
+    title: 'Queens, chitin storage, event log and smarter automation',
+    sections: [
+      { heading: 'Balance', notes: [
+        "The queen no longer speeds up with colony scale, so laying can be your limit again late in the game. Royal Chamber levels above 8 raise laying x1.25 each, every extra queen speeds up all your queens by 25%, and Queen's Feast now gives x1.1 per level.",
+        "Chitin has a storage cap that grows with colony scale. Carapace Stores raise it; rewards can overflow to twice the cap and the excess slowly crumbles away.",
+        "New in Research: the Archive. Each completed branch opens a permanent track worth +1% to that branch per level, kept through Flights and Supercolonies.",
+      ] },
+      { heading: 'Prestige and automation', notes: [
+        "Forming a Supercolony now counts your current run’s alates toward kinship, as if the colony had flown. A new box shows everything that increases kinship.",
+        "Automatic jobs and every autobuyer now come from the Federation (Automated Brood and Autobuyers). Automaton Instincts now gives +2 dig queue and carries your job targets into every run.",
+        "Automation switches live where they act: Auto-Flight in the Flight view, Auto-Supercolony in the Supercolony view, the Adaptation autobuyer in the Adaptations tab, chamber and Mound autobuyers in the Build tab.",
+        "Auto-Flight waits at least 8 minutes and flies once alates per minute has stayed 3% below its best for 30 s; season changes no longer set it off. It also picks the most useful landing site and boon.",
+        "Innate research now resets at every Supercolony (Genetic Memory still keeps it through a Speciation).",
+        "New Federation node: Architect’s Table. Open a saved blueprint and edit it without touching your colony.",
+        "Fixed: a Brood Bank bought while choosing a landing site now applies to that landing.",
+      ] },
+      { heading: 'Nest and blueprints', notes: [
+        "Hidden water pockets no longer give themselves away or silently block you: build into one and you strike water, and the pocket appears.",
+        "Blueprints move chambers off water, find water for Wells, grow roots for Root Aphid Pens and dig winding exit shafts for Nuptial Chambers instead of needing manual fixes.",
+        "Roots grow down through chambers and still count for Root Aphid Pens.",
+        "New chambers: the Carapace Store (more chitin storage) and the Carapace Workshop (more chitin from every source, and chitin back from fallen soldiers).",
+        "Watch the digging: workers chip at the dig face and carry soil out. Underground stones now come in many shapes and sizes. Press Q again to put the build tool away.",
+      ] },
+      { heading: 'Map and combat', notes: [
+        "Trails walk around molehills and flooded spring puddles on their own, then return to their route.",
+        "Ground types blend into each other, garden paths curve smoothly and boulders have natural cracks.",
+        "Hovering a source shows what it gives each worker; aphid colonies show their level. The map shows trails used and available.",
+        "Right-click to add escorts to a Lycaenid trail, or to send soldiers to clear an antlion pit even after its card has gone.",
+        "Conquering a rival calls off its incoming raids at once. With no soldiers, the raid alert explains what you need. Auto-retreat moved to the War tab and the war-party window.",
+        "Once the map is fully explored, scouts head beyond the border and bring back rare finds.",
+      ] },
+      { heading: 'Interface', notes: [
+        "New Event log: every event and how it ended, raids, blueprints, achievements and more, with filters.",
+        "The Stats tab shows where each resource came from and what used it over the last minute.",
+        "Hover the queen’s lay rate to see every factor behind it. The top left shows how long the current run has lasted.",
+        "The Ants breakdown shows each caste’s limit, and the bottleneck badge keeps a steady size (\"No bottleneck\" when nothing holds you back). Drag the strip between the map and the nest to resize them; on narrow screens the tab row scrolls.",
+      ] },
+    ],
+  },
+  {
     version: '0.10.0',
     date: '2026-10-04',
     title: 'Caste targets, living map and grander chambers',

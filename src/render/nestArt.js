@@ -11,7 +11,7 @@ const TAU = Math.PI * 2;
 /** Compact chamber names for in-canvas labels (full names stay in tooltips and panels). */
 export const SHORT_NAMES = Object.freeze({
   royal_chamber: 'Royal', gallery: 'Gallery', nursery: 'Nursery', granary: 'Granary', scent_library: 'Library',
-  midden: 'Midden', barracks: 'Barracks', war_hall: 'War Hall', root_aphid_pen: 'Aphid Pen', fungus_garden: 'Fungus', repletion_hall: 'Repletes',
+  midden: 'Midden', barracks: 'Barracks', war_hall: 'War Hall', carapace_store: 'Carapaces', carapace_workshop: 'Workshop', root_aphid_pen: 'Aphid Pen', fungus_garden: 'Fungus', repletion_hall: 'Repletes',
   hibernaculum: 'Hibernac.', thermal_chimney: 'Chimney', gate: 'Gate', water_well: 'Well', nuptial_chamber: 'Nuptial',
   deep_vault: 'Vault',
 });

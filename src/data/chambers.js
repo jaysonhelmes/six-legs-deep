@@ -1,4 +1,4 @@
-// The 17 chambers (DESIGN §7.6; War Hall C136), their cost model (§7.5), placement rules (§7.4) and adjacency rules (§7.7).
+// The 19 chambers (DESIGN §7.6; War Hall C136; Carapace Store and Workshop C179), their cost model (§7.5), placement rules (§7.4) and adjacency rules (§7.7).
 // Owner: WP3. Contract: ARCHITECTURE §6.3 (entry shape and `fx` keys per chamber).
 //
 // Entry fields: unlock (§11 key gating placement; null = pre-dug), maxInst (number | 'perPocket'), instBonus
@@ -16,9 +16,9 @@ const freeze = (o) => {
 
 /** Chamber ids in Build-panel order (DESIGN §7.6 table order). */
 export const CHAMBER_ORDER = freeze([
-  'royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'root_aphid_pen',
-  'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber',
-  'deep_vault',
+  'royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'carapace_store',
+  'carapace_workshop', 'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate',
+  'water_well', 'nuptial_chamber', 'deep_vault',
 ]);
 
 /** Chambers by id (ARCHITECTURE §6.3 shape). */
@@ -88,6 +88,26 @@ export const CHAMBERS = freeze({
     place: { food: 25000 }, placeGrowth: 2.5,
     f0: 6250, s0: 2500, g: 1.80, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
     fx: { berths: 4 },
+  },
+  // C179 (player decision): the chitin chambers. The Store raises the chitin storage cap (chitinCap × capGrowth^(L−1)
+  // per Store, summed into d.nest.agg.chitinCapBase); the Workshop boosts chitin from every source (+chitinBoost per
+  // level, all Workshops together at most boostMax, d.nest.agg.chitinBoost) and recycles `recycle` chitin per level
+  // from every fallen soldier or supermajor (d.nest.agg.chitinRecycle).
+  carapace_store: {
+    id: 'carapace_store', name: 'Carapace Store', unlock: 'chamber_carapace_store',
+    maxInst: 2, instBonus: [],
+    w0: 2, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
+    place: { food: 600 }, placeGrowth: 2.5,
+    f0: 150, s0: 90, g: 1.60, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
+    fx: { chitinCap: 300, capGrowth: 1.6 },
+  },
+  carapace_workshop: {
+    id: 'carapace_workshop', name: 'Carapace Workshop', unlock: 'chamber_carapace_workshop',
+    maxInst: 1, instBonus: [],
+    w0: 3, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
+    place: { food: 3000, chitin: 30 }, placeGrowth: 2.5,
+    f0: 750, s0: 300, g: 1.75, levelExtra: null, maxL: 10, maxLBonus: null, frostImmune: false,
+    fx: { chitinBoost: 0.10, boostMax: 1.0, recycle: 0.25 },
   },
   root_aphid_pen: {
     id: 'root_aphid_pen', name: 'Root Aphid Pen', unlock: 'chamber_root_aphid_pen',
