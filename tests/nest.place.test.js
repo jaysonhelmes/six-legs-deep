@@ -173,10 +173,14 @@ test('nuptial chamber: row ≥ 24, plans its own exit shaft ≥ 3 columns from e
   assert.ok(r.route && r.route.length >= 2, 'auto-routed from the Royal Chamber');
   assert.equal(vp(s, d, 'nuptial_chamber', 18, 24, { shaftCol: 21 }).reason, 'invalid:shaftCol');
   assert.equal(vp(s, d, 'nuptial_chamber', 18, 24, { shaftCol: 30 }).reason, null);
-  // Blocked: stones across every candidate column at row 22 except the shaft-adjacent ones
+  // C177: stones across every candidate column at row 10 except the shaft-adjacent ones: no straight shaft fits, so a
+  // routed exit shaft goes up beside the main shaft and turns off to a free column above the wall.
   const wall = [];
   for (let x = 0; x < 40; x++) if (Math.abs(x - 20) >= 3) wall.push(idx(x, 10));
   setCells(s, wall, CELL.STONE);
+  assert.equal(vp(s, d, 'nuptial_chamber', 18, 24).reason, null);
+  // Blocked: the wall closes every column but the main shaft's own (never used by an exit shaft)
+  setCells(s, [idx(18, 10), idx(19, 10), idx(21, 10), idx(22, 10)], CELL.STONE);
   assert.equal(vp(s, d, 'nuptial_chamber', 18, 24).reason, 'blocked:shaft');
 });
 

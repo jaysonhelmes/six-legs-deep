@@ -23,7 +23,7 @@ const NAME_MAX = 40;
  */
 export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab: Colony, Build, Map, Adaptations, Research, Prestige, Achievements, Field Guide, Stats'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
   ['R', 'Rally the selected trail; relocate the selected chamber'],
-  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected)'],
+  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected); Q again puts the tool away'],
   ['F / right-click', 'While placing: pick the corner the new chamber starts in'], ['G', 'Pick the growth side (older chambers without a reserved space)'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
   ['+ / −', 'Zoom the clicked view in or out'], ['0 / Home', 'Nest view: frame the queen'],
@@ -222,7 +222,8 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
       mkToggle('reducedMotion', 'Reduced motion', 'Fewer particles and animations.'),
       mkToggle('sound', 'Sound', 'Soft chimes for reveals.'),
       mkToggle('showScaleLabel', 'Show "1 ● = K ants" labels', 'How many ants each dot stands for.')),
-    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Gameplay' }), retreat.el,
+    // C187: the auto-retreat slider moved to the war party (Map → War and the war-party chooser)
+    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Gameplay' }), note('Auto-retreat is set with your war party: Map → War.'),
       mkToggle('harshNature', 'Harsh nature', 'Starvation can kill adults. Optional.'), harshWarn),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Names' }),
       h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Colony' }), colonyName),

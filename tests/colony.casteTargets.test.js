@@ -262,7 +262,8 @@ test('C152: the rail Ants row breaks the colony down by caste (only unlocked / n
   assert.ok(list && !list.hidden, 'breakdown shown');
   const visible = list.querySelectorAll('.res-sub').filter((r) => !r.hidden);
   assert.deepEqual(visible.map((r) => r.querySelector('.res-name').textContent), ['Workers', 'Soldiers', 'Alates (reared)', 'Queens']);
-  assert.equal(list.querySelector('.pop-soldier .res-val').textContent, '6');
+  assert.equal(list.querySelector('.pop-soldier .pop-n').textContent, '6');
+  assert.match(list.querySelector('.pop-soldier .pop-cap').textContent, /\/ 0 berths/, 'C193: the caste cap follows the count');
   const row = rail.querySelector('.res-pop');
   assert.equal(row.getAttribute('aria-expanded'), 'true');
   row.click();

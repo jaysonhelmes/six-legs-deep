@@ -27,14 +27,21 @@ const ANT_ICON = Object.freeze({ minor: 'minor', soldier: 'soldier', supermajor:
 /** Reveal key per breakdown row (a row also shows whenever its count is above zero). */
 const ANT_KEYS = Object.freeze({ soldier: 'caste_soldier', supermajor: 'caste_supermajor', replete: 'caste_replete', alate: 'alate_rearing' });
 
+/** C193: what caps each caste on the rail (unit shown after "n / cap"). */
+export const ANT_CAP_UNITS = Object.freeze({ minor: 'housing', soldier: 'berths', supermajor: 'War Hall berths', replete: 'replete berths',
+  alate: 'cells' });
+
 /**
- * C152: the rail's Ants breakdown — [{ id, label, n }] for workers (minors), soldiers, supermajors, repletes, reared
- * alates and queens (one per active Royal Chamber, at least 1). A caste row shows once its caste is unlocked or its
- * count is above zero; workers and queens show with the rest. Empty (no breakdown) while the colony has only workers
+ * C152: the rail's Ants breakdown — [{ id, label, n, cap, unit }] for workers (minors), soldiers, supermajors, repletes,
+ * reared alates and queens (one per active Royal Chamber, at least 1). A caste row shows once its caste is unlocked or
+ * its count is above zero; workers and queens show with the rest. Empty (no breakdown) while the colony has only workers
  * and one queen.
+ * C193: each caste also carries its cap — workers d.stats.housing (brood takes housing too), soldiers Barracks berths,
+ * supermajors War Hall berths (d.stats.warBerths; without that field they share the Barracks berths: unit 'berths'),
+ * repletes replete berths, alates the Nuptial Chamber's alate cells. cap is null for queens or when unknown.
  * @param {Object} s
  * @param {Object} d
- * @returns {Array<{ id: string, label: string, n: number }>}
+ * @returns {Array<{ id: string, label: string, n: number, cap: number|null, unit: string }>}
  */
 export function antBreakdown(s, d) {
   const col = obj(s && s.run && s.run.colony);
@@ -45,7 +52,13 @@ export function antBreakdown(s, d) {
   const rows = [];
   for (const id of ['soldier', 'supermajor', 'replete', 'alate']) if (n[id] > 0 || isShown(s, ANT_KEYS[id])) rows.push(id);
   if (rows.length === 0 && n.queen <= 1) return [];
-  return ['minor', ...rows, 'queen'].map((id) => ({ id, label: ANT_LABELS[id], n: n[id] }));
+  const st = obj(d && d.stats);
+  const capNum = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  const hasWar = capNum(st.warBerths) !== null;
+  const caps = { minor: capNum(st.housing), soldier: capNum(st.berths), supermajor: hasWar ? capNum(st.warBerths) : capNum(st.berths),
+    replete: capNum(st.repleteBerths), alate: capNum(st.alateCells), queen: null };
+  const unit = (id) => (id === 'supermajor' && !hasWar ? 'berths' : ANT_CAP_UNITS[id] || '');
+  return ['minor', ...rows, 'queen'].map((id) => ({ id, label: ANT_LABELS[id], n: n[id], cap: caps[id], unit: caps[id] === null ? '' : unit(id) }));
 }
 
 /** Rail resources in order with their reveal keys (ARCHITECTURE §11; leaves live in the fungus widget only). */
@@ -54,7 +67,7 @@ export const RAIL_RES = Object.freeze([
   { res: 'soil', key: 'job_digger', cap: null },
   { res: 'insight', key: 'panel_research', cap: null },
   { res: 'pheromone', key: 'res_pheromone', cap: 'pheromoneCap' },
-  { res: 'chitin', key: 'res_chitin', cap: null },
+  { res: 'chitin', key: 'res_chitin', cap: 'chitinCap' },   // C199: chitin storage cap
   { res: 'honeydew', key: 'res_honeydew', cap: 'honeydewCap' },
   { res: 'fungus', key: 'res_fungus', cap: 'fungusCap' },
 ]);
@@ -119,19 +132,96 @@ const LONG_SUMMER = ['spring', 'summer', 'summer', 'autumn'];
  */
 export function bottleneckText(s, d) {
   const bn = obj(s && s.run && s.run.bottleneck);
-  const id = bn.id;
-  if (!id) return '';
-  const secs = Math.max(0, num(s.run.time) - num(bn.since));
-  if (id === 'raid') return 'Raid incoming!';
-  if (id === 'hungry') return 'Hungry: assign more foragers';
+  if (!bn.id) return '';
+  const p = bottleneckParts(bn.id, Math.max(0, num(s.run.time) - num(bn.since)), s, d);
+  return p.time ? p.label + ' ' + p.time : p.label;
+}
+
+/** C194: the badge's explicit idle state. */
+export const NO_BOTTLENECK = 'No bottleneck';
+
+/**
+ * Badge parts for a bottleneck id that has bound for `secs` seconds: { label, time } ('No bottleneck' for null; urgent
+ * ids have no time). The badge keeps the time in its own fixed slot so a long label truncates without hiding it (C194).
+ * @param {string|null} id
+ * @param {number} secs
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {{ label: string, time: string }}
+ */
+export function bottleneckParts(id, secs, s, d) {
+  if (!id) return { label: NO_BOTTLENECK, time: '' };
+  if (id === 'raid') return { label: 'Raid incoming!', time: '' };
+  if (id === 'hungry') return { label: 'Hungry: assign more foragers', time: '' };
   if (id === 'frost') {
     let frozen = 0;
     try { frozen = num(broodSummary(s, d).frozen); } catch { frozen = 0; }
-    return 'Frost: ' + fmtCount(frozen) + ' brood freezing';
+    return { label: 'Frost: ' + fmtCount(frozen) + ' brood freezing', time: '' };
   }
   const name = BOTTLENECK_NAMES[id] || nameOf('unlock', id);
   const stateText = BOTTLENECK_STATE[id] || 'binding';
-  return 'Bottleneck: ' + name + ' · ' + stateText + ' ' + fmtTime(secs);
+  return { label: 'Bottleneck: ' + name + ' · ' + stateText, time: fmtTime(Math.max(0, num(secs))) };
+}
+
+/** C194: seconds a new bottleneck must hold before the badge switches to it. */
+export const BN_DEBOUNCE_SEC = 3;
+/** Bottlenecks that show at once (they need the player now). */
+const BN_URGENT = new Set(['raid', 'hungry', 'frost']);
+
+/**
+ * C194: debounce for the bottleneck badge. update(id, t, since) → { id, since }: the id to show and when it began
+ * binding. A different id must hold for delaySec of run time before it replaces the shown one, so the badge stops
+ * flickering between two limits that trade places, and the shown one keeps its own start time through such flips (its
+ * timer does not restart). Urgent ids (raid, hungry, frost) and any limit replacing "No bottleneck" show at once. A
+ * run-time jump backwards (new run, load, import) starts over. Pure (no clock of its own).
+ * @param {number} [delaySec]
+ */
+export function createBottleneckDebounce(delaySec = BN_DEBOUNCE_SEC) {
+  let started = false;
+  let shown = null;
+  let shownSince = 0;
+  let cand;          // candidate id (undefined = none)
+  let candAt = 0;    // run time the candidate was first seen
+  let candSince = 0; // its own start time (s.run.bottleneck.since)
+  let lastT = -Infinity;
+  return {
+    update(id, t, since) {
+      const want = id || null;
+      const tt = Number.isFinite(t) ? t : 0;
+      const sn = Number.isFinite(since) ? since : tt;
+      if (!started || tt < lastT) {
+        started = true;
+        shown = want;
+        shownSince = want ? sn : tt;
+        cand = undefined;
+      } else if (want === shown) {
+        cand = undefined;
+      } else {
+        if (cand !== want) { cand = want; candAt = tt; candSince = want ? sn : tt; }
+        if (shown === null || BN_URGENT.has(want) || tt - candAt >= delaySec) {
+          shown = want;
+          shownSince = candSince;
+          cand = undefined;
+        }
+      }
+      lastT = tt;
+      return { id: shown, since: shownSince };
+    },
+    reset() { started = false; shown = null; cand = undefined; lastT = -Infinity; },
+  };
+}
+
+/**
+ * C196: how long the current run has lasted, for the brand line ("45s", "12m", "1h 14m"; nothing while landing).
+ * @param {Object} s
+ * @returns {string}
+ */
+export function runTimeText(s) {
+  if (!s || !s.run || (s.meta && s.meta.pending)) return '';
+  const t = Math.max(0, num(s.run.time));
+  if (t < 60) return Math.floor(t) + 's';
+  if (t < 3600) return Math.floor(t / 60) + 'm';
+  return fmtTime(t);
 }
 
 /** UnlockDef by key (for the ribbon's ETA corrections). */
@@ -400,9 +490,12 @@ export function seasonInfo(s, d) {
 export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, bridge }) {
   // ---------------------------------------------------------------- rail
   const brand = h('div', { class: 'rail-brand' }, h('span', { class: 'brand-mark', attrs: { 'aria-hidden': 'true' } }),
-    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }), h('span', { class: 'brand-sub' })));
+    h('span', { class: 'brand-text' }, h('span', { class: 'brand-name' }),
+      h('span', { class: 'brand-line' }, h('span', { class: 'brand-sub' }),
+        h('span', { class: 'brand-time', dataset: { tip: 'How long this run has lasted.' } }))));
   const brandName = brand.querySelector('.brand-name');
   const brandSub = brand.querySelector('.brand-sub');
+  const brandTime = brand.querySelector('.brand-time');   // C196 run timer
   const resList = h('div', { class: 'res-list', role: 'list' });
   const rows = {};
   for (const r of RAIL_RES) {
@@ -438,12 +531,14 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
   const popList = h('div', { class: 'res-list pop-castes', role: 'list', attrs: { 'aria-label': 'Ants by caste' } });
   const popSub = {};
   for (const id of ANT_ROWS) {
-    const val = h('span', { class: 'res-val' });
-    const row = h('div', { class: 'res-row res-sub pop-' + id, role: 'listitem' },
+    const numEl = h('span', { class: 'pop-n' });
+    const capEl = h('span', { class: 'pop-cap' });   // C193 "/ 1.5K housing"
+    const val = h('span', { class: 'res-val' }, numEl, capEl);
+    const row = h('div', { class: 'res-row res-sub pop-' + id, role: 'listitem', dataset: id === 'queen' ? { tipKey: 'lay' } : {} },
       h('i', { class: 'ico ico-' + ANT_ICON[id], attrs: { 'aria-hidden': 'true' } }), h('span', { class: 'res-name', text: ANT_LABELS[id] }), val);
     row.style.paddingLeft = '14px';
     row.style.fontSize = '0.9em';
-    popSub[id] = { row, val };
+    popSub[id] = { row, val, num: numEl, cap: capEl };
     popList.appendChild(row);
   }
   let popOpen = true;
@@ -491,8 +586,14 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
   const seasonNext = h('span', { class: 'season-next' });
   const forecast = h('span', { class: 'forecast' });
   const seasonBox = h('div', { class: 'season-box' }, dial, h('span', { class: 'season-text' }, seasonName, seasonNext, forecast));
+  // C194: fixed-width badge (the label truncates, the timer keeps its slot), a 3 s debounce before a new limit replaces
+  // the shown one, and an explicit "No bottleneck" state.
+  const badgeName = h('span', { class: 'bn-name' });
+  const badgeTime = h('span', { class: 'bn-time' });
   const badge = h('button', { type: 'button', class: 'bn-badge', dataset: { tipKey: 'bottleneck', glowKey: 'badge' },
-    on: { click: () => onBadge() } });
+    on: { click: () => onBadge() } }, badgeName, badgeTime);
+  const bnDebounce = createBottleneckDebounce();
+  let bnShown = { id: null, since: 0 };
   // Raid chip (C72, C96): an incoming raid gets its own chip with the countdown; the bottleneck badge keeps the real
   // limit. A click brings the raiders' nest into view (repeated clicks step through several raids).
   const raidLabel = h('span', { class: 'threat-label' });
@@ -553,7 +654,7 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
   }
 
   function onBadge() {
-    const id = game.s.run.bottleneck && game.s.run.bottleneck.id;
+    const id = bnShown.id;
     if (id === 'raid') bridge.openTab('map', 'war');
     else if (id === 'bn_housing' || id === 'bn_brood_slots' || id === 'bn_food_cap' || id === 'bn_lay_rate') bridge.openTab('build');
     else if (id === 'hungry' || id === 'bn_food') bridge.openTab('colony');
@@ -565,6 +666,9 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     const rates = obj(d && d.rates);
     setText(brandName, colonyTitle(s));   // C149: with the equipped title cosmetic
     setText(brandSub, brandSubtitle(s, d));
+    const rt = runTimeText(s);
+    show(brandTime, !!rt);
+    if (rt) setText(brandTime, rt);   // '· ' (or 'Run ' in the top bar) comes from CSS
     for (const r of RAIL_RES) {
       const x = rows[r.res];
       const vis = isShown(s, r.key);
@@ -623,7 +727,17 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
     for (const id of ANT_ROWS) {
       show(popSub[id].row, shown.has(id));
       const p = parts.find((x) => x.id === id);
-      if (p) setText(popSub[id].val, fmtCount(p.n));
+      if (!p) continue;
+      const x = popSub[id];
+      setText(x.num, fmtCount(p.n));
+      const hasCap = p.cap !== null && p.cap !== undefined;
+      show(x.cap, hasCap);
+      toggleClass(x.row, 'at-cap', hasCap && p.cap > 0 && p.n >= p.cap - 1e-9);
+      if (hasCap) {
+        setText(x.cap, ' / ' + fmtCount(p.cap) + ' ' + p.unit);
+        const tip = p.label + ': ' + fmtCount(p.n) + ' of ' + fmtCount(p.cap) + ' ' + p.unit + (id === 'minor' ? ' (brood takes housing too).' : '.');
+        if (x.row.dataset.tip !== tip) x.row.dataset.tip = tip;
+      }
     }
     const showMeta = (k, vis, v) => { show(metaRows[k].row, vis); if (vis) setText(metaRows[k].val, fmtCount(v)); };
     showMeta('alates', num(s.meta.counters.flights) > 0 || num(s.cycle.alates) > 0, num(s.cycle.alates));
@@ -664,16 +778,22 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
       }
       for (const k of ['spring', 'summer', 'autumn', 'winter']) toggleClass(seasonBox, 'is-' + k, si.id === k);
     }
-    // bottleneck badge
-    const bnId = s.run.bottleneck && s.run.bottleneck.id;
+    // bottleneck badge (C194: debounced, with a "No bottleneck" state)
+    const bnRaw = s.run.bottleneck || {};
+    bnShown = bnDebounce.update(bnRaw.id || null, num(s.run.time), num(bnRaw.since, num(s.run.time)));
+    const bnId = bnShown.id;
     const urgent = bnId === 'raid' || bnId === 'hungry' || bnId === 'frost';
-    const badgeOn = !!bnId && (isShown(s, 'panel_build') || urgent);
+    const badgeOn = isShown(s, 'panel_build') || urgent;
     show(badge, badgeOn);
     if (badgeOn) {
+      const bp = bottleneckParts(bnId, num(s.run.time) - num(bnShown.since), s, d);
       // narrow: drop the "Bottleneck:" prefix so the badge fits beside the season dial (the tooltip still names it)
-      const bnText = bottleneckText(s, d);
-      setText(badge, ui.getUI().layout === 'narrow' ? bnText.replace(/^Bottleneck: /, '') : bnText);
-      const cls = 'bn-badge bn-' + bnId + (ui.getUI().glow === 'badge' ? ' glow' : '');
+      setText(badgeName, ui.getUI().layout === 'narrow' ? bp.label.replace(/^Bottleneck: /, '') : bp.label);
+      setText(badgeTime, bp.time);
+      show(badgeTime, !!bp.time);
+      const aria = bp.time ? bp.label + ' ' + bp.time : bp.label;
+      if (badge.getAttribute('aria-label') !== aria) badge.setAttribute('aria-label', aria);
+      const cls = 'bn-badge bn-' + (bnId || 'none') + (ui.getUI().glow === 'badge' ? ' glow' : '');
       if (badge.__cls !== cls) { badge.__cls = cls; badge.className = cls; }
     }
     // Diapause chip (C112)
@@ -803,6 +923,8 @@ export function createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui, b
         }
       }
     },
+    /** The bottleneck the badge shows after the debounce (C194; tests). */
+    bottleneckShown() { return bnShown; },
     /** Rail rows by resource (tests). */
     _rows: rows,
   };

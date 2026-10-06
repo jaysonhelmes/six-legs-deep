@@ -9,6 +9,32 @@ import { defaultNestCells, createRun } from '../src/core/state.js';
 import { generateNest } from '../src/systems/nestgen.js';
 import { idx, xy, bfs } from '../src/systems/nestgeom.js';
 
+/** C181: stones as 8-connected components of STONE cells (the generator keeps a 1-cell margin between boulders). */
+export function stoneGroups(cells) {
+  const seen = new Uint8Array(cells.length);
+  const out = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] !== CELL.STONE || seen[i]) continue;
+    const g = [];
+    const st = [i];
+    seen[i] = 1;
+    while (st.length) {
+      const c = st.pop();
+      g.push(c);
+      const [x, y] = xy(c);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= GRID.cols || yy >= GRID.rows) continue;
+        const k = idx(xx, yy);
+        if (!seen[k] && cells[k] === CELL.STONE) { seen[k] = 1; st.push(k); }
+      }
+    }
+    out.push(g);
+  }
+  return out;
+}
+
 function featureCells(nest) {
   const map = new Map(); // cell → owner tag
   const add = (c, tag) => {
@@ -58,6 +84,8 @@ test('feature counts, rows and no overlaps across 60 seeds', () => {
       const [x, y] = xy(c);
       assert.ok(!(x === GRID.mainCol && y < GRID.shaftRows), 'feature on the shaft');
       const r = GRID.royal;
+      // C178: root lines grow down through chambers (the Royal Chamber too); nothing else lands there
+      if (String(owners.get(c)).startsWith('root')) continue;
       assert.ok(!(x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h), 'feature on the Royal Chamber');
     }
     // Roots: ≥ 6, ≤ 10, y0 1, y1 in 6..25, distinct columns, never the shaft column.
@@ -70,16 +98,15 @@ test('feature counts, rows and no overlaps across 60 seeds', () => {
       assert.notEqual(r.col, GRID.mainCol);
     }
     assert.ok(roots.some((r) => r.col === 3) && roots.some((r) => r.col === 35), 'requested columns kept');
-    // Stones: 3×3 blocks within rows 8–55, count 4–8.
-    let stoneCells = 0;
+    // Stones (C181): 4–8 boulders of 1–9 cells within rows 8–55.
     for (let i = 0; i < n.cells.length; i++) {
       if (n.cells[i] !== CELL.STONE) continue;
-      stoneCells++;
       const y = Math.floor(i / GRID.cols);
       assert.ok(y >= STONES.yMin && y <= STONES.yMax);
     }
-    assert.equal(stoneCells % 9, 0);
-    assert.ok(stoneCells / 9 >= STONES.min && stoneCells / 9 <= STONES.max, 'stones ' + stoneCells / 9);
+    const groups = stoneGroups(n.cells);
+    for (const g of groups) assert.ok(g.length >= 1 && g.length <= Math.max(STONES.blobMax, STONES.size * STONES.size), 'stone size ' + g.length);
+    assert.ok(groups.length >= STONES.min && groups.length <= STONES.max, 'stones ' + groups.length);
     // Water: 2–3 pockets, 2..3 per side, rows 40–70, not revealed, cells coded WATER.
     const water = n.features.water;
     assert.ok(water.length >= WATER.min && water.length <= WATER.max);
@@ -140,11 +167,11 @@ test('site tags: stony ground doubles stones and caches; wet hollow adds 2 water
   for (let seed = 1; seed <= 20; seed++) {
     const p = generateNest(seed);
     const st = generateNest(seed, { tags: ['site_stony_ground'] });
-    stonesPlain += p.cells.filter((c) => c === CELL.STONE).length / 9;
-    stonesStony += st.cells.filter((c) => c === CELL.STONE).length / 9;
+    stonesPlain += stoneGroups(p.cells).length;
+    stonesStony += stoneGroups(st.cells).length;
     cachesPlain += p.features.caches.length - 1;
     cachesStony += st.features.caches.length - 1;
-    const st1 = st.cells.filter((c) => c === CELL.STONE).length / 9;
+    const st1 = stoneGroups(st.cells).length;
     assert.ok(st1 >= 2 * STONES.min - 2 && st1 <= 2 * STONES.max, 'stony stones ' + st1);
     const stc = st.features.caches.length - 1;
     assert.ok(stc >= 2 * CACHES.min && stc <= 2 * CACHES.max, 'stony caches ' + stc);

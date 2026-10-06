@@ -45,9 +45,9 @@ function jobUnlocked(s, job) {
   return u === null || u === undefined || !!s.run.unlocked[u];
 }
 
-/** age_polyethism owned, or innate via automaton_instincts / automated_brood (DESIGN §6.3, §14.5). */
+/** Innate job automation: the Federation node automated_brood (DESIGN §6.3, §14.5; C166: no longer automaton_instincts). */
 function innateAutomation(s) {
-  return lvl(s.cycle.traits, 'automaton_instincts') > 0 || lvl(s.era.federation, 'automated_brood') > 0;
+  return lvl(s.era.federation, 'automated_brood') > 0;
 }
 
 /** Ratio auto mode available. */
@@ -62,7 +62,7 @@ function thresholdAvailable(s) {
 
 /** Job ratio presets available (unlock key job_presets, or the auto-mode prerequisites it stands for). */
 function presetsAvailable(s) {
-  return !!s.run.unlocked.job_presets || autoAvailable(s);
+  return !!s.run.unlocked.job_presets || autoAvailable(s) || lvl(s.cycle.traits, 'automaton_instincts') > 0;
 }
 
 /** Saved presets need hive_mind. */
@@ -447,7 +447,7 @@ export const handlers = {
     },
   },
 
-  /** setAutoJobs { on }: ratio auto mode (needs age_polyethism, or automaton_instincts / automated_brood). */
+  /** setAutoJobs { on }: ratio auto mode (needs age_polyethism, or automated_brood). */
   setAutoJobs: {
     validate(s, d, cmd) { return toggleValidate(cmd, autoAvailable(s)); },
     apply(s, d, cmd) { s.run.colony.autoJobs = cmd.on; },

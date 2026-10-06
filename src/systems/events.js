@@ -28,13 +28,13 @@
 //   sourceRemoved reasons are not pinned: the tracked source vanished while it had been worked by a trail and its last
 //   observed stock was ≤ max(harvestFrac × max, two ticks of drain).
 
-import { EVENT_RULES, EVENT_ORDER, EVENTS, EVENT_GAP } from '../data/events.js';
+import { EVENT_RULES, EVENT_ORDER, EVENTS, EVENT_GAP, OUTCOMES } from '../data/events.js';
 import { FROST } from '../data/seasons.js';
 import { GRID } from '../data/balance.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { RESEARCH } from '../data/research.js';
 import { BOSSES } from '../data/rivals.js';
-import { MOUND, TERRAIN, TERRAIN_ORDER } from '../data/surface.js';
+import { MOUND, TERRAIN, TERRAIN_ORDER, EXPEDITION } from '../data/surface.js';
 import { SPECIES } from '../data/genome.js';
 import { randInt, randRange, chance, pick, weighted, expSample } from '../core/rng.js';
 import { addEffect, removeEffect, hasEffect, effectsFor } from '../core/effects.js';
@@ -50,9 +50,9 @@ import * as nest from './nest.js';
 import * as combat from './combat.js';
 
 /** Object kinds the player may click through clickEventObject. */
-const CLICKABLE = new Set(['ladybug', 'footstep', 'rival_alate', 'golden_aphid']);
+const CLICKABLE = new Set(['ladybug', 'footstep', 'rival_alate', 'golden_aphid', 'fossil_cache', 'lost_queen']);
 /** Clickable kinds that yield resources (refused under claustral_founding, C32). */
-const YIELDING = new Set(['rival_alate', 'golden_aphid']);
+const YIELDING = new Set(['rival_alate', 'golden_aphid', 'fossil_cache']);
 
 // ------------------------------------------------------------------------------------------------------------------
 // Small helpers
@@ -274,6 +274,62 @@ function middenReduction(d) {
   const L = d && d.nest && d.nest.agg ? num(d.nest.agg.middenL) : 0;
   if (per === undefined || !(L > 0)) return 0;
   return Math.min(max === undefined ? 1 : max, per * L);
+}
+
+/** C189: compact number for outcome text (12, 3.4K, 1.25M, 2.0e15). */
+export function fmtOutcomeNum(x) {
+  const v = num(x);
+  const a = Math.abs(v);
+  if (a < 10) return String(Math.round(v * 10) / 10);
+  if (a < 1000) return String(Math.round(v));
+  const units = ['K', 'M', 'B', 'T'];
+  let u = -1;
+  let m = v;
+  while (Math.abs(m) >= 1000 && u < units.length - 1) {
+    m /= 1000;
+    u++;
+  }
+  if (Math.abs(m) >= 1000) return v.toExponential(1).replace('+', '');
+  return (Math.abs(m) < 10 ? m.toFixed(2) : Math.abs(m) < 100 ? m.toFixed(1) : String(Math.round(m))) + units[u];
+}
+
+/** C189: a duration for outcome text: "45 s", "3 min", "2:30". */
+export function fmtOutcomeTime(sec) {
+  const t = Math.max(0, Math.round(num(sec)));
+  if (t < 60) return t + ' s';
+  if (t % 60 === 0) return t / 60 + ' min';
+  return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+}
+
+/** C189: a share for outcome text: 0.15 → "15%". */
+function fmtOutcomePct(x) {
+  return Math.round(num(x) * 100) + '%';
+}
+
+/**
+ * [q] C189: the player-facing outcome of an event choice (OUTCOMES template, placeholders filled from `vals`), or a
+ * plain fallback ("Wandering Queen: adopt.") for a key without a template.
+ * @param {string} id event id
+ * @param {string} key choice id or variant key
+ * @param {Object<string, string|number>} [vals]
+ * @returns {string}
+ */
+export function outcomeText(id, key, vals = {}) {
+  const tpl = OUTCOMES[id + ':' + key];
+  if (!tpl) {
+    const name = EVENTS[id] ? EVENTS[id].name : String(id || 'Event');
+    return name + ': ' + String(key || 'resolved') + '.';
+  }
+  return tpl.replace(/\{(\w+)\}/g, (m, k) => (vals && vals[k] !== undefined && vals[k] !== null ? String(vals[k]) : m));
+}
+
+/**
+ * C189: emit eventResolved { uid, id, eventId, choice, outcomeText } (eventId repeats id for the event log; `key`
+ * picks an OUTCOMES variant, defaulting to the choice).
+ */
+function emitResolved(env, uid, id, choice, vals = {}, key = null) {
+  if (!env || typeof env.emit !== 'function') return;
+  env.emit('eventResolved', { uid: num(uid), id, eventId: id, choice, outcomeText: outcomeText(id, key || choice, vals) });
 }
 
 /** True if this achievement is earned. */
@@ -757,26 +813,31 @@ const REQ = {
   },
 };
 
-/** Outcomes of every card choice: (s, d, card, env) → void. */
+/**
+ * Outcomes of every card choice: (s, d, card, env) → outcome values for the C189 outcome text ({ key? } picks a
+ * variant template), or nothing.
+ */
 const CHOICES = {
   'ev_wandering_queen:adopt'(s, d, card) {
     const n = EVENTS.ev_wandering_queen.num;
     addEffect(s, { id: 'ev_wandering_queen', stat: 'lay', mult: n.layMult, t: n.sec });
     if (chance(s, n.parasiteChance)) addActive(s, 'ev_wandering_queen', n.sec, { k: 'parasite', occ: card.uid });
+    return { mult: n.layMult, time: fmtOutcomeTime(n.sec) };
   },
   'ev_wandering_queen:devour'(s, d) {
     const n = EVENTS.ev_wandering_queen.num;
-    grantFoodSec(s, d, n.devourSec, n.devourMin);
+    return { food: fmtOutcomeNum(grantFoodSec(s, d, n.devourSec, n.devourMin)) };
   },
   'ev_myrmecophile_guest:accept'(s, d, card) {
     const n = EVENTS.ev_myrmecophile_guest.num;
     addEffect(s, { id: 'ev_myrmecophile_guest', stat: 'forage_add', add: n.forageAdd, t: n.sec });
     addObj(s, 'myrmecophile', 0, -1, n.sec, { occ: card.uid });
     if (chance(s, n.eatChance)) addActive(s, 'ev_myrmecophile_guest', n.sec + n.eatSec, { k: 'myrmeco', occ: card.uid, acc: 0 });
+    return { pct: fmtOutcomePct(n.forageAdd), time: fmtOutcomeTime(n.sec) };
   },
   'ev_myrmecophile_guest:expel'(s, d) {
     const n = EVENTS.ev_myrmecophile_guest.num;
-    grant(s, d, 'chitin', incomeSeconds(d, 'chitin', n.expelSec, n.expelMin));
+    return { chitin: fmtOutcomeNum(grant(s, d, 'chitin', incomeSeconds(d, 'chitin', n.expelSec, n.expelMin))) };
   },
   'ev_phengaris_caterpillar:adopt'(s, d, card) {
     const n = EVENTS.ev_phengaris_caterpillar.num;
@@ -784,59 +845,73 @@ const CHOICES = {
     if (mode === 'cuckoo') addEffect(s, { id: 'ev_phengaris_caterpillar', stat: 'honeydew', mult: n.honeydewMult, t: n.sec });
     addObj(s, 'phengaris', -1, broodCell(s), n.sec, { occ: card.uid });
     addActive(s, 'ev_phengaris_caterpillar', n.sec, { k: 'phengaris', occ: card.uid, mode, acc: 0 });
+    return { time: fmtOutcomeTime(n.sec) };
   },
   'ev_phengaris_caterpillar:reject'() {},
   'ev_rainstorm:seal'(s) {
     const n = EVENTS.ev_rainstorm.num;
     addEffect(s, { id: 'ev_rainstorm_seal', stat: 'surface_work', mult: 0, t: n.sealSec });
+    return { time: fmtOutcomeTime(n.sealSec) };
   },
   'ev_rainstorm:keep'(s) {
     const n = EVENTS.ev_rainstorm.num;
-    if (owns(s, 'drainage')) return;   // drainage: no flood and no −50 %
+    if (owns(s, 'drainage')) return { key: 'keepDry' };   // drainage: no flood and no −50 %
     addEffect(s, { id: 'ev_rainstorm_keep', stat: 'chamber_layer', scope: n.layer, mult: n.keepMult, t: n.keepSec });
-    if (chance(s, n.floodChance)) addEffect(s, { id: 'ev_flood', stat: 'chamber_layer', scope: n.layer, mult: 0, t: n.floodSec });
+    const flood = chance(s, n.floodChance);
+    if (flood) addEffect(s, { id: 'ev_flood', stat: 'chamber_layer', scope: n.layer, mult: 0, t: n.floodSec });
+    return { key: flood ? 'keepFlood' : 'keep', pct: fmtOutcomePct(1 - n.keepMult), time: fmtOutcomeTime(n.keepSec), flood: fmtOutcomeTime(n.floodSec) };
   },
   'ev_ophiocordyceps:quarantine'(s) {
     const n = EVENTS.ev_ophiocordyceps.num;
     addEffect(s, { id: 'ev_ophiocordyceps', stat: 'forage', mult: n.forageMult, t: n.quarantineSec });
+    return { pct: fmtOutcomePct(1 - n.forageMult), time: fmtOutcomeTime(n.quarantineSec) };
   },
   'ev_ophiocordyceps:ignore'(s, d, card) {
     const n = EVENTS.ev_ophiocordyceps.num;
     const foragers = num(s.run.colony.jobs.forager);
     addActive(s, 'ev_ophiocordyceps', n.sec, { k: 'cordyceps', occ: card.uid, infected: foragers * n.infectFrac, start: foragers });
+    return { time: fmtOutcomeTime(n.sec) };
   },
   'ev_ladybug_raid:send'() {},
   'ev_ladybug_raid:wait'(s, d, card) {
     const n = EVENTS.ev_ladybug_raid.num;
     const src = num(card.data.src);
     addEffect(s, { id: 'ev_ladybug_raid:' + src, stat: 'source', scope: src, mult: n.yieldMult, t: n.sec });
+    return { pct: fmtOutcomePct(n.yieldMult), time: fmtOutcomeTime(n.sec) };
   },
   'ev_antlion_pit:send'(s, d, card) {
     endAntlion(s, card.uid, null, null);
   },
-  'ev_antlion_pit:wait'() {},
+  'ev_antlion_pit:wait'() {
+    return { pct: fmtOutcomePct(EVENTS.ev_antlion_pit.num.lossPerMin) };
+  },
   'ev_horned_lizard:reroute'() {},
   'ev_horned_lizard:mob'(s, d, card) {
     removeObjs(s, (o) => o.kind === 'lizard' && o.data && o.data.occ === card.uid);
-    grantFoodSec(s, d, EVENTS.ev_horned_lizard.num.foodSec, 0);
+    return { food: fmtOutcomeNum(grantFoodSec(s, d, EVENTS.ev_horned_lizard.num.foodSec, 0)) };
   },
   'ev_horned_lizard:ignore'(s, d, card) {
     const obj = s.run.events.objects.find((o) => o.kind === 'lizard' && o.data && o.data.occ === card.uid);
     const left = obj && obj.t > 0 ? obj.t : EVENTS.ev_horned_lizard.num.sec;
     addActive(s, 'ev_horned_lizard', left, { k: 'lizard', occ: card.uid, trail: card.data.trail, hex: card.data.hex, acc: 0 });
+    return { time: fmtOutcomeTime(left) };
   },
   'ev_fungal_blight:quarantine'(s) {
     const amt = num(s.run.res.fungus) * EVENTS.ev_fungal_blight.num.loss;
     if (amt > 0) spend(s, { fungus: amt });
+    return { fungus: fmtOutcomeNum(amt) };
   },
   'ev_fungal_blight:clean'(s, d, card) {
-    addActive(s, 'ev_fungal_blight', EVENTS.ev_fungal_blight.num.cleanSec, { k: 'blight', occ: card.uid, clicks: 0 });
+    const n = EVENTS.ev_fungal_blight.num;
+    addActive(s, 'ev_fungal_blight', n.cleanSec, { k: 'blight', occ: card.uid, clicks: 0 });
+    return { n: n.clicks, time: fmtOutcomeTime(n.cleanSec) };
   },
   'ev_army_ant_column:evacuate'(s) {
     const n = EVENTS.ev_army_ant_column.num;
     addEffect(s, { id: 'ev_army_evacuate', stat: 'surface_work', mult: 0, t: n.evacSec });
     const loss = num(s.run.res.food) * n.evacFood;
     if (loss > 0) spend(s, { food: loss });
+    return { time: fmtOutcomeTime(n.evacSec), food: fmtOutcomeNum(loss) };
   },
   'ev_army_ant_column:fight'(s, d, card, env) {
     const b = BOSSES && BOSSES.army_ant_column;
@@ -860,8 +935,8 @@ function resolveCard(s, d, choice, env) {
   s.run.events.card = null;
   removeObjs(s, (o) => o.data && o.data.card === true && o.data.occ === card.uid);
   const fn = CHOICES[card.id + ':' + choice];
-  if (fn) fn(s, d, card, env);
-  env.emit('eventResolved', { uid: card.uid, id: card.id, choice });
+  const vals = (fn ? fn(s, d, card, env) : null) || {};
+  emitResolved(env, card.uid, card.id, choice, vals, vals.key || null);
 }
 
 /** The default (*) choice of a card. */
@@ -871,6 +946,35 @@ function defaultChoice(card) {
   return c ? c.id : card.choices[card.choices.length - 1];
 }
 
+/**
+ * [x] C188 (surface.js scout expeditions): put a clickable expedition find (fossil_cache, lost_queen) on a hex for
+ * `ttl` seconds. Returns its object uid (0 for an unknown kind).
+ * @param {import('../core/types.js').State} s
+ * @param {string} kind
+ * @param {number} hex
+ * @param {number} ttl
+ * @returns {number}
+ */
+export function addFindObject(s, kind, hex, ttl) {
+  const f = EXPEDITION.finds.find((x) => x.id === kind && x.kind === 'object');
+  if (!f || !Number.isInteger(hex) || hex < 0) return 0;
+  return addObj(s, kind, hex, -1, ttl > 0 ? ttl : -1, { find: true });
+}
+
+/** C188: a clicked expedition find: fossil cache → insight (seconds of income, minimum); lost queen → lay ×mult. */
+function claimFind(s, d, o, env) {
+  const f = EXPEDITION.finds.find((x) => x.id === o.kind);
+  if (!f) return;
+  if (o.kind === 'fossil_cache') {
+    const got = grant(s, d, 'insight', incomeSeconds(d, 'insight', f.insightSec, f.insightMin));
+    env.emit('findClaimed', { kind: o.kind, res: 'insight', amount: got, text: 'Fossil cache: +' + fmtOutcomeNum(got) + ' insight.' });
+  } else {
+    addEffect(s, { id: 'find_lost_queen', stat: 'lay', mult: f.layMult, t: f.laySec });
+    env.emit('findClaimed', { kind: o.kind, res: null, amount: 0,
+      text: 'A lost queen joins the colony: lay ×' + f.layMult + ' for ' + fmtOutcomeTime(f.laySec) + '.' });
+  }
+}
+
 /** End an antlion occurrence (send, reroute, trail gone); closes its card if still open. */
 function endAntlion(s, occ, env, choice) {
   const ev = s.run.events;
@@ -878,9 +982,9 @@ function endAntlion(s, occ, env, choice) {
   removeObjs(s, (o) => o.kind === 'antlion' && o.data && o.data.occ === occ);
   if (env && ev.card && ev.card.uid === occ) {
     ev.card = null;
-    env.emit('eventResolved', { uid: occ, id: 'ev_antlion_pit', choice });
+    emitResolved(env, occ, 'ev_antlion_pit', choice || 'send', choice === 'wait' ? { pct: fmtOutcomePct(EVENTS.ev_antlion_pit.num.lossPerMin) } : {});
   } else if (env && choice) {
-    env.emit('eventResolved', { uid: occ, id: 'ev_antlion_pit', choice });
+    emitResolved(env, occ, 'ev_antlion_pit', choice);
   }
 }
 
@@ -906,7 +1010,7 @@ function tickObjects(s, d, dt, env) {
   }
   for (const o of expired) {
     if (o.kind === 'footstep') stomp(s, d, o, env);
-    else if (o.kind === 'golden_aphid') env.emit('eventResolved', { uid: num(o.data.occ), id: 'ev_golden_aphid', choice: 'expired' });
+    else if (o.kind === 'golden_aphid') emitResolved(env, o.data.occ, 'ev_golden_aphid', 'expired');
   }
 }
 
@@ -927,13 +1031,16 @@ function stomp(s, d, o, env) {
     for (const h of neighbors(mainHex)) shield.add(h);
     area = area.filter((h) => !shield.has(h));
   }
+  let cut = 0;
+  let crushed = 0;
   if (area.length) {
-    trails.cutTrailsAt(s, d, area);
+    cut = num(trails.cutTrailsAt(s, d, area));
     const set = new Set(area);
     const doomed = s.run.surface.sources.filter((x) => set.has(x.hex) && x.max !== -1 && x.stock !== -1).map((x) => x.uid);
     for (const uid of doomed) surface.removeSource(s, d, uid, 'footstep');
+    crushed = doomed.length;
   }
-  env.emit('eventResolved', { uid: num(o.data.occ), id: 'ev_footstep', choice: 'stomped' });
+  emitResolved(env, o.data.occ, 'ev_footstep', 'stomped', { n: cut, m: crushed });
 }
 
 /** True if a trail with workers is working this source. */
@@ -971,7 +1078,7 @@ function stepActive(s, d, a, dt, env) {
       const full = a.data.trailed && a.data.max > 0 &&
         a.data.last <= Math.max(a.data.max * EVENT_RULES.harvestFrac, 2 * num(a.data.drop));
       if (a.data.obj) removeObjs(s, (o) => o.uid === a.data.obj);
-      env.emit('eventResolved', { uid: num(a.data.occ), id: a.id, choice: full ? 'harvested' : 'lost' });
+      emitResolved(env, a.data.occ, a.id, full ? 'harvested' : 'lost');
       return false;
     }
     case 'forecast':
@@ -1020,9 +1127,9 @@ function stepActive(s, d, a, dt, env) {
         }
       }
       if (ended) {
-        grant(s, d, 'insight', incomeSeconds(d, 'insight', n.insightSec, n.insightMin));
+        const gotInsight = grant(s, d, 'insight', incomeSeconds(d, 'insight', n.insightSec, n.insightMin));
         removeObjs(s, (o) => o.kind === 'phengaris' && o.data && o.data.occ === a.data.occ);
-        env.emit('eventResolved', { uid: num(a.data.occ), id: a.id, choice: 'butterfly' });
+        emitResolved(env, a.data.occ, a.id, 'butterfly', { insight: fmtOutcomeNum(gotInsight) });
         return false;
       }
       return true;
@@ -1035,7 +1142,7 @@ function stepActive(s, d, a, dt, env) {
         const killed = killWorkers(s, d, a.data.infected, 'cordyceps', 'forager', env);
         // Losses under num.avertLoss of the foragers at the outbreak's start count as averted (ach_zombie_averted).
         const averted = killed <= 0 || killed < n.avertLoss * num(a.data.start);
-        env.emit('eventResolved', { uid: num(a.data.occ), id: a.id, choice: averted ? 'averted' : 'ended' });
+        emitResolved(env, a.data.occ, a.id, averted ? 'averted' : 'ended', { n: fmtOutcomeNum(killed) });
         return false;
       }
       return true;
@@ -1080,7 +1187,7 @@ function stepActive(s, d, a, dt, env) {
       if (ended) {
         const amt = num(s.run.res.fungus) * EVENTS.ev_fungal_blight.num.loss;
         if (amt > 0) spend(s, { fungus: amt });
-        env.emit('eventResolved', { uid: num(a.data.occ), id: a.id, choice: 'failed' });
+        emitResolved(env, a.data.occ, a.id, 'failed', { fungus: fmtOutcomeNum(amt) });
         return false;
       }
       return true;
@@ -1263,9 +1370,11 @@ export const handlers = {
       } else if (o.kind === 'golden_aphid') {
         const n = EVENTS.ev_golden_aphid.num;
         addEffect(s, { id: 'ev_golden_aphid', stat: 'honeydew', mult: n.mult, t: n.buffSec });
-        env.emit('eventResolved', { uid: occ, id: 'ev_golden_aphid', choice: 'clicked' });
+        emitResolved(env, occ, 'ev_golden_aphid', 'clicked', { mult: n.mult, time: fmtOutcomeTime(n.buffSec) });
+      } else if (o.kind === 'fossil_cache' || o.kind === 'lost_queen') {
+        claimFind(s, d, o, env);   // C188 expedition finds
       } else if (o.kind === 'footstep') {
-        env.emit('eventResolved', { uid: occ, id: 'ev_footstep', choice: 'scattered' });
+        emitResolved(env, occ, 'ev_footstep', 'scattered');
       } else if (o.kind === 'ladybug') {
         s.meta.counters.ladybugs = num(s.meta.counters.ladybugs) + 1;
         const card = s.run.events.card;
@@ -1274,10 +1383,29 @@ export const handlers = {
           card.data.left = Math.max(0, num(card.data.left) - 1);
           if (!left) {
             s.run.events.card = null;
-            env.emit('eventResolved', { uid: occ, id: 'ev_ladybug_raid', choice: 'clicked' });
+            emitResolved(env, occ, 'ev_ladybug_raid', 'clicked');
           }
         }
       }
+    },
+  },
+
+  /**
+   * clearAntlion { uid } — C185: send garrison soldiers to clear an antlion pit (the map object uid) at any time while
+   * it exists, with the card's rule (EVENTS.ev_antlion_pit.num.soldiers garrison soldiers, none lost). Closes the card
+   * if it is still open; eventResolved choice 'send'.
+   */
+  clearAntlion: {
+    validate(s, d, cmd) {
+      const o = Number.isInteger(cmd.uid) ? findObj(s, cmd.uid) : null;
+      if (!o) return Number.isInteger(cmd.uid) ? 'notFound' : 'invalid';
+      if (o.kind !== 'antlion') return 'invalid:kind';
+      return REQ['ev_antlion_pit:send'](s, d);
+    },
+    apply(s, d, cmd, env) {
+      const o = findObj(s, cmd.uid);
+      if (!o) return;
+      endAntlion(s, num(o.data && o.data.occ), env, 'send');
     },
   },
 
@@ -1336,7 +1464,7 @@ export const handlers = {
       a.data.clicks = num(a.data.clicks) + 1;
       if (a.data.clicks >= EVENTS.ev_fungal_blight.num.clicks) {
         ev.active = ev.active.filter((x) => x !== a);
-        env.emit('eventResolved', { uid: num(a.data.occ), id: 'ev_fungal_blight', choice: 'cleaned' });
+        emitResolved(env, a.data.occ, 'ev_fungal_blight', 'cleaned');
       }
     },
   },

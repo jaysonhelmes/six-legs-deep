@@ -370,6 +370,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* C194: a steady width (the label truncates, the timer keeps its slot) so the HUD does not jump as the limit changes */
+.bn-badge { display: inline-flex; align-items: baseline; gap: 6px; min-width: 15.5em; max-width: min(26em, 100%); font-variant-numeric: tabular-nums; text-align: left; }
+.bn-badge .bn-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bn-badge .bn-time { flex: none; min-width: 3.6em; text-align: right; color: var(--text-2); }
+.bn-badge.bn-none { color: var(--text-3); border-style: dashed; }
 .bn-badge.bn-raid, .raid-badge { background: var(--danger-bg); border-color: var(--danger); color: var(--text); animation: pulse-danger 1.2s ease-in-out infinite; }
 .bn-badge.bn-hungry { background: var(--warn-bg); border-color: var(--warn); }
 .bn-badge.bn-frost { background: rgba(169, 211, 239, 0.14); border-color: var(--frost); color: var(--frost); }
@@ -420,6 +425,11 @@
 /* ================================================================== panels column / drawer / sheet */
 #panels { background: linear-gradient(180deg, var(--surface), var(--bg-2)); border-left: 1px solid var(--line-soft); }
 #tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 10px 8px 8px; border-bottom: 1px solid var(--line-soft); }
+/* C197: when the row scrolls sideways (the narrow sheet), fade edges show there is more on that side */
+#tabs.fade-right { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
+#tabs.fade-left { -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px); mask-image: linear-gradient(90deg, transparent, #000 28px); }
+#tabs.fade-left.fade-right { -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 .tab {
   position: relative;
   display: inline-flex;
@@ -443,7 +453,16 @@
 .tab.fresh::after { content: ''; position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 2px var(--surface), 0 0 6px var(--accent-2); }
 /* utility tabs (Field Guide, Stats, Settings): icon buttons at the end of the row; the name is in the tooltip */
 .tab.util { padding: 4px 5px; }
-.tab.util .tab-num, .tab.util .tab-label { display: none; }
+.tab.util .tab-num { display: none; }
+/* C197: icon buttons show their name on hover or keyboard focus (wide layouts: a small label under the icon) */
+.tab.util .tab-label { position: absolute; z-index: 30; top: calc(100% + 3px); left: 50%; transform: translateX(-50%); padding: 2px 7px;
+  border-radius: var(--r-sm); background: var(--surface-3); border: 1px solid var(--line); color: var(--text); font-size: var(--fs-xs);
+  font-weight: 650; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; transition: opacity 0.12s 0.15s; }
+.tab.util:hover .tab-label, .tab.util:focus-visible .tab-label { opacity: 1; visibility: visible; }
+/* the narrow sheet's tab row scrolls and would clip a floating label, so there the name sits beside the icon */
+#app[data-layout='narrow'] .tab.util { padding: 4px 8px; gap: 5px; }
+#app[data-layout='narrow'] .tab.util .tab-label { position: static; transform: none; opacity: 1; visibility: visible;
+  padding: 0; border: 0; background: none; color: inherit; font-size: var(--fs-sm); transition: none; }
 .tab[data-tab='guide'] { margin-left: auto; }
 .tab-ico { display: block; width: 16px; height: 16px; background: currentColor; -webkit-mask: var(--ico-url) center / contain no-repeat; mask: var(--ico-url) center / contain no-repeat; }
 .tab[data-tab='guide'] .tab-ico { --ico-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19.5V5a2 2 0 0 1 2-2h14v15H6a2 2 0 0 0-2 2 2 2 0 0 0 2 2h14'/%3E%3Cpath d='M9 7.5h7M9 11h5'/%3E%3C/svg%3E"); }
@@ -622,9 +641,10 @@
 .job-chip.drop { border-color: var(--accent); background: var(--surface-3); }
 .job-chip > .ico { grid-area: ico; }
 .job-name { grid-area: name; font-weight: 650; font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.job-num { grid-area: count; font-weight: 700; font-variant-numeric: tabular-nums; }
-.job-cap, .job-target { grid-area: count; justify-self: start; margin-left: 3.4em; font-size: var(--fs-xs); color: var(--text-3); }
-.job-target { margin-left: 7em; color: var(--accent-2); }
+.job-count { grid-area: count; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 5px; min-width: 0; }   /* C195 */
+.job-num { font-weight: 700; font-variant-numeric: tabular-nums; }
+.job-cap, .job-target { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.job-target { color: var(--accent-2); }
 .job-btns { grid-area: btns; display: flex; gap: 4px; }
 .presets { margin-top: 4px; }
 .preset { display: inline-flex; gap: 2px; }
@@ -1017,6 +1037,7 @@
 #app[data-layout='narrow'] .hud-actions { display: none; }
 #app[data-layout='narrow'] #hud-top { gap: 6px; }
 #app[data-layout='narrow'] .bn-badge { flex: 1 1 0; min-width: 0; text-align: left; }
+#app[data-layout='narrow'] .bn-badge .bn-time { min-width: 3em; }
 #app[data-layout='narrow'] .threats { flex: 1 1 100%; }
 /* a raised sheet leaves little map: the ribbon steps aside until the sheet is lowered */
 #app[data-layout='narrow']:is([data-sheet='half'], [data-sheet='full']) .unlock-ribbon { display: none; }
@@ -1147,6 +1168,7 @@ p.planned-wait { margin: 2px 0 4px; }
 
 /* C131: the Manual. Book button beside the utility tabs; a large modal with a section index and search on the left,
    full screen below 768 px (index as a scrolling chip row above the entries). No horizontal page scroll at 375 px. */
+.log-btn .tab-ico { --ico-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M9 6h11M9 12h11M9 18h11'/%3E%3Ccircle cx='4.5' cy='6' r='1.3'/%3E%3Ccircle cx='4.5' cy='12' r='1.3'/%3E%3Ccircle cx='4.5' cy='18' r='1.3'/%3E%3C/svg%3E"); }
 .manual-btn .tab-ico { --ico-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 6.5C10 5 7 4.5 3 4.8v13.6c4-.3 7 .2 9 1.6 2-1.4 5-1.9 9-1.6V4.8c-4-.3-7 .2-9 1.7z'/%3E%3Cpath d='M12 6.5V20'/%3E%3C/svg%3E"); }
 .modal-manual { width: min(1080px, 100%); height: min(860px, calc(100vh - 32px)); }
 .modal-manual .modal-body { flex: 1; min-height: 0; padding: 0; overflow: hidden; display: block; }
@@ -1291,3 +1313,56 @@ p.planned-wait { margin: 2px 0 4px; }
   .pn-body { padding: 0 10px 8px; }
   .pn-list { padding-left: 16px; }
 }
+
+/* ================================================================== interface pass 6 (ARCHITECTURE §18 C190–C197) */
+/* C196 run timer beside "Year · run" (top-bar layouts hide the year line but keep the timer) */
+.brand-line { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.brand-time { flex: none; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.brand-time::before { content: '· '; }
+#app:is([data-layout='wide-short'], [data-layout='medium']) .brand-time::before { content: 'Run '; }
+/* C193 caste caps on the rail ("143 / 176 berths") */
+.res-sub .res-val { display: grid; justify-items: end; white-space: nowrap; min-width: 0; }
+.pop-cap { font-size: 0.85em; line-height: 1.15; color: var(--text-3); font-weight: 500; }
+/* top-bar layouts: the cap stays on the same line */
+#app:is([data-layout='wide-short'], [data-layout='medium'], [data-layout='narrow']) .res-sub .res-val { display: inline; }
+.res-sub.at-cap .pop-cap { color: var(--accent-2); }
+/* C190 toast "Log" link */
+.toast-link { border: 0; background: transparent; color: var(--accent-2); font-size: var(--fs-xs); font-weight: 650; padding: 2px 4px; text-decoration: underline;
+  text-underline-offset: 2px; cursor: var(--cur-pointer, pointer); }
+.toast:has(.toast-act) .toast-link { order: 4; }
+/* C190 event log modal */
+.modal-log { width: min(640px, 100%); }
+.modal-log .modal-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.log-chips, .flow-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.log-chip, .flow-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line-soft);
+  background: var(--surface-2); color: var(--text-2); font-size: var(--fs-xs); font-weight: 650; cursor: var(--cur-pointer, pointer); }
+.log-chip.active, .flow-chip.active { background: color-mix(in srgb, var(--accent) 25%, var(--surface)); border-color: var(--accent); color: var(--text); }
+.log-chip-n { min-width: 1.4em; padding: 0 4px; border-radius: 999px; background: var(--bg-2); color: var(--text-3); font-variant-numeric: tabular-nums; text-align: center; }
+.log-list { list-style: none; margin: 0; padding: 0; max-height: min(60vh, 520px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line-soft);
+  border-radius: var(--r-md); background: var(--surface); }
+.log-row { display: grid; grid-template-columns: 4.6em auto minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 6px 10px; border-bottom: 1px solid var(--line-soft);
+  font-size: var(--fs-sm); line-height: 1.35; }
+.log-row:last-child { border-bottom: 0; }
+.log-row.highlight { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+.log-time { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: var(--fs-xs); }
+.log-cat { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); white-space: nowrap; }
+.log-text { min-width: 0; overflow-wrap: anywhere; }
+.log-bad .log-text { color: var(--danger); }
+.log-good .log-text { color: var(--text); }
+.log-gold .log-text { color: var(--gold); }
+.log-run-sep { padding: 4px 10px; font-size: var(--fs-xs); font-weight: 700; color: var(--text-2); background: var(--surface-2); border-bottom: 1px solid var(--line-soft); }
+@media (max-width: 520px) { .log-row { grid-template-columns: 4.2em minmax(0, 1fr); } .log-cat { display: none; } }
+/* C191 Stats tab: income and spending per resource */
+.flow-sum { margin: 6px 0 2px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.flow-sum.neg { color: var(--danger); }
+.flow-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.flow-h { margin: 4px 0; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); }
+.flow-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.flow-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'label val' 'bar bar'; gap: 1px 6px; font-size: var(--fs-xs); }
+.flow-label { grid-area: label; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.flow-val { grid-area: val; font-variant-numeric: tabular-nums; font-weight: 650; }
+.flow-bar { grid-area: bar; height: 4px; border-radius: 999px; background: var(--bg-2); overflow: hidden; }
+.flow-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--c-food, var(--accent)); }
+.flow-out .flow-bar-fill { background: var(--danger); opacity: 0.75; }
+.flow-out .flow-val { color: var(--text-2); }
+.flow-none { color: var(--text-3); }

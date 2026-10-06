@@ -828,6 +828,133 @@ DECOR.war_hall = {
   },
 };
 
+// C179: the chitin chambers ---------------------------------------------------------------------------------------
+
+/** One curved chitin plate (a shed back plate): a shield shape with a lit rim and a seam, `w` px wide. */
+function chitinPlate(g, x, y, w, rot, col) {
+  const h = w * 0.42;
+  g.save();
+  g.translate(x, y);
+  g.rotate(rot);
+  g.fillStyle = col;
+  g.beginPath();
+  g.moveTo(-w / 2, h * 0.3);
+  g.quadraticCurveTo(0, -h * 1.1, w / 2, h * 0.3);
+  g.quadraticCurveTo(0, h * 0.7, -w / 2, h * 0.3);
+  g.fill();
+  g.strokeStyle = 'rgba(255,214,160,0.45)';
+  g.lineWidth = Math.max(0.5, w * 0.05);
+  g.beginPath();
+  g.moveTo(-w * 0.4, h * 0.05);
+  g.quadraticCurveTo(0, -h * 0.75, w * 0.4, h * 0.05);
+  g.stroke();
+  g.strokeStyle = 'rgba(20,10,6,0.45)';
+  g.beginPath();
+  g.moveTo(0, -h * 0.4);
+  g.lineTo(0, h * 0.45);
+  g.stroke();
+  g.restore();
+}
+
+/** Carapace Store: stacks of shed plates and husks along the floor, a few leaning against the walls. */
+DECOR.carapace_store = {
+  layout(bw, bh, seed) {
+    const R = rng(seed, 23);
+    const n = Math.max(1, Math.floor((bw - 0.4) / 1.1));
+    const stacks = [];
+    for (let k = 0; k < n; k++) {
+      stacks.push({ x: 0.25 + ((bw - 0.5) * (k + 0.5)) / n + (R() - 0.5) * 0.15, h: 2 + Math.floor(R() * Math.min(5, bh * 2.2)),
+        w: 0.55 + R() * 0.25, tilt: (R() - 0.5) * 0.12, tone: R() });
+    }
+    const husks = [];
+    for (let k = 0; k < Math.max(1, Math.floor(bw / 1.6)); k++) husks.push({ x: 0.3 + R() * (bw - 0.6), r: 0.14 + R() * 0.08, rot: R() * 3 });
+    return { stacks, husks, lean: R() < 0.5 ? 0.12 : bw - 0.12 };
+  },
+  back(g, box, u, L) {
+    const floor = box.y + box.h;
+    const cols = ['#4a2c1a', '#5a3820', '#3d2416', '#6b4426'];
+    // shadow strip under the stacks
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    g.fillRect(box.x, floor - u * 0.08, box.w, u * 0.08);
+    for (const st of L.stacks) {
+      const x = box.x + st.x * u;
+      const w = st.w * u;
+      const step = u * 0.14;
+      for (let k = 0; k < st.h; k++) {
+        const y = floor - u * 0.1 - k * step;
+        if (y < box.y + u * 0.2) break;
+        chitinPlate(g, x + Math.sin(k * 1.7 + st.tone * 6) * u * 0.04, y, w * (1 - k * 0.03), st.tilt + (k % 2 ? 0.05 : -0.04), cols[(k + Math.floor(st.tone * 4)) % cols.length]);
+      }
+    }
+    // a big plate leaning on the wall
+    chitinPlate(g, box.x + L.lean * u, floor - u * 0.45, u * 0.9, L.lean < 1 ? 1.2 : -1.2, '#553420');
+    for (const h of L.husks) pebble(g, box.x + h.x * u, floor - u * h.r * 0.7, u * h.r, u * h.r * 0.75, h.rot, '#6a4a2c', 'rgba(255,226,180,0.25)');
+  },
+};
+
+/** Carapace Workshop: a workbench with a plate being shaped, mandible tools on a rack, offcuts and a finished stack. */
+DECOR.carapace_workshop = {
+  layout(bw, bh, seed) {
+    const R = rng(seed, 29);
+    const benchW = Math.min(bw * 0.55, 2.6);
+    const benchX = 0.3 + R() * Math.max(0, bw - benchW - 0.6);
+    const tools = [];
+    const nt = Math.max(2, Math.min(5, Math.floor(bw / 1.1)));
+    for (let k = 0; k < nt; k++) tools.push({ len: 0.4 + R() * 0.25, ang: -Math.PI / 2 + (R() - 0.5) * 0.4 });
+    const offcuts = [];
+    for (let k = 0; k < 4 + Math.floor(R() * 4); k++) offcuts.push({ x: R() * bw, s: 0.08 + R() * 0.08, rot: R() * 3 });
+    return { benchX, benchW, tools, offcuts, stackX: benchX > bw / 2 ? 0.45 : bw - 0.45, rackY: Math.min(0.55, bh * 0.3) };
+  },
+  back(g, box, u, L) {
+    const floor = box.y + box.h;
+    const bx = box.x + L.benchX * u;
+    const bw = L.benchW * u;
+    const top = floor - u * 0.45;
+    // the bench: a flat slab of hardened clay on two stone legs
+    g.fillStyle = '#5b4632';
+    g.fillRect(bx + bw * 0.08, top, u * 0.14, floor - top);
+    g.fillRect(bx + bw * 0.92 - u * 0.14, top, u * 0.14, floor - top);
+    g.fillStyle = '#7a5d40';
+    g.fillRect(bx, top - u * 0.1, bw, u * 0.12);
+    g.fillStyle = 'rgba(255,230,190,0.25)';
+    g.fillRect(bx, top - u * 0.1, bw, Math.max(1, u * 0.03));
+    // a plate being shaped on the bench, with shavings
+    chitinPlate(g, bx + bw * 0.5, top - u * 0.2, u * 0.7, 0.05, '#4c2d1b');
+    g.strokeStyle = 'rgba(214,170,120,0.55)';
+    g.lineWidth = lw(u, 0.025, 0.5);
+    g.beginPath();
+    for (let k = 0; k < 3; k++) {
+      const x = bx + bw * (0.2 + 0.3 * k);
+      g.moveTo(x, top - u * 0.1);
+      g.quadraticCurveTo(x + u * 0.08, top - u * 0.18, x + u * 0.12, top - u * 0.08);
+    }
+    g.stroke();
+    // mandible tools hung on a rack on the back wall
+    const ry = box.y + L.rackY * u;
+    const rx0 = box.x + box.w * 0.15;
+    const rx1 = box.x + box.w * 0.85;
+    g.strokeStyle = '#3a2414';
+    g.lineWidth = lw(u, 0.05, 0.8);
+    g.beginPath();
+    g.moveTo(rx0, ry);
+    g.lineTo(rx1, ry);
+    g.stroke();
+    g.fillStyle = '#714a28';
+    g.strokeStyle = 'rgba(30,18,10,0.65)';
+    g.lineWidth = lw(u, 0.02, 0.5);
+    L.tools.forEach((tl, k) => {
+      const x = rx0 + ((rx1 - rx0) * (k + 0.5)) / L.tools.length;
+      g.beginPath();
+      mandiblePath(g, x, ry + u * 0.04, tl.len * u, tl.ang + Math.PI, k % 2 ? 1 : -1, true);
+      g.fill();
+      g.stroke();
+    });
+    // offcuts on the floor and a small finished stack
+    for (const o of L.offcuts) pebble(g, box.x + o.x * u, floor - u * o.s * 0.6, u * o.s, u * o.s * 0.6, o.rot, '#5a3a22', 'rgba(255,220,170,0.2)');
+    for (let k = 0; k < 3; k++) chitinPlate(g, box.x + L.stackX * u, floor - u * (0.1 + k * 0.13), u * 0.5, 0, k % 2 ? '#5a3820' : '#46291a');
+  },
+};
+
 /**
  * A sickle-shaped ant mandible from its base (x, y), `len` px long pointing at `ang`, curling toward side `d` (±1),
  * with two teeth on the inner edge; `closed` makes a fillable outline, otherwise just the inner and outer strokes.
@@ -1596,6 +1723,8 @@ export const ADORN = {
   midden: { accent: '170,150,110', glow: '200,230,140', post: 'wood', motif: 'pebbles' },
   barracks: { accent: '214,120,96', glow: '255,170,120', post: 'chitin', motif: 'thorns' },
   war_hall: { accent: '226,104,84', glow: '255,150,110', post: 'chitin', motif: 'thorns' },
+  carapace_store: { accent: '214,160,110', glow: '255,190,130', post: 'chitin', motif: 'pebbles' },
+  carapace_workshop: { accent: '224,170,120', glow: '255,200,140', post: 'chitin', motif: 'thorns' },
   root_aphid_pen: { accent: '170,210,120', glow: '210,255,160', post: 'root', motif: 'leaves' },
   fungus_garden: { accent: '214,230,220', glow: '150,240,220', post: 'root', motif: 'spores' },
   repletion_hall: { accent: '240,180,90', glow: '255,190,90', post: 'wood', motif: 'drops' },

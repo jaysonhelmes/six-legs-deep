@@ -4,6 +4,7 @@
 import { tickEffects } from './effects.js';
 import { guardTick } from './guard.js';
 import { applyCommand } from './commands.js';
+import { setFlowTag } from './wallet.js';
 import * as seasons from '../systems/seasons.js';
 import * as prestige from '../systems/prestige.js';
 import * as nest from '../systems/nest.js';
@@ -74,7 +75,10 @@ export function step(s, d, dt, commands = [], opts = {}) {
   if (!(dt >= 0) || !Number.isFinite(dt)) dt = 0;
   const env = makeEnv(dt, opts);
   resetLedger(d);
-  if (commands) for (const cmd of commands) applyCommand(s, d, cmd, env);
+  // C191: flow tags name who pays or earns in wallet.spend / grant (the UI's resource breakdown; nothing here reads them)
+  const T = setFlowTag;
+  if (commands) for (const cmd of commands) { T('cmd:' + cmd.type); applyCommand(s, d, cmd, env); }
+  T(null);
   if (s.meta.pending) {
     seasons.tick(s, d, dt, env);
     s.meta.tick++;
@@ -90,23 +94,24 @@ export function step(s, d, dt, commands = [], opts = {}) {
   nest.derive(s, d);
   surface.derive(s, d);
   stats.recompute(s, d, env);
-  trails.tick(s, d, dt, env);
-  surface.tick(s, d, dt, env);
-  nest.tick(s, d, dt, env);
-  economy.tick(s, d, dt, env);
-  population.tick(s, d, dt, env);
-  jobs.tick(s, d, dt, env);
-  rivals.tick(s, d, dt, env);
-  raids.tick(s, d, dt, env);
-  eventsSys.tick(s, d, dt, env);
-  golden.tick(s, d, dt, env);
-  hardships.tick(s, d, dt, env);
-  automation.tick(s, d, dt, env);
-  prestige.tick(s, d, dt, env);
-  bottleneck.tick(s, d, dt, env);
-  unlocks.tick(s, d, dt, env);
-  fieldguide.tick(s, d, dt, env);
-  achievements.tick(s, d, dt, env);
+  T('trails'); trails.tick(s, d, dt, env);
+  T('surface'); surface.tick(s, d, dt, env);
+  T('nest'); nest.tick(s, d, dt, env);
+  T('economy'); economy.tick(s, d, dt, env);
+  T('population'); population.tick(s, d, dt, env);
+  T('jobs'); jobs.tick(s, d, dt, env);
+  T('rivals'); rivals.tick(s, d, dt, env);
+  T('raids'); raids.tick(s, d, dt, env);
+  T('events'); eventsSys.tick(s, d, dt, env);
+  T('golden'); golden.tick(s, d, dt, env);
+  T('hardships'); hardships.tick(s, d, dt, env);
+  T('automation'); automation.tick(s, d, dt, env);
+  T('prestige'); prestige.tick(s, d, dt, env);
+  T('bottleneck'); bottleneck.tick(s, d, dt, env);
+  T('unlocks'); unlocks.tick(s, d, dt, env);
+  T('fieldguide'); fieldguide.tick(s, d, dt, env);
+  T('achievements'); achievements.tick(s, d, dt, env);
+  T(null);
   if (held) eventsSys.resumeOffline(s, held);
   s.meta.tick++;
   s.meta.simTime += dt;

@@ -88,6 +88,10 @@ export const UNLOCKS = f([
   U('chamber_water_well', 'Water Well', { custom: 'waterRevealed' }, false, true),
   U('caste_supermajor', 'Supermajors', R('supermajors'), false, false),
   U('chamber_war_hall', 'War Hall', R('supermajors'), false, false),
+  // C179: the chitin chambers. The Store comes with chitin itself (or Polymorphism); the Workshop with a built Barracks
+  // (any contributing level) or the Phalanx research.
+  U('chamber_carapace_store', 'Carapace Store', { any: [{ flag: 'res_chitin' }, R('polymorphism')] }, false, true),
+  U('chamber_carapace_workshop', 'Carapace Workshop', { any: [R('phalanx'), { dpath: 'nest.agg.barracksL', gte: 0.01 }] }, false, false),
   U('adapt_long_legs', 'Long Legs', R('tandem_running'), false, false),
   U('ability_frenzy', 'Frenzy', R('frenzy_signal'), false, false),
   U('panel_map', 'Map', { all: [{ custom: 'secondTrailOrClaim' }, { flag: 'trail_slots' }] }, true, true),

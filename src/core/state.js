@@ -170,7 +170,7 @@ export function createRun(seed) {
     adaptations: {},
     unlocked: {},
     bottleneck: { id: null, since: 0, capT: 0 },
-    prestige: { peakRate: 0, peakAt: 0 },
+    prestige: { peakRate: 0, peakAt: 0, calmPeak: 0, belowAt: -1 },   // C166: weather-free peak + drop start (Auto-Flight)
     clicks: { sec: -1, n: 0 },
     stats: {
       eggs: 0, hatched: 0, soldiersRaised: 0, maxAdults: 0, foodWasted: 0, hungryEver: false, winterHungry: false,
@@ -203,6 +203,7 @@ export function createEra() {
     heirlooms: [],
     innate: {},
     researchRuns: {},
+    archive: {},        // C200: Archive level per research branch (insight sink; kept through Flights and Supercolonies)
     hardshipBest: {},
     blueprints: [],
     activeBlueprint: -1,

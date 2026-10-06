@@ -54,7 +54,7 @@ test('documented job, economy and Adaptation numbers (DESIGN §5, §6, §10, §1
   assert.equal(THRESHOLDS.rebalanceSec, 5);
   assert.equal(PRESETS.max, 3);
   assert.deepEqual(ECON.EGG, { base: 10, k: 0.02, exp: 1.5, nanitics: 5, naniticsVigor: 25, naniticMult: 0.5 });
-  assert.deepEqual(ECON.LAY, { base: 0.2, perRF: 0.05, perRC: 1.15 });
+  assert.deepEqual(ECON.LAY, { base: 0.2, perRF: 0.05, perRC: 1.15, highFrom: 8, perRCHigh: 1.25, courtPer: 0.25 });
   assert.equal(ECON.BROOD.baseSec, 25);
   assert.equal(ECON.BROOD.frostDeathPerSec, 0.005);
   assert.deepEqual(ECON.HUNGRY, { outputMult: 0.75, endFrac: 0.05, harshDeathPerSec: 0.005 });

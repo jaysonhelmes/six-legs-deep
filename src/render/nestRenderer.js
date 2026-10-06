@@ -86,6 +86,13 @@ const PING_MAX = 6;
 /** Sprite behaviour states (Below). */
 const ST = Object.freeze({ GO: 0, WORK: 1, AWAY: 2, WANDER: 3, IDLE: 4 });
 
+/**
+ * C181: stone colour per stratum (mixed into NEST.stone): warm grey-brown flint near the top, rust-banded ironstone in
+ * clay, pale speckled granite in gravel, dark blue-grey slate in bedrock, wet blue-green rock in the aquifer.
+ */
+const STONE_TINT = Object.freeze({ topsoil: '#8a7a68', loam: '#86745f', clay: '#946250', gravel: '#9a9890', bedrock: '#4c5266',
+  aquifer: '#4f6a72' });
+
 /** Row → layer id (data/strata.js when present, else the fallback rows). */
 let LAYER_AT = null;
 function layerAt(y) {
@@ -279,6 +286,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   /** strata cache */
   const cache = { canvas: null, ctx: null, cpp: 0, drawn: new Int8Array(NCELL).fill(-9), rev: -1, cellsRef: null, waterKey: '',
     rootsKey: '', roots: new Uint8Array(NCELL), rootOwn: new Uint8Array(NCELL), water: new Uint8Array(NCELL), pristine: null,
+    // C181: each boulder's identity (lowest cell index of its 8-connected stone group + 1), for its own tint and grain
+    stoneKey: '', stoneId: new Int16Array(NCELL),
     featRev: -1, featRef: null, featCpp: 0, force: new Uint8Array(NCELL), grad: null, chamberKeys: new Map() };
   /** decorative soil either side of the grid */
   const margin = { canvas: null, ctx: null, cpm: 0 };
@@ -778,6 +787,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
       cache.drawn.fill(-9);
     }
+    syncStones(s);
     const water = f.water || [];
     const wk = water.map((w) => `${w.x},${w.y},${w.w},${w.h},${w.revealed ? 1 : 0}`).join(';');
     if (wk !== cache.waterKey) {
@@ -790,6 +800,37 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
       for (let i = 0; i < NCELL; i++) if (before[i] !== cache.water[i]) cache.drawn[i] = -9;
     }
+  }
+
+  /** C181: boulder identities (8-connected stone groups) when the stone cells change. */
+  function syncStones(s) {
+    const cells = s.run.nest.cells || [];
+    let n = 0;
+    let sum = 0;
+    for (let i = 0; i < NCELL; i++) if (cells[i] === CELL.STONE) { n++; sum = (sum * 31 + i) % 1000003; }
+    const key = n + ':' + sum;
+    if (key === cache.stoneKey) return;
+    cache.stoneKey = key;
+    const id = cache.stoneId;
+    id.fill(0);
+    for (let i = 0; i < NCELL; i++) {
+      if (cells[i] !== CELL.STONE || id[i]) continue;
+      const st = [i];
+      id[i] = i + 1;
+      while (st.length) {
+        const c = st.pop();
+        const x = c % COLS;
+        const y = (c / COLS) | 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= COLS || yy >= ROWS) continue;
+          const k = yy * COLS + xx;
+          if (!id[k] && cells[k] === CELL.STONE) { id[k] = i + 1; st.push(k); }
+        }
+      }
+    }
+    for (let i = 0; i < NCELL; i++) if (id[i]) cache.drawn[i] = -9;
   }
 
   function codeAt(cells, i) {
@@ -1039,9 +1080,25 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       const tr = up && rt ? r : 0;
       const br = dn && rt ? r : 0;
       const bl = dn && lf ? r : 0;
-      g.fillStyle = shade(NEST.stone, 0.04 * (hash01(x + 11, y + 3) - 0.5));
+      // C181: colour by stratum, each boulder its own shade (its group id), a little grain per cell
+      const lid = layerAt(y);
+      const sid = cache.stoneId[i] || i + 1;
+      const v = hash01(sid, 77);
+      g.fillStyle = shade(mix(NEST.stone, STONE_TINT[lid] || NEST.stone, 0.6), 0.14 * (v - 0.5) + 0.04 * (hash01(x + 11, y + 3) - 0.5));
       rrect(g, px, py, cs, cs, tl, tr, br, bl);
       g.fill();
+      if (lid === 'clay' && (sid + y) % 2 === 0) {
+        g.fillStyle = 'rgba(150,70,40,0.28)'; // rusty band
+        g.fillRect(px + tl * 0.4, py + cs * (0.35 + 0.2 * v), cs - (tl + tr) * 0.4, Math.max(1, cs * 0.12));
+      } else if (lid === 'gravel') {
+        g.fillStyle = 'rgba(235,230,220,0.35)'; // granite speckle
+        for (let k = 0; k < 4; k++) g.fillRect(px + cs * (0.15 + 0.7 * hash01(x * 7 + k, y + sid)), py + cs * (0.15 + 0.7 * hash01(y * 7 + k, x)), Math.max(1, cs * 0.07), Math.max(1, cs * 0.07));
+      } else if (lid === 'bedrock' || lid === 'aquifer') {
+        if (hash01(x + sid, y * 3) > 0.55) { // a crystalline glint
+          g.fillStyle = lid === 'aquifer' ? 'rgba(170,225,235,0.45)' : 'rgba(190,200,235,0.4)';
+          g.fillRect(px + cs * (0.25 + 0.5 * hash01(x, sid)), py + cs * (0.25 + 0.5 * hash01(sid, y)), Math.max(1, cs * 0.1), Math.max(1, cs * 0.05));
+        }
+      }
       // exposed edges: light from the top-left, shade to the bottom-right
       const e = Math.max(1, cs * 0.12);
       g.fillStyle = 'rgba(255,255,255,0.2)';
@@ -1282,6 +1339,26 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         g.fillStyle = grad;
         for (const i of geo.cells[k] || []) g.fillRect((i % COLS) * cs, ((i / COLS) | 0) * cs, cs, cs);
       }
+    }
+    // pass 5 (C178): root lines grow down through chambers and tunnels: drawn hanging through the open cells, a little
+    // paler than in soil, with a hair-root tip where the root ends inside the cavity
+    for (const i of rList) {
+      if (!cache.roots[i] || !isOpenCode(codeAt(cells, i))) continue;
+      const x = i % COLS;
+      const y = (i / COLS) | 0;
+      g.globalAlpha = 0.8;
+      rootSegment(g, x, y, x * cs, y * cs, cs, cache.roots[i], cache.rootOwn[i] === 1);
+      if (y + 1 >= ROWS || !cache.roots[i + COLS]) {
+        g.strokeStyle = cache.rootOwn[i] === 1 ? ROOT_OWN_DARK : NEST.rootDark;
+        g.lineWidth = Math.max(0.8, cs * 0.05);
+        g.beginPath();
+        for (const dx of [-0.18, 0, 0.16]) {
+          g.moveTo((x + 0.5) * cs, (y + 0.95) * cs);
+          g.quadraticCurveTo((x + 0.5 + dx) * cs, (y + 1.1) * cs, (x + 0.5 + dx * 1.6) * cs, (y + 1.3) * cs);
+        }
+        g.stroke();
+      }
+      g.globalAlpha = 1;
     }
     g.lineCap = 'butt';
     g.restore();
@@ -1663,6 +1740,108 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         }
       }
       positionSprite(i, v);
+    }
+  }
+
+  /**
+   * C180: the dig crew. Wherever the first queued job is digging (a tunnel, a new chamber, a chamber growing into its
+   * reserved space, a shaft, a drain), the face cell is shown being excavated (a cavity bite growing from the open side
+   * as its work completes, so the room is revealed cell by cell), two workers at the face (heads bobbing as they dig) and
+   * two carriers walking soil pellets out along the passage toward the main shaft, with a small spoil heap. Drawn with
+   * the shared ant sprites; under reduced motion the crew stands still. Only when cells are at least 7 px.
+   */
+  const crewMemo = { face: -1, rev: -1, stand: -1, path: [] };
+  function digCrewPlan(s, face) {
+    if (crewMemo.face === face && crewMemo.rev === s.run.nest.rev) return crewMemo;
+    crewMemo.face = face;
+    crewMemo.rev = s.run.nest.rev;
+    crewMemo.stand = -1;
+    crewMemo.path = [];
+    const top = geo.tops[0];
+    const tf = top ? topField(top.col) : null;
+    let best = -1;
+    let bestD = Infinity;
+    for (const n of [face - COLS, face + COLS, face % COLS > 0 ? face - 1 : -1, face % COLS < COLS - 1 ? face + 1 : -1]) {
+      if (n < 0 || n >= NCELL || !fields.open[n]) continue;
+      const dd = tf && tf[n] >= 0 ? tf[n] : 9999;
+      if (dd < bestD) { bestD = dd; best = n; }
+    }
+    if (best < 0) return crewMemo;
+    crewMemo.stand = best;
+    const path = [best];
+    let cur = best;
+    for (let k = 0; k < 6 && tf; k++) {
+      const nx = stepDown(tf, fields.open, cur, 0.5);
+      if (nx === cur) break;
+      path.push(nx);
+      cur = nx;
+    }
+    crewMemo.path = path;
+    return crewMemo;
+  }
+
+  function drawDigCrew(ctx, s, d, unit, H) {
+    const face = digFace(s, d);
+    if (face < 0 || unit < 7) return;
+    const v = view();
+    const fy = Math.floor(face / COLS);
+    const fpy = v.oy + fy * v.cell;
+    if (fpy < -v.cell * 8 || fpy > H + v.cell * 8) return;
+    const plan = digCrewPlan(s, face);
+    if (plan.stand < 0) return;
+    const q = s.run.nest.queue || [];
+    const job = q[0];
+    const work = job ? safe(() => nestgeom.cellWork(s, face, job.kind), 0) : 0;
+    const frac = job && work > 0 ? clamp(job.prog / work, 0, 1) : 0.3;
+    const fx0 = v.ox + (face % COLS) * v.cell;
+    const st = plan.stand;
+    const dxs = (st % COLS) - (face % COLS);
+    const dys = Math.floor(st / COLS) - fy;
+    // the bite: cavity colour growing from the side the crew digs from
+    const cc = cavCols(fy);
+    const b = Math.max(0.15, frac) * v.cell;
+    ctx.fillStyle = cc.cav;
+    ctx.beginPath();
+    if (dxs < 0) rrect(ctx, fx0, fpy + v.cell * 0.12, b, v.cell * 0.76, 0, v.cell * 0.3, v.cell * 0.3, 0);
+    else if (dxs > 0) rrect(ctx, fx0 + v.cell - b, fpy + v.cell * 0.12, b, v.cell * 0.76, v.cell * 0.3, 0, 0, v.cell * 0.3);
+    else if (dys < 0) rrect(ctx, fx0 + v.cell * 0.12, fpy, v.cell * 0.76, b, 0, 0, v.cell * 0.3, v.cell * 0.3);
+    else rrect(ctx, fx0 + v.cell * 0.12, fpy + v.cell - b, v.cell * 0.76, b, v.cell * 0.3, v.cell * 0.3, 0, 0);
+    ctx.fill();
+    // spoil heap on the floor of the stand cell
+    const sp = cellCenter(st);
+    const fleck = (STRATA[layerAt(fy)] || STRATA.loam).fleck;
+    ctx.fillStyle = rgba(fleck, 0.85);
+    for (let k = 0; k < 4; k++) {
+      ctx.beginPath();
+      ctx.ellipse(sp.x + (k - 1.5) * v.cell * 0.13, sp.y + v.cell * 0.36 - (k % 2) * v.cell * 0.05, v.cell * 0.09, v.cell * 0.06, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // two diggers at the face, facing it
+    const fc = cellCenter(face);
+    const ang = Math.atan2(fc.y - sp.y, fc.x - sp.x);
+    const still = reduced;
+    for (let k = 0; k < 2; k++) {
+      const off = (k ? 1 : -1) * v.cell * 0.18;
+      const px = sp.x + (fc.x - sp.x) * 0.38 + (dxs === 0 ? off : 0);
+      const py = sp.y + (fc.y - sp.y) * 0.38 + (dys === 0 ? off * 0.6 : 0) + v.cell * 0.08;
+      const bob = still ? 0 : Math.sin(time * 13 + k * 2.1) * 0.3;
+      atlas.drawAnt(ctx, KIND.minor, 'none', ang + bob, still ? 0 : (Math.floor(time * 6 + k) & 1), px, py, unit, null, NEST.antOutline);
+    }
+    // carriers walking pellets out along the passage
+    const path = plan.path;
+    if (path.length >= 2) {
+      const len = path.length - 1;
+      for (let k = 0; k < 2; k++) {
+        const p = still ? 0.3 + 0.4 * k : ((time * 0.35 + k * 0.5) % 1);
+        const at = p * len;
+        const a = Math.min(len - 1, Math.floor(at));
+        const u = at - a;
+        const A = cellCenter(path[a]);
+        const B = cellCenter(path[a + 1]);
+        const x = A.x + (B.x - A.x) * u;
+        const y = A.y + (B.y - A.y) * u + v.cell * 0.1;
+        atlas.drawAnt(ctx, KIND.minor, 'pellet', Math.atan2(B.y - A.y, B.x - A.x), still ? 0 : (Math.floor(time * 8 + k) & 1), x, y, unit, null, NEST.antOutline);
+      }
     }
   }
 
@@ -2061,7 +2240,9 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         for (let xx = R.x; xx < R.x + R.w; xx++) {
           if (xx >= c.x && xx < c.x + c.w && yy >= c.y && yy < c.y + c.h) continue;
           if (xx < 0 || yy < 0 || xx >= COLS || yy >= ROWS) continue;
-          if (cells[yy * COLS + xx] === CELL.SOIL) soil.push([xx, yy]);
+          const ci = yy * COLS + xx;
+          // C173: an unrevealed pocket reads as plain soil here too (no gap in the works gives it away)
+          if (cells[ci] === CELL.SOIL || (cells[ci] === CELL.WATER && !cache.water[ci])) soil.push([xx, yy]);
         }
       }
       art.drawReservedWorks(ctx, { R, room: c, soil, ox: v.ox, oy: v.oy, u: v.cell, seed: c.uid,
@@ -2931,6 +3112,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
           if (xx < 0 || yy < 0 || xx >= COLS || yy >= ROWS) continue;
           const code = cellsArr[yy * COLS + xx];
           if (code !== CELL.STONE && code !== CELL.WATER) continue;
+          if (code === CELL.WATER && !cache.water[yy * COLS + xx]) continue; // C173: an unrevealed pocket never shows
           const px = v.ox + xx * v.cell;
           const py = v.oy + yy * v.cell;
           const m = v.cell * 0.25;
@@ -3628,6 +3810,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     drawPendingBackfill(ctx, s);
     drawToolPreviews(ctx, s, d, unit);
     drawDigQueue(ctx, s, d);
+    drawDigCrew(ctx, s, d, unit, H); // C180: workers at the dig face (over the queue marks), soil carried out
     const ui0 = uiOf(ui);
     const ov = ui0.overlays || {};
     if (ov.climate || ov.raid_reach || ov.haul || ov.adjacency) drawNestOverlays(ctx, ov, overlayInfo(s, d));

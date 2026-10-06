@@ -3,7 +3,7 @@
 // Owner: WP4. Contract: ARCHITECTURE §8.3 (surface.js), §4 (s.run.surface), §5 (d.surface); DESIGN §8.1–§8.8, §21.4.
 
 import { GRID } from '../data/balance.js';
-import { MAP, TERRAIN, TERRAIN_ORDER, SCOUT, TRAIL, SLOTS, TERRITORY, MOUND } from '../data/surface.js';
+import { MAP, TERRAIN, TERRAIN_ORDER, SCOUT, TRAIL, SLOTS, TERRITORY, MOUND, EXPEDITION } from '../data/surface.js';
 import { SOURCES, SOURCE_ORDER } from '../data/sources.js';
 import { RESEARCH } from '../data/research.js';
 import { TRAITS as BLOODLINE } from '../data/bloodline.js';
@@ -17,6 +17,7 @@ import { geoCost, clampNum } from '../core/math.js';
 import { randInt, weighted } from '../core/rng.js';
 import * as rivals from './rivals.js';   // rivalLand [q]
 import * as trails from './trails.js';   // bestTargets, trailOrigins [q]; routeTrail (WP4-internal)
+import * as events from './events.js';   // addFindObject [x] (C188 expedition finds)
 
 const CODE = Object.freeze(Object.fromEntries(TERRAIN_ORDER.map((id, i) => [id, i])));
 const ENTRANCE_KINDS = Object.freeze(['main', 'nuptial', 'satellite', 'outpost']);
@@ -357,6 +358,104 @@ function scoutTick(s, d, dt, env) {
     }
   }
   if (revealed > 0) S.rev += 1;
+  // C188: no frontier left inside the radius → the scouts go beyond the border (expeditions) with the work left over
+  if (front.size === 0 && work > 0) expeditionTick(s, d, work, env);
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// C188: scout expeditions (finds on the edge ring once the map is fully revealed)
+// ------------------------------------------------------------------------------------------------------------------
+
+/** The current season's key ('year:season') for the per-season find count. */
+function expSeasonKey(d) {
+  const se = d && d.season ? d.season : null;
+  return se ? num(se.year) + ':' + String(se.id || '') : '';
+}
+
+/**
+ * [q] C188: expedition status for the UI: active (no frontier left and scouts at work), progress toward the next
+ * find (0–1), finds this season and the season cap, and the scout-seconds the next find costs.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {{ active: boolean, prog: number, found: number, max: number, cost: number, full: boolean }}
+ */
+export function expeditionInfo(s, d) {
+  const sc = s.run.surface.scout || {};
+  const sameSeason = sc.expSeason === expSeasonKey(d);
+  const found = sameSeason ? Math.max(0, Math.floor(num(sc.expFound))) : 0;
+  const cost = EXPEDITION.cost * EXPEDITION.growth ** found;
+  const nIn = hexesIn(s);
+  const front = d && d.surface && Array.isArray(d.surface.frontier) ? d.surface.frontier.filter((i) => i < nIn && !s.run.surface.revealed[i]) : [];
+  const scouts = num(s.run.colony.jobs.scout) > 0;
+  const full = found >= EXPEDITION.perSeason;
+  return { active: front.length === 0 && scouts, prog: full ? 1 : Math.min(1, Math.max(0, num(sc.exp) / cost)), found,
+    max: EXPEDITION.perSeason, cost, full };
+}
+
+/** Free, walkable, revealed hexes of the edge ring (ring = map radius), outside rival land. */
+function edgeHexes(s, d) {
+  const S = s.run.surface;
+  const R = ringOf(hexesIn(s) - 1);
+  if (R < 1) return [];
+  const busy = new Set();
+  for (const x of S.sources) busy.add(x.hex);
+  for (const e of S.entrances) if (e) busy.add(e.hex);
+  const rl = s.run.rivals && Array.isArray(s.run.rivals.list) ? s.run.rivals.list : [];
+  for (const r of rl) if (r && r.alive) busy.add(r.hex);
+  const objs = s.run.events && Array.isArray(s.run.events.objects) ? s.run.events.objects : [];
+  for (const o of objs) if (o && isHex(o.hex)) busy.add(o.hex);
+  const out = [];
+  for (let i = countInRadius(R - 1); i < countInRadius(R); i++) {
+    const code = S.terrain[i];
+    if (!S.revealed[i] || busy.has(i) || code === CODE.stone || code === CODE.puddle) continue;
+    if (d && d.surface && d.surface.rival && d.surface.rival[i] !== 0) continue;
+    out.push(i);
+  }
+  return out;
+}
+
+/** Place one expedition find (weighted type, uniform edge hex). Returns true if something was placed. */
+function placeFind(s, d, env) {
+  const hexes = edgeHexes(s, d);
+  if (hexes.length === 0) return false;
+  const find = weighted(s, EXPEDITION.finds.map((f) => ({ id: f.id, kind: f.kind, w: f.w })));
+  const at = weighted(s, hexes.map((i) => ({ i, w: 1 })));
+  if (!find || !at) return false;
+  let uid = 0;
+  if (find.kind === 'source') uid = spawnSource(s, d, find.id, at.i, { ttl: EXPEDITION.ttl, data: { find: true }, env });
+  else uid = events.addFindObject(s, find.id, at.i, EXPEDITION.ttl);
+  if (!(uid > 0)) return false;
+  s.run.surface.rev += 1;
+  queueEvent(d, env, 'expeditionFind', { kind: find.id, hex: at.i, uid });
+  return true;
+}
+
+/**
+ * C188: expedition work (scout-seconds beyond the frontier). Online, each find's cost places a find; offline the work
+ * banks up to one find's cost (placed on return). The count resets each season (EXPEDITION.perSeason).
+ */
+function expeditionTick(s, d, work, env) {
+  const sc = s.run.surface.scout;
+  const key = expSeasonKey(d);
+  if (sc.expSeason !== key) {
+    sc.expSeason = key;
+    sc.expFound = 0;
+  }
+  const found = Math.max(0, Math.floor(num(sc.expFound)));
+  if (found >= EXPEDITION.perSeason) return;
+  const cost = EXPEDITION.cost * EXPEDITION.growth ** found;
+  sc.exp = clampNum(num(sc.exp) + work);
+  if (env.offline) {
+    sc.exp = Math.min(sc.exp, cost);
+    return;
+  }
+  if (sc.exp < cost) return;
+  if (placeFind(s, d, env)) {
+    sc.exp = Math.max(0, sc.exp - cost);
+    sc.expFound = found + 1;
+  } else {
+    sc.exp = cost;   // nowhere to put it yet: wait at full progress
+  }
 }
 
 /** Re-arm a spawn timer that reached 0: carry the overshoot, never bank more than one interval of backlog. */
@@ -927,6 +1026,7 @@ export const handlers = {
         if (r && r.path.length >= 2) {
           t.path = r.path;
           t.len = r.len;
+          delete t.detour;   // C182
         } else {
           S.trails.splice(i, 1);
           trails.forgetTrail(s, t.uid);

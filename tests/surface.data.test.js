@@ -21,8 +21,8 @@ test('TERRAIN_ORDER is the documented order and codes equal indices', () => {
   assert.ok(total <= 1 && total > 0.95);
 });
 
-test('SOURCE_ORDER has the 15 DESIGN sources (termite_swarm included, gift excluded) and every entry is well formed', () => {
-  assert.equal(SOURCE_ORDER.length, 15);
+test('SOURCE_ORDER has the 15 DESIGN sources plus the 2 C188 expedition finds (termite_swarm included, gift excluded) and every entry is well formed', () => {
+  assert.equal(SOURCE_ORDER.length, 17);
   assert.ok(SOURCE_ORDER.includes('termite_swarm'));
   assert.ok(!SOURCE_ORDER.includes('gift'));
   assert.deepEqual(Object.keys(SOURCES).sort(), [...SOURCE_ORDER].sort());
@@ -33,7 +33,7 @@ test('SOURCE_ORDER has the 15 DESIGN sources (termite_swarm included, gift exclu
     assert.ok(s.job === null || ['forager', 'herder', 'leafcutter', 'lycaenid'].includes(s.job), id);
     assert.ok(s.y && typeof s.y === 'object');
     for (const k of ['spring', 'summer', 'autumn', 'winter']) assert.equal(typeof s.season[k], 'number', id + ' season ' + k);
-    assert.ok(['fixed', 'random', 'event', 'research', 'conquest'].includes(s.spawn.mode), id);
+    assert.ok(['fixed', 'random', 'event', 'research', 'conquest', 'expedition'].includes(s.spawn.mode), id);
     if (s.stock) for (const k of ['base', 'sec', 'regrow']) assert.equal(typeof s.stock[k], 'number', id);
   }
   assert.equal(SOURCES.seed_patch.stock.dynamic, true);

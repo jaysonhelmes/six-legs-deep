@@ -14,7 +14,7 @@ import { SEASON_MODS } from '../data/seasons.js';
 import { adultsTotal } from '../core/state.js';
 import { canAfford, spend } from '../core/wallet.js';
 import { addEffect, removeEffect, effectMult } from '../core/effects.js';
-import { HEX_COUNT, hexPath, ringOf, neighbors, countInRadius, hexDist } from '../core/hex.js';
+import { HEX_COUNT, hexPath, ringOf, neighbors, countInRadius, hexDist } from '../core/hex.js';   // hexPath: routes, C182 detours
 import { clampNum } from '../core/math.js';
 import * as surface from './surface.js';        // moveCost, removeSource, trailSlots/dNavFor/slopeFor/queueEvent/flushEvents (WP4)
 import * as population from './population.js';  // killAdults [x]
@@ -137,6 +137,158 @@ export function routeTrail(s, d, origin, hex, waypoints = [], live = false) {
     cost += seg.cost;
   }
   return { path, len: cost * dMultFor(s) };
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// C182: temporary obstacles — automatic detours
+// ------------------------------------------------------------------------------------------------------------------
+
+/** Terrain codes that block only while puddles block (springMove null): the spring puddles. */
+const SEASONAL_BLOCK_CODES = Object.freeze(TERRAIN_ORDER.map((id, code) => (Object.prototype.hasOwnProperty.call(TERRAIN[id], 'springMove')
+  && TERRAIN[id].springMove === null ? code : -1)).filter((c) => c >= 0));
+
+/**
+ * C182: the temporary obstacles right now, from state alone (valid before the next derive): molehill event objects
+ * (ev_mole_tunnel) and, while puddles block (spring), puddle hexes. `at(h)` tests a hex; `key` changes when they do.
+ * @returns {{ holes: Set<number>, puddles: boolean, key: string, at: (h: number) => boolean }}
+ */
+function tempObstacles(s, d) {
+  const holes = new Set();
+  const objs = s.run.events && Array.isArray(s.run.events.objects) ? s.run.events.objects : [];
+  for (const o of objs) if (o && o.kind === 'molehill' && isHex(o.hex)) holes.add(o.hex);
+  const puddles = puddlesBlockNow(s, d);
+  const ter = s.run.surface.terrain;
+  const sorted = [...holes].sort((a, b) => a - b);
+  return {
+    holes, puddles,
+    key: (puddles ? 'P' : 'p') + sorted.join(','),
+    at: (h) => holes.has(h) || (puddles && SEASONAL_BLOCK_CODES.includes(ter[h])),
+  };
+}
+
+/** The hexes of a path a trail walks through (not its entrance, not its source) that are blocked now. */
+function blockedOn(path, at) {
+  const out = [];
+  if (!Array.isArray(path)) return out;
+  for (let k = 1; k < path.length - 1; k++) if (at(path[k]) && !out.includes(path[k])) out.push(path[k]);
+  return out;
+}
+
+/** Trail length of a hex path: Σ terrain move costs after the first hex × double_bridge (spring blocks ignored). */
+function pathLen(s, path) {
+  const ter = s.run.surface.terrain;
+  let c = 0;
+  for (let k = 1; k < path.length; k++) {
+    const def = TERRAIN[TERRAIN_ORDER[ter[path[k]]]];
+    c += def && def.move !== null && def.move !== undefined ? def.move : 1;
+  }
+  return c * dMultFor(s);
+}
+
+/**
+ * C182: a free temporary route for a trail whose home path is blocked: each blocked stretch is bridged by A* between
+ * the clear hexes either side (the rest of the route stays as the player drew it); if a stretch cannot be bridged, the
+ * shortest route from the entrance to the source. Returns null when the source cannot be reached at all.
+ */
+function detourRoute(s, d, home, ob) {
+  const arr = costArray(s, d, true);
+  for (const h of ob.holes) arr[h] = null;
+  const fn = (i) => arr[i];
+  const out = [home[0]];
+  let k = 1;
+  let spliced = true;
+  while (k < home.length) {
+    if (k < home.length - 1 && ob.at(home[k])) {
+      let j = k;
+      while (j < home.length - 1 && ob.at(home[j])) j++;
+      const seg = hexPath(out[out.length - 1], home[j], fn);
+      if (!seg) {
+        spliced = false;
+        break;
+      }
+      for (let m = 1; m < seg.path.length; m++) out.push(seg.path[m]);
+      k = j + 1;
+    } else {
+      out.push(home[k]);
+      k++;
+    }
+  }
+  let path = spliced ? out : null;
+  if (!path) {
+    const r = hexPath(home[0], home[home.length - 1], fn);
+    path = r ? r.path : null;
+  }
+  if (!path || path.length < 2) return null;
+  return { path, len: pathLen(s, path) };
+}
+
+/**
+ * C182: keep every trail walkable around temporary obstacles. A trail whose route crosses a molehill or a spring
+ * puddle takes a free detour (t.detour = { home, block, paused: false }; t.path / t.len are the detour) and returns to
+ * its own route (home) as soon as that is clear; with no way round it pauses (paused: true, path = home, no yield).
+ * Gated on the obstacles and the surface revision (d.surface._detourKey), so a quiet tick only compares a key.
+ * Emits trailDetour { uid, mode: 'detour' | 'paused' | 'restored' } (WP4 extension event).
+ * @returns {number} trails changed
+ */
+function syncDetours(s, d, env) {
+  const S = s.run.surface;
+  const ob = tempObstacles(s, d);
+  const D = d.surface || {};
+  if (D._detourKey === ob.key + '|' + S.rev + '|' + S.trails.length) return 0;
+  let changed = 0;
+  for (const t of S.trails) {
+    if (!t || !Array.isArray(t.path)) continue;
+    let det = t.detour && typeof t.detour === 'object' && Array.isArray(t.detour.home) && t.detour.home.length >= 2 ? t.detour : null;
+    if (t.detour && !det) delete t.detour;
+    const home = det ? det.home : t.path;
+    const block = blockedOn(home, ob.at);
+    if (block.length === 0) {
+      if (det) {
+        t.path = home.slice();
+        t.len = pathLen(s, t.path);
+        delete t.detour;
+        changed++;
+        if (env) env.emit('trailDetour', { uid: t.uid, mode: 'restored' });
+      }
+      continue;
+    }
+    if (det && !det.paused && blockedOn(t.path, ob.at).length === 0) {
+      det.block = block;   // the current detour still walks clear ground
+      continue;
+    }
+    const r = detourRoute(s, d, home, ob);
+    const was = det ? (det.paused ? 'paused' : 'detour') : null;
+    const mode = r ? 'detour' : 'paused';
+    if (r) {
+      t.path = r.path;
+      t.len = r.len;
+    } else if (det) {
+      t.path = home.slice();
+      t.len = pathLen(s, t.path);
+    }
+    t.detour = { home: home.slice(), block, paused: !r };
+    if (r || !det || !det.paused) changed++;
+    if (env && was !== mode) env.emit('trailDetour', { uid: t.uid, mode });
+  }
+  if (changed > 0) S.rev += 1;
+  D._detourKey = ob.key + '|' + S.rev + '|' + S.trails.length;
+  return changed;
+}
+
+/**
+ * [q] C182: a trail's detour state for the UI: null (on its own route), or { mode: 'detour' | 'paused', block: hexes
+ * of its own route blocked now, why: 'molehill' | 'puddle' }.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Trail} t
+ * @returns {{ mode: string, block: number[], why: string } | null}
+ */
+export function detourInfo(s, t) {
+  const det = t && t.detour && typeof t.detour === 'object' ? t.detour : null;
+  if (!det || !Array.isArray(det.home)) return null;
+  const block = Array.isArray(det.block) ? det.block.filter(isHex) : [];
+  const objs = s && s.run && s.run.events && Array.isArray(s.run.events.objects) ? s.run.events.objects : [];
+  const mole = block.some((h) => objs.some((o) => o && o.kind === 'molehill' && o.hex === h));
+  return { mode: det.paused ? 'paused' : 'detour', block, why: mole ? 'molehill' : 'puddle' };
 }
 
 /** Single-pass multi-source Dijkstra over a cost array; root = the start hex each hex is reached from. */
@@ -447,12 +599,13 @@ function yieldOut(p, n, S, escorts) {
  * C104 chitin priority: while chitinNeeded (population.chitinNeed), unsaturated chitin-yielding trails (res or res2
  * chitin) take chunks before every other trail, up to cEff; then the usual order.
  */
-function allocate(s, T, parts, chitinNeeded = false) {
+function allocate(s, T, parts, chitinNeeded = false, skip = null) {
   const n = new Array(T.length).fill(0);
   for (let i = 0; i < T.length; i++) if (!parts[i] || parts[i].lyc || !POOLS.includes(T[i].job)) T[i].workers = 0;
   for (const job of POOLS) {
     const idx = [];
-    for (let i = 0; i < T.length; i++) if (T[i].job === job && parts[i] && !parts[i].lyc) idx.push(i);
+    // C182: a paused trail (blocked, no detour) takes no workers; its explicit count is kept for when it reopens
+    for (let i = 0; i < T.length; i++) if (T[i].job === job && parts[i] && !parts[i].lyc && !(skip && skip[i])) idx.push(i);
     if (idx.length === 0) continue;
     const avail = Math.max(0, num(s.run.colony.jobs[job]));
     let sum = 0;
@@ -587,11 +740,13 @@ export function tick(s, d, dt, env) {
     S.rev += 1;
   }
   rehomeOrphans(s, d, env);   // C132: every trail starts at an entrance (old forked saves are re-routed on load)
+  syncDetours(s, d, env);     // C182: detour round molehills and spring puddles; pause when there is no way round
+  const paused = T.map((t) => !!(t.detour && t.detour.paused));
   const ctx = partsCtx(s, d);
   const parts = T.map((t) => yieldParts(s, d, t, ctx));
   clampEscorts(s, d, T);
   const chit = population.chitinNeed(s, d);
-  const n = allocate(s, T, parts, chit.needed);
+  const n = allocate(s, T, parts, chit.needed, paused);
 
   // Strength: online exponential approach to S_eq (exact solution of dS/dt = (S_eq − S)·ln2/t½); offline at equilibrium.
   const sMax = sMaxFor(s);
@@ -608,7 +763,8 @@ export function tick(s, d, dt, env) {
   }
 
   // Yields, then finite stocks drop by the food-equivalent output × econDt × eff (pro rata when the stock runs out).
-  const ys = T.map((t, i) => (parts[i] ? yieldAt(parts[i], n[i], t.S, t.escorts) : null));
+  const ys = T.map((t, i) => (!parts[i] ? null
+    : paused[i] ? { out: 0, out2: 0, nEff: 0, escorted: false } : yieldAt(parts[i], n[i], t.S, t.escorts)));
   const need = new Map();
   for (let i = 0; i < T.length; i++) {
     const p = parts[i];
@@ -653,7 +809,8 @@ export function tick(s, d, dt, env) {
     if (safe) for (const h of t.path) if (!isHex(h) || d.surface.owned[h] === 0) { safe = false; break; }
     entries.push({ uid: t.uid, dEff: p.dEff, rich: p.rich, eff: p.eff, cEff: p.cEff, nEff: y.nEff, workers: n[i],
       sat: p.cEff > 0 ? n[i] / p.cEff : 0, res: p.res, out, res2: p.res2, out2, escorted: y.escorted, safe,
-      priority: chit.needed && POOLS.includes(t.job) && chitinTrail(p) });
+      priority: chit.needed && POOLS.includes(t.job) && chitinTrail(p),
+      detour: t.detour ? (t.detour.paused ? 'paused' : 'detour') : null });   // C182
   }
 
   const hasForager = T.some((t) => t.job === 'forager');
@@ -788,6 +945,7 @@ function rehomeOrphans(s, d, env) {
       t.origin = bestO;
       t.path = best.path;
       t.len = best.len;
+      delete t.detour;
       env.emit('trailRehomed', { uid: t.uid, ok: true, origin: bestO });
     } else {
       S.trails.splice(i, 1);
@@ -1097,6 +1255,7 @@ export const handlers = {
       const from = t.len;
       t.path = r.path;
       t.len = r.len;
+      delete t.detour;   // C182: the player's new route becomes the trail's own route
       t.reroutes.push(num(s.run.time));
       while (t.reroutes.length > TRAIL.overthinker.n) t.reroutes.shift();
       s.run.surface.rev += 1;

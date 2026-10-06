@@ -83,7 +83,7 @@ and takes the game back.
 | Right-click or long-press | Context actions (cancels an active tool instead) | Context actions (cancels an active tool instead) |
 
 View keys act on the canvas you clicked last. Anywhere: `1`–`9` open tabs, `H` or `?` opens the in-game Manual (also the book icon by the tabs), `Space` hand-forages the selected source,
-`M` / `R` Mark or Rally the selected trail; with a chamber selected `L` levels the cheapest of its type, `Shift+L` levels the selected one and `R` relocates it (`G` picks the growth side of older chambers that have no reserved space); `Q` over a chamber picks its type to place another; while placing, `F` or right-click picks the corner the new chamber starts in; `B` toggles the Backfill tool (nest view focused), `V` cycles the view (Above, Below, Stacked, Side by side; also the switcher under the map, whose ⇄ button swaps which side the map and nest sit on), and `Esc` cancels a
+`M` / `R` Mark or Rally the selected trail; with a chamber selected `L` levels the cheapest of its type, `Shift+L` levels the selected one and `R` relocates it (`G` picks the growth side of older chambers that have no reserved space); `Q` over a chamber picks its type to place another (`Q` again puts the tool away); while placing, `F` or right-click picks the corner the new chamber starts in; `B` toggles the Backfill tool (nest view focused), `V` cycles the view (Above, Below, Stacked, Side by side; also the switcher under the map, whose ⇄ button swaps which side the map and nest sit on), and `Esc` cancels a
 tool, clears the selection, then closes the panel drawer or lowers the panel sheet. **Settings → Keyboard and view
 controls** lists the same keys in the game.
 

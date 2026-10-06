@@ -5,12 +5,13 @@
 // Contract: ARCHITECTURE §8.2 (nest.js), §4 (s.run.nest, era.blueprints), §5 (d.nest), §9, §10; DESIGN §7, §17.3.
 
 import { GRID, CELL, CLAMP_MAX } from '../data/balance.js';
-import { MICRO, DIG, GEOM, ADVISOR } from '../data/strata.js';
+import { MICRO, DIG, GEOM, ADVISOR, BLUEPRINT } from '../data/strata.js';
 import { CHAMBERS, CHAMBER_RULES, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
 import { CACHES, MOLE, DRAINAGE, ROOT_CULT, DEEP_SPRING, ROOT_MEMORY } from '../data/soilFeatures.js';
 import { FROST } from '../data/seasons.js';
 import { MOUND } from '../data/surface.js';
 import { CAPS } from '../data/economy.js';
+import { royalLayMult } from './stats.js';
 import { FLIGHT } from '../data/prestige.js';
 import { canAfford, spend, refund, grant, incomeSeconds } from '../core/wallet.js';
 import { effectMult } from '../core/effects.js';
@@ -180,6 +181,11 @@ function nurseryMicro(s, layer, sid) {
   return v;
 }
 
+/** C179: Carapace Store chitin capacity at level L: chitinCap × capGrowth^(L − 1) (0 below L1). */
+function carapaceCap(fx, L) {
+  return L >= 1 ? fx.chitinCap * fx.capGrowth ** (L - 1) : 0;
+}
+
 /** Gallery housing at level L: +10 per level; each level above 30 adds 10 + (L − 30) instead (DESIGN §7.6). */
 function galleryHousing(fx, L) {
   const over = Math.max(0, L - fx.highL);
@@ -301,13 +307,56 @@ function openWithin(open, x, y, w, h, r) {
   return false;
 }
 
-/** Reveal water pockets within the hint radius of any open cell (state; called from tick). */
+/**
+ * Reveal water pockets within the hint radius of any open cell (state; called from tick). C173: a reveal bumps
+ * nest.rev, so the geometry's hidden-water mask (_hidden) follows.
+ */
 function revealWater(s, geo) {
   const r = GEOM.hintRadius + (G.hasAch(s, 'ach_treasure_hunter') ? GEOM.hintRadiusAch : 0);
+  let any = false;
   for (const w of s.run.nest.features.water || []) {
     if (!w || w.revealed) continue;
-    if (openWithin(geo.open, w.x, w.y, w.w, w.h, r)) w.revealed = true;
+    if (openWithin(geo.open, w.x, w.y, w.w, w.h, r)) { w.revealed = true; any = true; }
   }
+  if (any) s.run.nest.rev++;
+}
+
+/**
+ * C173 "You struck water!": every unrevealed water pocket with a cell in `list` is revealed now (emits waterStruck
+ * { pocket, x, y, w, h, chamberType? } per pocket) and the geometry is rebuilt. The caller refuses its plan this time;
+ * the pocket now shows, so the next try plans around it. Returns the number of pockets struck.
+ */
+function strikeWater(s, d, list, env, chamberType = null) {
+  const geo = ensureGeom(s, d);
+  const water = s.run.nest.features.water || [];
+  const hit = new Set();
+  for (const c of list || []) {
+    if (!isCell(c) || !G.hiddenWater(geo, c)) continue;
+    const k = geo._pocket[c];
+    if (k >= 0 && water[k] && !water[k].revealed) hit.add(k);
+  }
+  if (!hit.size) return 0;
+  for (const k of hit) {
+    const w = water[k];
+    w.revealed = true;
+    const e = { pocket: k, x: w.x, y: w.y, w: w.w, h: w.h };
+    if (chamberType) e.chamberType = chamberType;
+    if (env) emit(env, 'waterStruck', e);
+    else bpEvent(s, 'waterStruck', e);
+  }
+  s.run.nest.rev++;
+  rebuild(s, d);
+  return hit.size;
+}
+
+/** C173: every cell a placement plan would claim or dig (footprint, reservation, route, exit shaft). */
+function planCells(P) {
+  const out = [];
+  if (P.rect) for (const c of G.rectCells(P.rect.x, P.rect.y, P.rect.w, P.rect.h)) out.push(c);
+  if (P.res) for (const c of G.rectCells(P.res.x, P.res.y, P.res.w, P.res.h)) out.push(c);
+  for (const c of P.routeCells || []) out.push(c);
+  if (P.shaft) for (const c of P.shaft.cells || []) out.push(c);
+  return out;
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -730,10 +779,13 @@ export function pocketAt(s, i) {
 // Cultivated roots (C118, research `root_cultivation`)
 // ------------------------------------------------------------------------------------------------------------------
 
-/** A root cannot grow into cell c: chamber footprint, stone, water or an open shaft cell. */
+/**
+ * A root cannot grow into cell c: stone, water or an open shaft cell. C178: chambers no longer stop roots: a root grows
+ * down through a chamber (drawn hanging through the cavity) and its cells there count for the touch rules.
+ */
 function rootBlocked(s, geo, c) {
   const code = s.run.nest.cells[c];
-  return code === CELL.STONE || code === CELL.WATER || geo.chamberAt[c] >= 0 || !!geo._shaft[c];
+  return code === CELL.STONE || code === CELL.WATER || !!geo._shaft[c];
 }
 
 /**
@@ -924,6 +976,9 @@ export function derive(s, d) {
     gardenL: 0, gardenerSlots: 0, leafCap: 0, fungusCap: 0, fungusMod: 1,
     hibCap: 0, hibL: 0,
     chimneyL: 0, gateL: 0, deepVaultL: 0,
+    // C179: Carapace Store capacity (sum, before the stats' own multipliers), Carapace Workshop chitin boost (fraction,
+    // capped) and chitin recycled per fallen soldier / supermajor (read by the economy and war systems)
+    chitinCapBase: 0, chitinBoost: 0, chitinRecycle: 0,
     royal: [],
     royalL: 0,
     nuptial: { active: false, level: 0, shaftOpen: false },
@@ -1058,10 +1113,18 @@ export function derive(s, d) {
       case 'deep_vault':
         agg.deepVaultL += L * eff;
         break;
+      case 'carapace_store':
+        agg.chitinCapBase += carapaceCap(fx, L) * eff;
+        break;
+      case 'carapace_workshop':
+        agg.chitinBoost += fx.chitinBoost * L * eff;
+        agg.chitinRecycle += fx.recycle * L * eff;
+        break;
       default:
         break;
     }
   }
+  agg.chitinBoost = Math.min(CHAMBERS.carapace_workshop.fx.boostMax, agg.chitinBoost);
   for (const g of hibGroups) agg.broodGroups.push(g);
   const totalStore = storage + agg.granaryCap;
   agg.clayFoodShare = totalStore > 0 ? clayCap / totalStore : 0;
@@ -1129,7 +1192,9 @@ function cellBlock(s, geo, c, relIdx) {
   const cells = s.run.nest.cells;
   if (relIdx >= 0 && geo.chamberAt[c] === relIdx) return null;
   const code = cells[c];
-  if (code === CELL.WATER) return 'blocked:water';
+  // C173: an unrevealed pocket is soil as far as the player knows (no leak); committing the plan strikes it
+  const hidden = code === CELL.WATER && G.hiddenWater(geo, c);
+  if (code === CELL.WATER && !hidden) return 'blocked:water';
   if (geo.chamberAt[c] >= 0) return 'blocked:chamber';
   // C137: another chamber's reserved full-size room is off limits (its own growth may use it).
   if (geo._resv && geo._resv[c] >= 0 && geo._resv[c] !== relIdx) return 'blocked:reserved';
@@ -1138,9 +1203,9 @@ function cellBlock(s, geo, c, relIdx) {
   if (geo._backfill[c]) return 'blocked:backfill';
   if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return 'blocked:stone';
   if (geo._queued[c]) return 'blocked:queued';
-  if (code === CELL.SOIL || code === CELL.STONE) {
+  if (code === CELL.SOIL || code === CELL.STONE || hidden) {
     if (s.run.hardship === 'shallow_soil' && Math.floor(c / COLS) > DIG.shallowSoilRow) return 'hardship';
-    if (!G.isDiggable(s, c)) return 'blocked:layer';
+    if (!G.diggableKnown(s, geo, c)) return 'blocked:layer';
   }
   return null;
 }
@@ -1224,7 +1289,9 @@ function checkRoute(s, geo, route, rect) {
     if (!isCell(c) || G.inRect(rect, c)) return 'invalid:route';
     if (k > 0 && !adj4(route[k - 1], c)) return 'invalid:route';
     if (geo.open[c]) continue;
-    if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || geo._backfill[c] || !G.isDiggable(s, c)) return 'blocked:route';
+    // C173: an unrevealed pocket cell is soil to the player (the placement strikes it on confirm)
+    const soilish = cells[c] === CELL.SOIL || G.hiddenWater(geo, c);
+    if (!soilish || geo.chamberAt[c] >= 0 || geo._backfill[c] || !G.diggableKnown(s, geo, c)) return 'blocked:route';
     if (geo._resv && geo._resv[c] >= 0) return 'blocked:reserved'; // C137: no new tunnels through a reserved room
   }
   const first = route[0];
@@ -1290,7 +1357,57 @@ function planNuptialShaft(s, geo, rect, shaftCol, guard = null) {
     if (!guard || cands.length === 1 || !guard.blocks(rect, shaftCells(rect, c))) return { col: c, cells };
     if (!first) first = { col: c, cells };
   }
-  return first || { reason: 'blocked:shaft' };
+  if (first) return first;
+  // C177: no straight shaft fits (a chamber, a queued cell or a reserved room sits over every free column): dig a routed
+  // exit shaft instead, when no column was asked for.
+  if (shaftCol === null || shaftCol === undefined) {
+    const routed = routedShaft(s, geo, rect, okCol, guard);
+    if (routed) return routed;
+  }
+  return { reason: 'blocked:shaft' };
+}
+
+/**
+ * C177: a Nuptial Chamber's exit shaft when no straight one fits: the cheapest route (Dijkstra over tunnel work) from
+ * the chamber's footprint to the surface cell (row 0, plain soil) of a free column (okCol: at least GEOM.shaftGap from
+ * every shaft). It may run through open tunnels and, like any shaft (C125), through other chambers' open cavities —
+ * never through the main shaft, a chamber cell in the top G.SHAFT_KEEP_ROWS rows, a queued or backfilling cell, stone,
+ * water or a reserved room. The undug cells are the shaft job (bottom to top); the column's top cell opens the entrance.
+ * With the C66 guard, a column whose top rows would take the Royal Chamber's room is skipped.
+ */
+function routedShaft(s, geo, rect, okCol, guard) {
+  const cells = s.run.nest.cells;
+  const inRect = new Uint8Array(N);
+  const from = G.rectCells(rect.x, rect.y, rect.w, rect.h);
+  for (const c of from) inRect[c] = 1;
+  const K = G.SHAFT_KEEP_ROWS;
+  const blocked = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    if (inRect[i]) continue;
+    // the top rows are reached straight up from the goal (a shaft's top K rows are one column), never walked along
+    if (i < K * COLS) { blocked[i] = 1; continue; }
+    if (geo._shaft[i] === 1 || geo._pass[i] === 1 || geo._queued[i]) blocked[i] = 1;
+  }
+  // goal: a cell in row K under a free column whose top K cells are plain diggable soil (no chamber, reserved room)
+  const topFree = (col) => {
+    for (let y = 0; y < K; y++) {
+      const c = G.idx(col, y);
+      if (cells[c] !== CELL.SOIL || geo.chamberAt[c] >= 0 || geo._queued[c] || geo._backfill[c] || (geo._resv && geo._resv[c] >= 0)
+        || !G.isDiggable(s, c)) return false;
+    }
+    return true;
+  };
+  const goalOk = (i) => {
+    if (i < K * COLS || i >= (K + 1) * COLS) return false;
+    const col = i % COLS;
+    return okCol(col) && topFree(col) && (!guard || !guard.blocks(rect, shaftCells(rect, col)));
+  };
+  const { prev, goal } = G.digField(s, geo, { from, isGoal: goalOk, blocked });
+  if (goal < 0) return null;
+  const col = goal % COLS;
+  const path = G.pathCells(s, prev, goal).filter((c) => !inRect[c]);
+  for (let y = K - 1; y >= 0; y--) path.push(G.idx(col, y));
+  return { col, cells: path };
 }
 
 /**
@@ -1359,7 +1476,7 @@ function resObstacles(s, geo, R, room) {
   for (const c of G.rectCells(R.x, R.y, R.w, R.h)) {
     if (room && G.inRect(room, c)) continue;
     const code = cells[c];
-    if (code === CELL.WATER) n++;
+    if (code === CELL.WATER) { if (!G.hiddenWater(geo, c)) n++; } // C173: unrevealed water is neither shown nor counted
     else if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) n++;
     else if ((code === CELL.SOIL || code === CELL.STONE) && !G.layerOpen(s, Math.floor(c / COLS))) n++;
   }
@@ -1572,7 +1689,7 @@ function planPlacement(s, d, type, x, y, opts = {}) {
       if (why) return fail(P, why);
       P.routeCells = route.filter((c) => !geo.open[c]);
     } else {
-      const r = G.routeTo(s, d, rc);
+      const r = G.routeTo(s, d, rc, { hidden: !blueprint });
       if (!r) return fail(P, 'blocked:route');
       P.routeCells = r.cells;
     }
@@ -2408,7 +2525,7 @@ export function levelGain(s, d, uid) {
   const pos = (L) => Math.max(0, L);
   switch (ch.type) {
     case 'royal_chamber':
-      line('lay', (L) => fx.lay ** Math.max(0, L - 1), 'mult');
+      line('lay', (L) => royalLayMult(Math.max(1, L)), 'mult');   // C198: ×1.15 to L8, ×1.25 above
       if (L1 === (num(FLIGHT.royalLevel) || fx.flightLevel)) out.lines.push({ stat: 'flight', from: 0, to: 1, kind: 'flag' });
       break;
     case 'gallery': {
@@ -2492,6 +2609,14 @@ export function levelGain(s, d, uid) {
     case 'deep_vault':
       line('offline', (L) => fx.offlineSec * pos(L) * eff, 'time');
       line('alates', (L) => fx.alates * pos(L) * eff, 'pct');
+      break;
+    // C179: the chitin chambers
+    case 'carapace_store':
+      line('chitinCap', (L) => carapaceCap(fx, pos(L)) * eff, 'num');
+      break;
+    case 'carapace_workshop':
+      line('chitinBoost', (L) => fx.chitinBoost * pos(L) * eff, 'pct', { cap: fx.boostMax });
+      line('chitinRecycle', (L) => fx.recycle * pos(L) * eff, 'num');
       break;
     default:
       break;
@@ -2920,7 +3045,17 @@ function planShaftCells(s, geo, col) {
  * waits.
  */
 const BP_PERMANENT = new Set(['invalid', 'invalid:bounds', 'invalid:row', 'invalid:row0', 'invalid:shaft', 'invalid:root',
-  'blocked:water', 'blocked:chamber', 'hardship', 'blocked:reserved', 'resv:bounds', 'resv:row', 'resv:hardship', 'resv:shaft']);
+  'blocked:chamber', 'hardship', 'blocked:reserved', 'resv:bounds', 'resv:row', 'resv:hardship', 'resv:shaft']);
+
+/**
+ * C174: refusals a planned blueprint chamber answers by moving to the nearest valid spot nearby (BLUEPRINT.moveRadius)
+ * instead of being dropped: water in its spot (a revealed pocket, or one it just struck, C173) and, for a Nuptial
+ * Chamber, no exit-shaft route from its spot (C177). With no valid spot nearby it waits.
+ */
+function bpAdjustable(type, reason) {
+  if (reason === 'blocked:water' || reason === 'water:struck') return true;
+  return reason === 'blocked:shaft' && !!CHAMBERS[type] && CHAMBERS[type].rule === 'nuptialShaft';
+}
 
 function bpPermanent(s, type, reason) {
   if (BP_PERMANENT.has(reason)) return true;
@@ -2961,6 +3096,8 @@ function specOut(sp, extra = null) {
  * Try to place one blueprint chamber (half price, fast dig, no queue limit; C66 Royal room kept). Reason or null.
  * C137: it reserves the saved full-size room (same anchor) when that is free, else the best free anchor, else (an
  * older layout that does not fit the reservation rules) it goes in without a reservation.
+ * C173: a spot whose footprint, reservation or route hits a pocket nobody had found strikes it ('water:struck': the
+ * pocket is revealed and the spec re-evaluates, C174). C175: a placed chamber is announced (blueprintPlaced).
  */
 function bpPlace(s, d, sp, opts) {
   const anchor = specAnchor(sp);
@@ -2971,14 +3108,91 @@ function bpPlace(s, d, sp, opts) {
   if (P.reason) return P.reason;
   // C66: a blueprint never boxes the queen in (a saved layout may have been boxed in before Royal L5).
   if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) return 'blocked:royalRoom';
-  return executePlacement(s, d, sp.type, P, null, true) ? null : 'cantAfford';
+  if (strikeWater(s, d, planCells(P), null, sp.type)) return 'water:struck';
+  if (!executePlacement(s, d, sp.type, P, null, true)) return 'cantAfford';
+  bpEvent(s, 'blueprintPlaced', { chamberType: sp.type, x: P.rect.x, y: P.rect.y });
+  return null;
 }
 
 /** Note for the player about the blueprint (flushed as blueprintDropped events by the next tick; C119). */
 function bpNote(s, type, x, y, reason) {
   const nest = s.run.nest;
   if (!Array.isArray(nest.bpNotes)) nest.bpNotes = [];
-  if (nest.bpNotes.length < 20) nest.bpNotes.push({ chamberType: type, x, y, reason });
+  if (nest.bpNotes.length < BLUEPRINT.notesMax) nest.bpNotes.push({ chamberType: type, x, y, reason });
+}
+
+/**
+ * C175: a blueprint bus event for the event log (blueprintPlaced, blueprintAdjusted, waterStruck during a blueprint
+ * pass), queued in bpNotes with its event name (`ev`) and emitted by the next tick (a run-start pass has no env).
+ */
+function bpEvent(s, ev, payload) {
+  const nest = s.run.nest;
+  if (!Array.isArray(nest.bpNotes)) nest.bpNotes = [];
+  if (nest.bpNotes.length < BLUEPRINT.notesMax) nest.bpNotes.push({ ev, ...payload });
+}
+
+/** C175: blueprintAdjusted { chamberType, from: { x, y }, to: { x, y }, reason } (any automatic blueprint move). */
+function bpAdjusted(s, type, from, to, reason) {
+  bpEvent(s, 'blueprintAdjusted', { chamberType: type, from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y }, reason });
+}
+
+/**
+ * C174: the valid spot nearest a planned blueprint chamber's saved one (Manhattan, within BLUEPRINT.moveRadius cells,
+ * then top, then left) for when the saved spot cannot be used: same rules as placing it (planPlacement with the
+ * connection assumed, its saved corner first, C66 Royal room kept), clear of the cells in `taken` (other planned
+ * chambers). { x, y, res } or null.
+ */
+function bpNearby(s, d, sp, taken) {
+  const def = CHAMBERS[sp.type];
+  if (!def) return null;
+  if (def.unlock && !s.run.unlocked[def.unlock]) return null;
+  if (countType(s, sp.type) >= instLimit(s, d, sp.type)) return null;
+  const fp = G.footprint(sp.type, 1);
+  const anchor = specAnchor(sp);
+  const R = BLUEPRINT.moveRadius;
+  const geo = ensureGeom(s, d);
+  const cands = [];
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      const dist = Math.abs(dx) + Math.abs(dy);
+      if (dist === 0 || dist > R) continue;
+      cands.push({ x: sp.x + dx, y: sp.y + dy, dist });
+    }
+  }
+  cands.sort((a, b) => a.dist - b.dist || a.y - b.y || a.x - b.x);
+  for (const c of cands) {
+    if (c.x < 0 || c.y < 0 || c.x + fp.w > COLS || c.y + fp.h > ROWS) continue;
+    const rc = G.rectCells(c.x, c.y, fp.w, fp.h);
+    if (taken && rc.some((i) => taken[i])) continue;
+    if (rc.some((i) => cellBlock(s, geo, i, -1))) continue; // cheap pre-check before the full plan
+    let P = planPlacement(s, d, sp.type, c.x, c.y, { blueprint: true, ignoreQueue: true, ignoreCost: true, assumeConnected: true,
+      anchor, legacyOk: true });
+    if (!P.reason && anchor && !P.res && resLevel(s, sp.type)) {
+      P = planPlacement(s, d, sp.type, c.x, c.y, { blueprint: true, ignoreQueue: true, ignoreCost: true, assumeConnected: true, legacyOk: true });
+    }
+    if (P.reason) continue;
+    if (blocksRoyalGrowth(s, P.res || P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) continue;
+    return { x: c.x, y: c.y, res: P.res ? { ...P.res } : null };
+  }
+  return null;
+}
+
+/**
+ * C174: move a planned spec (in place) to the nearest valid spot (bpNearby) after an adjustable refusal; announces it
+ * (blueprintAdjusted). True when it moved.
+ */
+function bpMove(s, d, sp, reason, taken) {
+  if (!bpAdjustable(sp.type, reason)) return false;
+  const to = bpNearby(s, d, sp, taken);
+  if (!to) return false;
+  const from = { x: sp.x, y: sp.y };
+  sp.x = to.x;
+  sp.y = to.y;
+  sp.res = to.res;
+  sp.access = 0;
+  bpAdjusted(s, sp.type, from, to, reason === 'blocked:shaft' ? 'nuptial:moved' : 'water');
+  s.run.nest.rev++;
+  return true;
 }
 
 /**
@@ -3033,12 +3247,69 @@ function wellTarget(s, d, sp, taken) {
   return null;
 }
 
+/** C176: a pocket move queued for this planned Water Well (its key) is still running. */
+function wellMoveRunning(s, sp) {
+  const key = specKey(sp);
+  return s.run.nest.queue.some((j) => j && j.kind === 'drain' && j.bpWell === key);
+}
+
+/**
+ * C176: with Drainage, a planned Water Well with no valid spot within BLUEPRINT.wellReach of its saved one moves the
+ * nearest free revealed pocket (no Well uses it, no other Well of this pass took it, not busy) next to its saved spot:
+ * the target is the pocket-sized rectangle touching the Well's L1 room nearest the pocket's current place, within
+ * DRAINAGE.moveRows rows (the normal move rules, planPocket). The move is queued as a normal pocket move (dig work, no
+ * soil) marked bpWell; the Well waits ('wait:waterMove') and then takes its saved spot. Announced as blueprintAdjusted
+ * (reason 'water:moved'). Returns the pocket index or −1.
+ */
+function wellPocketMove(s, d, sp, taken) {
+  if (!G.hasResearch(s, DRAINAGE.research)) return -1;
+  const def = CHAMBERS.water_well;
+  if (def.unlock && !s.run.unlocked[def.unlock]) return -1;
+  const fp = G.footprint('water_well', 1);
+  const W = { x: sp.x, y: sp.y, w: fp.w, h: fp.h };
+  if (W.x < 0 || W.y < 0 || W.x + W.w > COLS || W.y + W.h > ROWS) return -1;
+  if (W.y < effRowMin(s, d, 'water_well') || W.y + W.h - 1 > def.rowMax) return -1;
+  const geo = ensureGeom(s, d);
+  for (const c of G.rectCells(W.x, W.y, W.w, W.h)) if (cellBlock(s, geo, c, -1)) return -1;
+  const water = s.run.nest.features.water || [];
+  const used = new Set(taken);
+  for (const ch of s.run.nest.chambers) if (ch.type === 'water_well') for (const k of pocketsTouched(s, geo, ch)) used.add(k);
+  let best = null;
+  for (let k = 0; k < water.length; k++) {
+    const p = water[k];
+    if (!p || !p.revealed || used.has(k) || pocketBusy(s, p)) continue;
+    const ring = [];
+    for (let y = W.y - p.h + 1; y <= W.y + W.h - 1; y++) { ring.push({ x: W.x - p.w, y }, { x: W.x + W.w, y }); }
+    for (let x = W.x - p.w + 1; x <= W.x + W.w - 1; x++) { ring.push({ x, y: W.y - p.h }, { x, y: W.y + W.h }); }
+    ring.sort((a, b) => (Math.abs(a.x - p.x) + Math.abs(a.y - p.y)) - (Math.abs(b.x - p.x) + Math.abs(b.y - p.y)) || a.y - b.y || a.x - b.x);
+    for (const r of ring) {
+      const dist = Math.abs(r.x - p.x) + Math.abs(r.y - p.y);
+      if (best && dist >= best.dist) break;
+      if (rectsOverlap({ x: r.x, y: r.y, w: p.w, h: p.h }, W)) continue;
+      const P = planPocket(s, d, k, r);
+      if (P.reason) continue;
+      best = { k, to: r, P, dist, from: { x: p.x, y: p.y } };
+      break;
+    }
+  }
+  if (!best) return -1;
+  const uid = executePocket(s, d, best.P, best.to);
+  const job = s.run.nest.queue.find((j) => j && j.uid === uid);
+  if (!job) return -1;
+  job.bpWell = specKey(sp);
+  bpAdjusted(s, 'water_well', best.from, best.to, 'water:moved');
+  return best.k;
+}
+
 /**
  * One blueprint pass (run start, then each pending re-check; C106). BFS from the open, connected nest through open
  * cells, queued dig cells and the blueprint's tunnel cells: tunnel cells are queued in groups (blueprint jobs), and a
  * chamber spot is placed when reached (its tunnels follow it). A chamber that cannot be placed blocks the BFS and stays
  * pending, unless its refusal is permanent (dropped). Spots the BFS never reaches and that no blueprint tunnel or spot
  * touches are tried once with the auto-route.
+ * C174: a spot refused for water (or a Nuptial Chamber with no exit-shaft route) moves to the nearest valid spot nearby
+ * (bpMove) and is tried there, else it waits. C176: Water Wells (see the float branch). C177: Root Aphid Pens with no
+ * root to touch grow one (bpRootWait).
  * @returns {{ jobs: number, pending: Array<{type: string, x: number, y: number}>, tunnels: number[],
  *   dropped: Array<{type: string, x: number, y: number, reason: string}> }}
  */
@@ -3060,28 +3331,49 @@ function bpPass(s, d, specList, tunnelList) {
   const floats = [];
   const taken = [];
   const specAt = new Int16Array(N).fill(-1);
+  const takenMask = (self) => {
+    const m = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (specAt[i] >= 0 && specAt[i] !== self) m[i] = 1;
+    return m;
+  };
   for (const sp0 of specList) {
     if (!sp0 || !CHAMBERS[sp0.type] || !isInt(sp0.x) || !isInt(sp0.y)) continue;
     let sp = sp0;
     let auto = !!sp0.auto;
     if (sp0.float || (sp0.type === 'water_well' && !sp0.auto)) {
+      // C176: a pocket move queued for this Well is still running: it waits for its water.
+      if (wellMoveRunning(s, sp0)) { floats.push({ type: sp0.type, x: sp0.x, y: sp0.y, float: true }); continue; }
       // C119: a blueprint Water Well takes the nearest valid spot by a revealed free pocket once there is one.
       let t = wellTarget(s, d, sp0, taken);
+      const far = (x) => !x || x.dist > BLUEPRINT.wellReach;
       // C158 Deep Spring: none within reach → a spring wells up by its saved spot (once; a spring already waiting for
       // the Well's unlock is not doubled), and the Well goes there.
-      if ((!t || t.dist > DEEP_SPRING.reach) && G.traitLevel(s, DEEP_SPRING.trait) > 0) {
+      if (far(t) && G.traitLevel(s, DEEP_SPRING.trait) > 0) {
         let k = springWaiting(s, d, sp0, taken);
         if (k < 0) k = makeSpring(s, d, sp0);
         if (k >= 0) {
           geo = ensureGeom(s, d);
           const t2 = wellTarget(s, d, sp0, taken);
           if (t2 && t2.k === k) t = t2;
-          else if (!t || t.dist > DEEP_SPRING.reach) { taken.push(k); t = null; }
+          else if (far(t)) { taken.push(k); t = null; }
+        }
+      }
+      // C176 Drainage: none within reach → move the nearest free pocket next to the saved spot (a normal pocket move).
+      if (far(t) && G.hasResearch(s, DRAINAGE.research)) {
+        const k = wellPocketMove(s, d, sp0, taken);
+        if (k >= 0) {
+          taken.push(k);
+          geo = ensureGeom(s, d);
+          floats.push({ type: sp0.type, x: sp0.x, y: sp0.y, float: true });
+          continue;
         }
       }
       if (!t) { floats.push({ type: sp0.type, x: sp0.x, y: sp0.y, float: true }); continue; }
       taken.push(t.k);
-      if (t.x !== sp0.x || t.y !== sp0.y) bpNote(s, sp0.type, t.x, t.y, 'well:moved');
+      if (t.x !== sp0.x || t.y !== sp0.y) {
+        bpNote(s, sp0.type, t.x, t.y, 'well:moved');
+        bpAdjusted(s, sp0.type, sp0, t, 'well:moved');
+      }
       sp = { type: sp0.type, x: t.x, y: t.y };
       auto = true;
     }
@@ -3097,6 +3389,13 @@ function bpPass(s, d, specList, tunnelList) {
     specs.push({ type: sp.type, x: sp.x, y: sp.y, cells: rc, state: 0, reason: null, auto, res: sp.res || null,
       access: isInt(sp.access) ? sp.access : 0 });
   }
+  // C174: re-seat a moved spec in the spot map (its old cells free, its new ones taken)
+  const reseat = (sp, k) => {
+    for (const c of sp.cells) if (specAt[c] === k) specAt[c] = -1;
+    const fp = G.footprint(sp.type, 1);
+    sp.cells = G.rectCells(sp.x, sp.y, fp.w, fp.h);
+    for (const c of sp.cells) { specAt[c] = k; tunnel[c] = 0; }
+  };
   const visited = new Uint8Array(N);
   const q = [];
   for (let i = 0; i < N; i++) if (geo.open[i] && geo.entDist[i] >= 0 && !geo._backfill[i]) { visited[i] = 1; q.push(i); }
@@ -3125,23 +3424,28 @@ function bpPass(s, d, specList, tunnelList) {
         group.push(n);
         q.push(n);
       } else if (specAt[n] >= 0 && specs[specAt[n]].state === 0) {
-        const sp = specs[specAt[n]];
+        const k = specAt[n];
+        const sp = specs[k];
         flush();
         // C138: a chamber behind its own access tunnel waits until that tunnel is dug.
         if (accessPending(s, sp)) {
           sp.state = 2;
           sp.reason = 'wait:access';
-          for (const k of sp.cells) visited[k] = 1;
+          for (const kk of sp.cells) visited[kk] = 1;
           continue;
         }
         sp.access = 0;
-        sp.reason = rootMemoryWait(s, d, sp, bpPlace(s, d, sp, { assumeConnected: true, seedCells: [c] }), true);
+        sp.reason = bpRootWait(s, d, sp, bpPlace(s, d, sp, { assumeConnected: true, seedCells: [c] }), true);
         if (!sp.reason) {
           placed(sp);
-          for (const k of sp.cells) if (!visited[k]) { visited[k] = 1; q.push(k); }
+          for (const kk of sp.cells) if (!visited[kk]) { visited[kk] = 1; q.push(kk); }
+        } else if (!sp.auto && bpMove(s, d, sp, sp.reason, takenMask(k))) {
+          // C174: moved next door; the unreached pass below places it (or queues its access tunnel)
+          reseat(sp, k);
+          geo = ensureGeom(s, d);
         } else {
           sp.state = 2;
-          for (const k of sp.cells) visited[k] = 1;
+          for (const kk of sp.cells) visited[kk] = 1;
         }
       } else if ((geo.open[n] && !geo._backfill[n]) || geo._queued[n]) {
         visited[n] = 1;
@@ -3154,18 +3458,25 @@ function bpPass(s, d, specList, tunnelList) {
   // lacks a connection (placeable with the connection assumed, affordable at blueprint price, Royal room kept) gets an
   // access tunnel queued: the shortest diggable route from the open nest (never through stone, water or a reserved
   // room), dug at blueprint speed; the chamber waits ('wait:access') and queues once that tunnel is dug.
-  for (const sp of specs) {
+  for (let k = 0; k < specs.length; k++) {
+    const sp = specs[k];
     if (sp.state !== 0) continue;
     if (sp.auto) {
-      sp.reason = rootMemoryWait(s, d, sp, bpPlace(s, d, sp, {}), true);
+      sp.reason = bpRootWait(s, d, sp, bpPlace(s, d, sp, {}), true);
       if (!sp.reason) placed(sp);
       continue;
     }
     if (accessPending(s, sp)) { sp.reason = 'wait:access'; continue; }
     sp.access = 0;
-    const P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
-      anchor: specAnchor(sp), legacyOk: true });
-    if (P.reason) { sp.reason = rootMemoryWait(s, d, sp, P.reason, true); continue; }
+    let P = null;
+    for (let tries = 0; tries < 2; tries++) {
+      P = planPlacement(s, d, sp.type, sp.x, sp.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
+        anchor: specAnchor(sp), legacyOk: true });
+      if (!P.reason || tries > 0 || !bpMove(s, d, sp, P.reason, takenMask(k))) break;
+      reseat(sp, k);
+      geo = ensureGeom(s, d);
+    }
+    if (P.reason) { sp.reason = bpRootWait(s, d, sp, P.reason, true); continue; }
     if (blocksRoyalGrowth(s, P.res || P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
       sp.reason = 'blocked:royalRoom';
       continue;
@@ -3175,6 +3486,7 @@ function bpPass(s, d, specList, tunnelList) {
     if (!r.cells.length) {
       sp.reason = bpPlace(s, d, sp, {});
       if (!sp.reason) placed(sp);
+      else if (bpMove(s, d, sp, sp.reason, takenMask(k))) { reseat(sp, k); sp.reason = 'wait:next'; }
       continue;
     }
     const uid = nest.nextUid++;
@@ -3188,8 +3500,9 @@ function bpPass(s, d, specList, tunnelList) {
   const pending = [];
   for (const sp of specs) {
     if (sp.state === 1) continue;
-    // C119: a Water Well whose spot stopped working (its pocket went, something was built there) floats again.
-    if (sp.type === 'water_well' && sp.reason && (sp.reason === 'invalid:water' || BP_PERMANENT.has(sp.reason))) {
+    // C119 / C176: a Water Well whose spot stopped working (its pocket went, something was built there, no route, its
+    // water was struck …) floats again and re-targets on the next pass; only its unlock, limit and price hold it.
+    if (sp.type === 'water_well' && sp.reason && !['locked', 'max', 'cantAfford'].includes(sp.reason)) {
       pending.push({ type: sp.type, x: sp.x, y: sp.y, float: true });
       continue;
     }
@@ -3355,17 +3668,17 @@ function specKey(sp) {
   return sp.x + ',' + sp.y;
 }
 
-/** C158 Root Memory: the free root already growing to (or grown to) this planned pen, or null. */
+/** C158 / C177: the root already growing to (or grown to) this planned pen (Root Memory's free one or a paid one), or null. */
 function memoryRootFor(s, sp) {
   const key = specKey(sp);
-  return (s.run.nest.features.roots || []).find((r) => r && r.free && r.bp === key) || null;
+  return (s.run.nest.features.roots || []).find((r) => r && r.bp === key) || null;
 }
 
 /**
  * C158 Root Memory: where a free root to a planned Root Aphid Pen at (sp.x, sp.y) can grow: a column over the pen (its
  * middle first) growing down to the row above it, else a column beside it growing down to its top row; no root or shaft
- * in that column and nothing that stops roots (chamber, stone, water, shaft cell; rootBlocked) from row ROOT_CULT.y0 to
- * the target. { col, to } or null.
+ * in that column and nothing that stops roots (stone, water, shaft cell; rootBlocked — C178: chambers no longer stop
+ * roots) from row ROOT_CULT.y0 to the target. { col, to } or null.
  */
 function memoryRootPlan(s, d, sp) {
   const fp = G.footprint(sp.type, 1);
@@ -3390,32 +3703,56 @@ function memoryRootPlan(s, d, sp) {
   return null;
 }
 
-/** C158 Root Memory: start a free root to the planned pen (no cost, outside the cap); true when one grows to it. */
-function startMemoryRoot(s, d, sp) {
+/**
+ * Start a root to the planned pen: free with Root Memory (C158: no cost, outside the cap), else (C177) a normal paid
+ * cultivated root (Root Cultivation research, the cultivated-root cap and price, rootCost). True when one grows to it.
+ */
+function startMemoryRoot(s, d, sp, paid = false) {
   if (memoryRootFor(s, sp)) return true;
   const o = memoryRootPlan(s, d, sp);
   if (!o) return false;
   const nest = s.run.nest;
-  if (!Array.isArray(nest.features.roots)) nest.features.roots = [];
   const y0 = ROOT_CULT.y0;
-  nest.features.roots.push({ col: o.col, y0, y1: y0, own: true, free: true, bp: specKey(sp), to: o.to, prog: 0 });
+  if (paid) {
+    if (!G.hasResearch(s, ROOT_CULT.research) || ownRoots(s) >= rootCap(s)) return false;
+    const cost = rootCost(s);
+    if (!canAfford(s, cost) || !spend(s, cost)) return false;
+  }
+  if (!Array.isArray(nest.features.roots)) nest.features.roots = [];
+  const root = { col: o.col, y0, y1: y0, own: true, bp: specKey(sp), to: o.to, prog: 0 };
+  if (!paid) root.free = true;
+  nest.features.roots.push(root);
   nest.rev++;
   rebuild(s, d);
-  bpNote(s, sp.type, sp.x, sp.y, 'root:memory');
+  bpNote(s, sp.type, sp.x, sp.y, paid ? 'root:cultivated' : 'root:memory');
+  bpAdjusted(s, sp.type, sp, sp, paid ? 'root:cultivated' : 'root:memory');
   return true;
 }
 
 /**
- * C158: a blueprint spot refused for 'invalid:root' (no root line to touch) waits as 'wait:root' when Root Memory owns a
- * free root growing to it, or can grow one (`start`: start it now; else only check). Other reasons pass through.
+ * C158 / C177: a blueprint Root Aphid Pen refused with 'invalid:root' (no root line to touch) never fails for that:
+ * with Root Memory a free root grows down to it, else with Root Cultivation a normal paid cultivated root does
+ * (`start`: start it now; else only predict). It waits as 'wait:root' (free) / 'wait:rootGrow' (paid) while its root grows, or names what it needs:
+ * 'wait:rootResearch' (no Root Cultivation and no Root Memory), 'wait:rootCap' (cultivated-root limit reached),
+ * 'wait:rootCost' (the root's price), 'wait:rootPath' (no column can grow a root to it now: stone, water, a shaft or
+ * other roots in the way). A root that stopped short of it (something blocked it after it started) no longer holds the
+ * spot: 'invalid:root' (dropped, C158). Other reasons pass through.
  */
-function rootMemoryWait(s, d, sp, reason, start) {
-  if (reason !== 'invalid:root' || G.traitLevel(s, ROOT_MEMORY.trait) <= 0) return reason;
-  // its free root already grew as far as it could without touching the pen (something stopped it): no second one
+function bpRootWait(s, d, sp, reason, start) {
+  if (reason !== 'invalid:root') return reason;
   const r = memoryRootFor(s, sp);
-  if (r) return r.y1 < num(r.to) ? 'wait:root' : reason;
-  if (start ? startMemoryRoot(s, d, sp) : memoryRootPlan(s, d, sp)) return 'wait:root';
-  return reason;
+  if (r) return r.y1 < num(r.to) ? (r.free ? 'wait:root' : 'wait:rootGrow') : reason;
+  const memory = G.traitLevel(s, ROOT_MEMORY.trait) > 0;
+  if (memory) {
+    if (start ? startMemoryRoot(s, d, sp, false) : memoryRootPlan(s, d, sp)) return 'wait:root';
+    return 'wait:rootPath';
+  }
+  if (!G.hasResearch(s, ROOT_CULT.research)) return 'wait:rootResearch';
+  if (!memoryRootPlan(s, d, sp)) return 'wait:rootPath';
+  if (ownRoots(s) >= rootCap(s)) return 'wait:rootCap';
+  if (!canAfford(s, rootCost(s))) return 'wait:rootCost';
+  if (!start) return 'wait:rootGrow';
+  return startMemoryRoot(s, d, sp, true) ? 'wait:rootGrow' : 'wait:rootCost';
 }
 
 /** Reason the original Royal Chamber's L1 footprint cannot be pre-dug at (x, y) on this run's soil, or null (C119). */
@@ -3432,7 +3769,7 @@ function royalSpotBlock(s, d, ch, x, y) {
     if (j === self) continue;
     if (geo._shaft[c]) return 'blocked:shaft';
     const code = s.run.nest.cells[c];
-    if (code === CELL.WATER) return 'blocked:water';
+    if (code === CELL.WATER) return G.hiddenWater(geo, c) ? 'water:struck' : 'blocked:water'; // C173
     if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return 'blocked:stone';
     if ((code === CELL.SOIL || code === CELL.STONE) && !G.layerOpen(s, Math.floor(c / COLS))) return 'blocked:layer';
   }
@@ -3453,6 +3790,8 @@ function placeRoyal(s, d, spot) {
   const ch = f.ch;
   if (spot.x === ch.x && spot.y === ch.y) return;
   const why = royalSpotBlock(s, d, ch, spot.x, spot.y);
+  // C173: the saved spot sits on a pocket nobody had found: it is struck (revealed) and the queen stays put
+  if (why === 'water:struck') strikeWater(s, d, G.rectCells(spot.x, spot.y, ch.w, ch.h), null, 'royal_chamber');
   if (why) {
     bpNote(s, 'royal_chamber', spot.x, spot.y, 'royal:kept:' + why);
     return;
@@ -3538,10 +3877,7 @@ function bpReady(s, d, sp) {
 function bpTick(s, d, env) {
   const nest = s.run.nest;
   // C119: notes left by the run-start blueprint pass (Royal Chamber, Water Wells) and by earlier passes.
-  if (Array.isArray(nest.bpNotes) && nest.bpNotes.length) {
-    for (const n of nest.bpNotes) if (n) emit(env, 'blueprintDropped', { ...n });
-    nest.bpNotes = [];
-  }
+  flushBpNotes(s, env);
   const pend = nest.bpPending;
   if (!Array.isArray(pend) || !pend.length) {
     if (Array.isArray(nest.bpTunnels) && nest.bpTunnels.length) nest.bpTunnels = [];
@@ -3567,9 +3903,25 @@ function bpTick(s, d, env) {
     else if (sp.x < 0 || sp.y < 0 || sp.x + fp.w > COLS || sp.y + fp.h > ROWS) why = 'invalid:bounds';
     else {
       for (const c of G.rectCells(sp.x, sp.y, fp.w, fp.h)) {
-        if (nest.cells[c] === CELL.WATER) { why = 'blocked:water'; break; }
+        // C173: an unrevealed pocket is not known yet (the placement strikes it); C174: a revealed one moves the spot
+        if (nest.cells[c] === CELL.WATER && !G.hiddenWater(geo, c)) { why = 'blocked:water'; break; }
         if (geo.chamberAt[c] >= 0) { why = 'blocked:chamber'; break; }
       }
+    }
+    if (why === 'blocked:water' && sp.type !== 'water_well') {
+      const taken = new Uint8Array(N);
+      for (const o of pend) {
+        if (!o || o === sp || o.float || !CHAMBERS[o.type] || !isInt(o.x) || !isInt(o.y)) continue;
+        const f2 = G.footprint(o.type, 1);
+        for (const c of G.rectCells(o.x, o.y, f2.w, f2.h)) taken[c] = 1;
+      }
+      const moved = { ...sp };
+      if (bpMove(s, d, moved, why, taken)) {
+        keep.push(specOut(moved));
+        ready += bpReady(s, d, moved) ? '1' : '0';
+        continue;
+      }
+      why = null; // C174: no valid spot nearby: it waits (drain or move the pocket, or cancel it)
     }
     if (why && sp.type === 'water_well') {
       // C119: a Water Well's spot is never final: it floats until a pocket has a free valid spot.
@@ -3592,7 +3944,25 @@ function bpTick(s, d, env) {
   nest.bpPending = r.pending;
   nest.bpTunnels = r.pending.length ? r.tunnels : [];
   for (const x of r.dropped) emit(env, 'blueprintDropped', { chamberType: x.type, x: x.x, y: x.y, reason: x.reason });
+  flushBpNotes(s, env);
   m.sig = r.jobs ? '' : nest.rev + '|' + u + '|' + ready;
+}
+
+/**
+ * Emit the queued blueprint notes (C119: blueprintDropped toasts) and, C175, the queued blueprint events (entries with
+ * `ev`: blueprintPlaced, blueprintAdjusted, waterStruck) in order, then clear the queue.
+ */
+function flushBpNotes(s, env) {
+  const nest = s.run.nest;
+  if (!Array.isArray(nest.bpNotes) || !nest.bpNotes.length) return;
+  for (const n of nest.bpNotes) {
+    if (!n) continue;
+    if (typeof n.ev === 'string') {
+      const { ev, ...payload } = n;
+      emit(env, ev, payload);
+    } else emit(env, 'blueprintDropped', { ...n });
+  }
+  nest.bpNotes = [];
 }
 
 /**
@@ -3632,6 +4002,8 @@ function waitOf(s, d, sp) {
   if (n >= max) return { ...base, code: 'max', detail: { n, max } };
   let at = sp;
   if (sp.float || (sp.type === 'water_well' && !sp.auto)) {
+    // C176: its pocket is being moved next to its saved spot
+    if (wellMoveRunning(s, sp)) return { ...base, code: 'wait:waterMove', detail: null };
     // C119: a floating Water Well has no spot until a revealed pocket has a free one; then it is judged there.
     at = wellTarget(s, d, sp, []);
     if (!at) {
@@ -3643,7 +4015,7 @@ function waitOf(s, d, sp) {
   const P = planPlacement(s, d, sp.type, at.x, at.y, { blueprint: true, ignoreQueue: true, assumeConnected: true,
     anchor: specAnchor(sp), legacyOk: true });
   if (P.reason === 'cantAfford') return { ...base, code: 'cantAfford', detail: { cost: P.cost } };
-  if (P.reason) return { ...base, code: rootMemoryWait(s, d, sp, P.reason, false), detail: null };
+  if (P.reason) return { ...base, code: bpRootWait(s, d, sp, P.reason, false), detail: null };
   if (blocksRoyalGrowth(s, P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) {
     return { ...base, code: 'blocked:royalRoom', detail: null };
   }
@@ -3819,13 +4191,14 @@ function planTunnel(s, d, list) {
     if (k > 0 && !adj4(list[k - 1], c)) return { reason: 'invalid:path' };
     if (geo.open[c]) continue;
     const code = cells[c];
-    if (code === CELL.WATER) return { reason: 'blocked:water' };
+    const hidden = code === CELL.WATER && G.hiddenWater(geo, c); // C173: soil as far as the player knows
+    if (code === CELL.WATER && !hidden) return { reason: 'blocked:water' };
     if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) return { reason: 'blocked:stone' };
     if (geo.chamberAt[c] >= 0) return { reason: 'blocked:chamber' };
     // C137: no new tunnels through a chamber's reserved room (tunnels dug before it was reserved stay).
     if (geo._resv && geo._resv[c] >= 0) return { reason: 'blocked:reserved' };
     if (s.run.hardship === 'shallow_soil' && Math.floor(c / COLS) > DIG.shallowSoilRow) return { reason: 'hardship' };
-    if (!G.isDiggable(s, c)) return { reason: 'blocked:layer' };
+    if (!G.diggableKnown(s, geo, c)) return { reason: 'blocked:layer' };
     soil.push(c);
   }
   const reach = (c) => geo.open[c] && geo.entDist[c] >= 0 && !geo._backfill[c];
@@ -3844,7 +4217,7 @@ function planDigTo(s, d, cell) {
   if (geo._resv && geo._resv[cell] >= 0) return { reason: 'blocked:reserved' }; // C137
   if (s.run.hardship === 'shallow_soil' && Math.floor(cell / COLS) > DIG.shallowSoilRow) return { reason: 'hardship' };
   if (!G.isDiggable(s, cell)) return { reason: 'blocked:layer' };
-  const r = G.routeTo(s, d, [cell]);
+  const r = G.routeTo(s, d, [cell], { hidden: true });
   if (!r) return { reason: 'blocked:route' };
   if (s.run.nest.queue.length + 1 > queueLimit(s)) return { reason: 'queueFull' };
   return { reason: null, cells: [...r.cells, cell] };
@@ -4094,6 +4467,63 @@ function snapshotBlueprint(s, d, name) {
 // Command handlers (ARCHITECTURE §9)
 // ------------------------------------------------------------------------------------------------------------------
 
+/** C180: a plain integer rectangle inside the grid, or null. */
+function cleanRect(r) {
+  if (!r || typeof r !== 'object' || !isInt(r.x) || !isInt(r.y) || !isInt(r.w) || !isInt(r.h)) return null;
+  if (r.w < 1 || r.h < 1 || r.x < 0 || r.y < 0 || r.x + r.w > COLS || r.y + r.h > ROWS) return null;
+  return { x: r.x, y: r.y, w: r.w, h: r.h };
+}
+
+/**
+ * [q] C180 (Architect's Table): a hand-edited blueprint as it may be stored: { name, chambers: [{ type, x, y, w, h, level,
+ * res? }], tunnels: [cell], royal?: { x, y, res? } } with known chamber types, L1 rooms inside the grid, reservations
+ * that hold their room in a corner, distinct in-grid tunnel cells. null when it is malformed (the edit is refused).
+ * @param {Object} bp
+ * @returns {Object|null}
+ */
+export function sanitizeBlueprint(bp) {
+  if (!bp || typeof bp !== 'object') return null;
+  if (!Array.isArray(bp.chambers) || bp.chambers.length > 400) return null;
+  if (bp.tunnels !== undefined && (!Array.isArray(bp.tunnels) || bp.tunnels.length > N)) return null;
+  const name = typeof bp.name === 'string' && bp.name.trim() ? bp.name.trim().slice(0, NAME_MAX) : 'Layout';
+  const chambers = [];
+  for (const c of bp.chambers) {
+    if (!c || typeof c !== 'object' || !CHAMBERS[c.type] || !isInt(c.x) || !isInt(c.y)) return null;
+    const fp = G.footprint(c.type, 1);
+    const room = cleanRect({ x: c.x, y: c.y, w: fp.w, h: fp.h });
+    if (!room) return null;
+    const o = { type: c.type, x: c.x, y: c.y, w: fp.w, h: fp.h, level: isInt(c.level) && c.level >= 1 ? Math.min(c.level, 1e9) : 1 };
+    if (isInt(c.w) && isInt(c.h) && c.w >= fp.w && c.h >= fp.h && c.x + c.w <= COLS && c.y + c.h <= ROWS) { o.w = c.w; o.h = c.h; }
+    if (c.res !== undefined && c.res !== null) {
+      const R = cleanRect(c.res);
+      if (!R || !G.anchorOf(room, R)) return null;
+      o.res = R;
+    }
+    chambers.push(o);
+  }
+  const seen = new Set();
+  const tunnels = [];
+  for (const i of bp.tunnels || []) {
+    if (!isCell(i)) return null;
+    if (!seen.has(i)) { seen.add(i); tunnels.push(i); }
+  }
+  tunnels.sort((a, b) => a - b);
+  const out = { name, chambers, tunnels };
+  if (bp.royal !== undefined && bp.royal !== null) {
+    const def = CHAMBERS.royal_chamber;
+    const r = bp.royal;
+    const room = r && cleanRect({ x: r.x, y: r.y, w: def.w0, h: def.h0 });
+    if (!room) return null;
+    out.royal = { x: room.x, y: room.y };
+    if (r.res !== undefined && r.res !== null) {
+      const R = cleanRect(r.res);
+      if (!R || !G.anchorOf(room, R)) return null;
+      out.royal.res = R;
+    }
+  }
+  return out;
+}
+
 function validSlot(s, slot) {
   return isInt(slot) && slot >= 0 && slot < blueprintSlots(s);
 }
@@ -4113,6 +4543,9 @@ export const handlers = {
     apply(s, d, cmd, env) {
       const P = planPlacement(s, d, cmd.chamber, cmd.x, cmd.y, { route: cmd.route ?? null, shaftCol: cmd.shaftCol ?? null, anchor: cmd.anchor ?? null });
       if (P.reason) return;
+      // C173: the footprint, its reserved room, route or exit shaft hits a pocket nobody had found: it is revealed
+      // ("You struck water!") and this placement is refused; the pocket now shows, so the next try plans around it.
+      if (strikeWater(s, d, planCells(P), env || {}, cmd.chamber)) return;
       executePlacement(s, d, cmd.chamber, P, env, false);
     },
   },
@@ -4131,6 +4564,7 @@ export const handlers = {
       if (!f) return;
       const P = planLevel(s, d, f.ch, cmd.dir ?? null);
       if (P.reason) return;
+      if (P.grows && strikeWater(s, d, P.growSoil, env || {}, f.ch.type)) return; // C173
       doLevel(s, d, f.ch, P, env);
     },
   },
@@ -4150,6 +4584,7 @@ export const handlers = {
       if (!f) return;
       const P = planPlacement(s, d, f.ch.type, cmd.x, cmd.y, { route: cmd.route ?? null, relocateUid: cmd.uid, anchor: cmd.anchor ?? null });
       if (P.reason) return;
+      if (strikeWater(s, d, planCells(P), env || {}, f.ch.type)) return; // C173
       executeRelocation(s, d, P, env);
     },
   },
@@ -4187,9 +4622,10 @@ export const handlers = {
     validate(s, d, cmd) {
       return planTunnel(s, d, cmd.cells).reason;
     },
-    apply(s, d, cmd) {
+    apply(s, d, cmd, env) {
       const P = planTunnel(s, d, cmd.cells);
       if (P.reason) return;
+      if (strikeWater(s, d, P.soil, env || {})) return; // C173
       const nest = s.run.nest;
       nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: P.soil, cur: 0, prog: 0, paidFood: 0, blueprint: false });
       nest.rev++;
@@ -4202,9 +4638,10 @@ export const handlers = {
     validate(s, d, cmd) {
       return planDigTo(s, d, cmd.cell).reason;
     },
-    apply(s, d, cmd) {
+    apply(s, d, cmd, env) {
       const P = planDigTo(s, d, cmd.cell);
       if (P.reason) return;
+      if (strikeWater(s, d, P.cells, env || {})) return; // C173
       const nest = s.run.nest;
       nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: P.cells, cur: 0, prog: 0, paidFood: 0, blueprint: false });
       nest.rev++;
@@ -4398,6 +4835,25 @@ export const handlers = {
       if (s.era.activeBlueprint === cmd.slot) s.era.activeBlueprint = -1;
     },
   },
+  /**
+   * editBlueprint { slot, blueprint } (C180, Federation Architect's Table): store a blueprint edited by hand in the
+   * blueprint editor (a sandbox: the live colony is never touched) over a saved slot. The layout is sanitised
+   * (sanitizeBlueprint); placement rules were checked in the editor and are checked again when it is applied.
+   */
+  editBlueprint: {
+    validate(s, d, cmd) {
+      if (G.fedLevel(s, 'architects_table') <= 0) return 'locked';
+      if (!blueprintsAllowed(s) || !validSlot(s, cmd.slot)) return 'invalid';
+      if (!s.era.blueprints[cmd.slot]) return 'notFound';
+      return sanitizeBlueprint(cmd.blueprint) ? null : 'invalid';
+    },
+    apply(s, d, cmd) {
+      const bp = sanitizeBlueprint(cmd.blueprint);
+      if (!bp) return;
+      s.era.blueprints[cmd.slot] = bp;
+    },
+  },
+
   /** cancelPlanned { cell?, all? } (C120): drop a pending blueprint chamber (top-left cell), or all of them. */
   cancelPlanned: {
     validate(s, d, cmd) {

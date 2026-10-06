@@ -7,7 +7,9 @@ import { fmt, fmtRate, fmtCount, fmtTime, fmtMult, fmtPct } from './format.js';
 import {
   nameOf, RES_NAMES, RES_TIPS, CHAMBER_TIPS, SEASON_NAMES, SEASON_TIPS, BOTTLENECK_TIPS, unlockHint, unlockLabel, BATTLE_NAMES, PARTY_NAMES,
   reasonText, linkText, TERRAIN_BLOCK_TIPS, plannedWaitText, terrainTipLines,
+  sourceTipLines, detourText, FIND_NAMES, FIND_TIPS,
 } from './text.js';
+import { detourInfo } from '../systems/trails.js';
 import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
@@ -19,11 +21,16 @@ import { TERRAIN_ORDER } from '../data/surface.js';
 import { GRID } from '../data/balance.js';
 import { SOURCES } from '../data/sources.js';
 import { EVENTS } from '../data/events.js';
+import { topFlowLines } from './resourceStats.js';
+import { layBreakdown, layTipLines } from './layParts.js';
 
 const TERRAIN_FALLBACK = ['grass', 'sand', 'leaf_litter', 'garden_path', 'tree_root', 'stone', 'puddle', 'log'];
 const OBJECT_TIPS = {
   fruit: 'A fallen fruit: trail to it before it rots.', ladybug: 'Ladybug! Click to shoo it off the aphids.', footstep: 'A shoe shadow: click to scatter!',
-  molehill: 'A molehill blocks this hex for a while.', antlion: 'Antlion pit: reroute the trail or send soldiers.', lizard: 'Horned lizard: reroute or mob it.',
+  molehill: 'A molehill blocks this hex for a while. Trails detour round it.',
+  // C185: clearing works any time while the pit is there (click or right-click), not only from the event card
+  antlion: 'Antlion pit: click to send ' + num(EVENTS.ev_antlion_pit && EVENTS.ev_antlion_pit.num.soldiers, 3) + ' garrison soldiers, or reroute the trail.',
+  lizard: 'Horned lizard: reroute or mob it.',
   termite_swarm: 'Termite swarm: Mass Recruit for a feast.', golden_aphid: 'Golden aphid! Click within 15 seconds.', rival_alate: 'Rival alate: click to catch it for food.',
   mold: 'Mold: click to scrape it off.', army_column: 'Army ant column crossing your land!', phengaris: 'A caterpillar that smells like brood.',
   myrmecophile: 'A rove beetle guest.', wandering_queen: 'A strange queen at the entrance.',
@@ -65,6 +72,7 @@ export function tipForKey(key, s, d) {
     }
     if (r.sc || kind === 'sc') lines.push('Softcapped: raw ' + fmtRate(num(r.raw)) + ' → ' + fmtRate(num(r.gross)));
     if (arg === 'food' && capKey && have >= num(st[capKey]) * 0.99 && num(st[capKey]) > 0) lines.push('Storage full: production is wasted.');
+    if (kind === 'res') lines.push(...topFlowLines(s, d, arg, fmtRate));   // C191: top 3 sources and sinks, last 60 s
     return { title: (kind === 'sc' ? 'Softcap: ' : '') + (RES_NAMES[arg] || arg), lines: lines.filter(Boolean) };
   }
   if (kind === 'pop') {
@@ -75,14 +83,17 @@ export function tipForKey(key, s, d) {
     lines.push('Housing ' + fmtCount(num(st.housing, 10)) + ' · brood slots ' + fmtCount(num(st.broodSlots, 3)));
     return { title: 'Your colony', lines };
   }
-  if (kind === 'scale') return { title: 'Colony Scale ' + fmtMult(num(d && d.meta && d.meta.colonyScale, 1)), lines: ['Multiplies housing, brood slots, berths and lay rate together.'] };
+  // C192: every factor of the queen's lay rate (Colony brood section, rail Queens row)
+  if (kind === 'lay') return { title: 'Lay rate ' + fmtRate(num(st.layRate)), lines: layTipLines(layBreakdown(s, d), { fmtRate, fmtMult }) };
+  if (kind === 'scale') return { title: 'Colony Scale ' + fmtMult(num(d && d.meta && d.meta.colonyScale, 1)), lines: ['Multiplies housing, brood slots and berths together (not the lay rate).'] };
   if (kind === 'season') {
     const id = (d && d.season && d.season.id) || 'spring';
     return { title: (SEASON_NAMES[id] || id) + ', year ' + fmtCount(num(d && d.season && d.season.year)), lines: [SEASON_TIPS[id] || ''] };
   }
   if (kind === 'bottleneck') {
     const id = s.run.bottleneck && s.run.bottleneck.id;
-    return id ? { title: 'What limits growth', lines: [BOTTLENECK_TIPS[id] || 'Relieve this to grow faster.'] } : null;
+    return id ? { title: 'What limits growth', lines: [BOTTLENECK_TIPS[id] || 'Relieve this to grow faster.'] }
+      : { title: 'No bottleneck', lines: ['Nothing is holding growth back right now.'] };   // C194
   }
   if (kind === 'ribbon') {
     const nu = ribbonInfo(s, d);
@@ -102,6 +113,14 @@ export function tipForKey(key, s, d) {
       th.locate ? (arr(th.spots).length > 1 ? 'Click to find it; click again for the next.' : 'Click to find it.') : ''].filter(Boolean) };
   }
   return null;
+}
+
+/** C182: tooltip line of a trail on a detour round a molehill / spring puddle, or paused with no way round. */
+function trailDetourLines(s, tr) {
+  let info = null;
+  try { info = detourInfo(s, tr); } catch { info = null; }
+  const t = detourText(info);
+  return t ? [t.line] : [];
 }
 
 /** Find a chamber by uid. */
@@ -248,9 +267,9 @@ export function tipForTarget(t, s, d) {
   if (k === 'source') {
     const src = arr(s.run.surface && s.run.surface.sources).find((x) => x && x.uid === t.id);
     if (!src) return null;
-    const lines = [];
-    if (num(src.stock, -1) >= 0) lines.push('Stock ' + fmt(num(src.stock)) + ' / ' + fmt(num(src.max)));
-    if (num(src.ttl, -1) >= 0) lines.push('Gone in ' + fmtTime(num(src.ttl)));
+    // C184: what it gives (resources, per-worker yields), stock and its unit, regrowth / lifetime, aphid level progress
+    let lines = [];
+    try { lines = sourceTipLines(s, d, src); } catch { lines = []; }
     const prey = String(src.type).startsWith('prey_') || src.type === 'termite_mound';
     lines.push(prey ? 'Click to plan a hunt.' : src.type === 'lycaenid_caterpillar' ? 'Escort it with ' + num(SOURCES.lycaenid_caterpillar && SOURCES.lycaenid_caterpillar.minEscorts, 5) + ' soldiers for honeydew.' : 'Click to hand-forage; drag a trail to it.');
     return { title: nameOf('source', src.type) + ' · ring ' + ringOf(num(src.hex)), lines };
@@ -261,7 +280,8 @@ export function tipForTarget(t, s, d) {
     const src = arr(s.run.surface.sources).find((x) => x && x.uid === tr.src);
     const dt = arr(d && d.surface && d.surface.trails).find((x) => x && x.uid === tr.uid) || {};
     return { title: 'Trail to ' + (src ? nameOf('source', src.type).toLowerCase() : 'a source'),
-      lines: [fmtCount(num(dt.workers, num(tr.workers))) + ' workers · strength ' + fmtCount(num(tr.S)), 'Yield ' + fmtRate(num(dt.out))] };
+      lines: [fmtCount(num(dt.workers, num(tr.workers))) + ' workers · strength ' + fmtCount(num(tr.S)), 'Yield ' + fmtRate(num(dt.out)),
+        ...trailDetourLines(s, tr)] };
   }
   if (k === 'rival') {
     const r = arr(s.run.rivals && s.run.rivals.list).find((x) => x && x.uid === t.id);
@@ -290,6 +310,9 @@ export function tipForTarget(t, s, d) {
   if (k === 'entrance') return { title: 'Nest entrance', lines: ['Drag from here to draw a trail.'] };
   if (k === 'eventObject') {
     const o = arr(s.run.events && s.run.events.objects).find((x) => x && x.uid === t.id);
+    if (o && FIND_NAMES[o.kind]) {   // C188 expedition finds
+      return { title: FIND_NAMES[o.kind], lines: [FIND_TIPS[o.kind], num(o.t, -1) > 0 ? 'Gone in ' + fmtTime(Math.ceil(num(o.t))) + '.' : ''].filter(Boolean) };
+    }
     return o ? { title: nameOf('event', 'ev_' + o.kind), lines: [OBJECT_TIPS[o.kind] || 'Click it.'] } : null;
   }
   if (k === 'hex') {
