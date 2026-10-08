@@ -35,7 +35,7 @@
 
 ```
 /                                   project root (served as the web root by tools/serve.mjs)
-├─ index.html                       WP9  DOM skeleton; <script type="module" src="src/main.js">
+├─ index.html                       WP9  DOM skeleton; <script type="module" src="src/boot.js"> (C239)
 ├─ package.json                     WP1  {"type":"module"}, scripts only, zero dependencies (§15.1)
 ├─ README.md                        INT  how to run, test, simulate; folder map
 ├─ styles/
@@ -43,7 +43,8 @@
 │  └─ panels.css                    WP9  rail, HUD, tabs, panels, tooltips, toasts, cards, modals
 ├─ docs/  DESIGN.md, ARCHITECTURE.md
 ├─ src/
-│  ├─ main.js                       WP9  browser boot: storage, game, renderers, UI, rAF loop, visibility, autosave
+│  ├─ boot.js                       WP9  entry (C239): pre-boot version check via ui/updater.js, then dynamic import('./main.js'); no static imports
+│  ├─ main.js                       WP9  browser boot: storage, game, renderers, UI, rAF loop, visibility, autosave, update watch
 │  ├─ core/                         WP1 owns every file in core/
 │  │  ├─ types.js                   JSDoc @typedefs only (State, Derived, Command, GameEvent, Cost, Effect, Target …); no runtime code
 │  │  ├─ state.js                   SCHEMA_VERSION, createState(), createRun/createCycle/createEra(), defaultNestCells(), adultsTotal(), broodTotal(), consumeClick()
@@ -155,6 +156,7 @@
 │     ├─ manual.js                  the in-game Manual (C131): modal / phone full screen, section index, search, live values, cross-links
 │     ├─ manualContent.js           Manual entries built from data tables + system queries, gated by reveals and sightings (pure, no DOM)
 │     ├─ patchNotes.js              patch notes (C150): What's new modal, version helpers, last-seen version (localStorage), update pill
+│     ├─ updater.js                 auto-update (C239): live version from changelog.js (no-store), import-graph walker, cache:'reload' refresh + reload, loop guard, "Update available" pill; imports nothing
 │     ├─ blueprintEditor.js         blueprint editor (C180, Architect's Table): sandbox nest, place / move / delete / tunnels, editBlueprint
 │     ├─ eventCard.js               non-modal event card with timer and default choice
 │     ├─ welcome.js                 welcome-back modal (stat lines, time-lapse trigger)
@@ -177,7 +179,7 @@
 │  ├─ world.*.test.js                                 WP6  achievements eventfixes events fieldguide golden nextUnlock revealQueue seasons unlocks
 │  ├─ meta.*.test.js                                  WP7  automation contractive derive flight formulas layers prestigeFixes simulate traits
 │  ├─ render.*.test.js                                WP8  art camera geom renderers sprites
-│  └─ ui.*.test.js                                    WP9  clarity dom format hud metaFixes qaFixes text toasts uistate patchNotes
+│  └─ ui.*.test.js                                    WP9  clarity dom format hud metaFixes qaFixes text toasts uistate patchNotes updater
 └─ tools/
    ├─ serve.mjs                     WP1  zero-dependency static server, port 8080 (§15.1)
    ├─ simulate.mjs                  WP7  headless pacing bot; time-to-milestone report (§15.4)
@@ -2480,6 +2482,8 @@ The gap after a hidden period arrives as one large `realDt`, which `game.advance
 
 As built (accepted at integration): the five render modules are loaded with dynamic `import()`, each in its own `try/catch`, and handed to the shell with `ui.attachRenderers({ nest, surface, seam })`, so a broken render module leaves a blank canvas instead of stopping the game; `last` only advances while the page is visible (same intent as above); `?reveal=all` reveals every panel (debug); `window.sld` exposes the game (and `tabLock`) for the console. Runtime fixes (C78–C80): boot first awaits `tabLock.acquire()` and boots only if it still owns the game (else it shows the overlay); every save goes through one `persist()` that requires `!paused && tabLock.check()` and passes `{ hidden: document.hidden || no frame for over 1 s }`; the frame loop calls `game.advance(dt, Date.now(), { maxTicks: FRAME.maxTicks, budgetMs: FRAME.budgetMs, clock: performance.now })`; a shown-again or resumed tab re-checks the lock; `pagehide` saves then `tabLock.release()`; `pageshow` with `persisted` reloads. When another tab takes over (or `saveStale` fires) the tab stops its loop and autosave, sets `#app.inert` and shows a full-page "Game open in another tab" overlay whose click reloads the page.
 
+Auto-update (C239): `index.html` loads `src/boot.js`, not `main.js`. `boot.js` has no static imports; it dynamically imports `ui/updater.js` and awaits `bootCheck({ loadCurrent })` (live version = `data/changelog.js` fetched `cache:'no-store'`, 3 s timeout, vs `CURRENT_VERSION` of the cached module). On a mismatch (and no earlier attempt at that version this session, `sessionStorage['sld.updateAttempt']`) it shows the "Updating to vX…" overlay, re-fetches the document, `index.html`, its stylesheets and every module reachable from its module scripts with `cache:'reload'` (bounded by 8 s), then `location.reload()`; otherwise it `import('./main.js')`. A rejected `import('./main.js')` gets one refresh-and-reload per session (`sld.updateRecover`) before the load-failure box. In `boot()`, `main.js` starts `startUpdateWatch({ current: CURRENT_VERSION, beforeReload: persist })` (every 10 min and on tab shown, ≥ 60 s apart) and exposes `sld.checkForUpdate()`. Skipped on `file://` and on any fetch failure; never touches localStorage.
+
 ---
 
 ## 15. Testing and tools
@@ -2843,6 +2847,7 @@ All packages start at the same time from this document. Each package: owns exact
 | C236 | Lycaenid escort cap (player request; DESIGN §8.8, §8.10) | [q] `trails.escortMax(trail)` = `SOURCES.lycaenid_caterpillar.minEscorts` (5) for a Lycaenid trail, Infinity otherwise. `assignEscorts` refuses `n > max` with 'max' (lowering an over-full trail is allowed; text "A Lycaenid trail needs exactly 5 escorts: more add nothing."); `clampEscorts` trims old saves to 5 each tick. Map: the escort + button stops at 5 (disabled there, tip says why); the context menu (`map.escortMenuItems`) offers "+1" and "Add escorts up to 5", and a disabled "Escorts 5/5: enough to milk it" when full (menu items may now be `{ disabled }` or `{ tool }`, `app.js` M()). Tests: `ui.mapCombat`, `world.mapFeedback7`. |
 | C237 | Moving aphid colonies from the map (player question; DESIGN §8.4, §8.10) | The `moveAphids` command and its `surfaceInput` tool existed but nothing armed the tool. [q] `surface.canMoveAphids(s, d, src, hex)` (the validator) and `surface.aphidTargets(s, d, src)` (every valid hex). `map.aphidMenuItems(s, d, src)`: "Move aphid colony… (N places)" arms `{ kind: 'moveAphids', src }`, or a disabled note when no owned flower / leaf hex is free; offered on right-click of an aphid colony and as a button on its Map-tab card (with the reason when disabled). While the tool is up the renderer tints the valid hexes green and outlines the hovered hex green / red; success toasts "Aphid colony moved: its trail now leads to the new hex." Tests: `world.mapFeedback7`. |
 | C238 | Leafcutters need leaf storage (player report; DESIGN §6.2) | Decision: gate rather than warn. [q] `jobs.leavesUsable(d)` = `d.stats.leafCap > 0` (a Fungus Garden). `jobCap('leafcutter')` is 0 without it; `shiftJob` to leafcutter and `setJobs` with leafcutters > 0 return **'requirements:garden'** ("Leafcutters need a Fungus Garden first: without one the leaves they bring home are wasted."); on each real tick (dt > 0) leafcutters with nowhere to put leaves move to foraging. Auto modes already send a capped job's share to foragers (C94). Bot: leafcutters only up to `jobCap`. Tests: `world.mapFeedback7`. |
+| C239 | Auto-update after a deploy (lead request; GitHub Pages max-age=600 per file could mix old and new modules) | Single source of truth: the live version is the first `version: …` after `export const CHANGELOG` in `src/data/changelog.js` fetched with `cache:'no-store'` (`updater.parseChangelogVersion`, pure); no version.json. `src/boot.js` (new entry in index.html, no static imports) runs `updater.bootCheck` before any game module loads: [pure] `decideBootUpdate({ live, current, attempted, guardOk })` → `update` (live ≠ cached CURRENT_VERSION, no attempt at that version this session) / `stale` (already tried: continue + console.warn) / `continue` (match, no live version, or no sessionStorage). Update = overlay "Updating to vX…", `refreshAndReload`: fetch the document, index.html, its stylesheets and the import graph with `cache:'reload'` ([pure] `moduleSpecifiers`, `htmlAssets`, `collectGraph`; async `crawlGraph`, same-origin only, ≤ 8 s), then `location.reload()`. A failed `import('./main.js')` gets one refresh per session. In game: `startUpdateWatch` (10 min / tab shown, ≥ 60 s apart) → "Update available: vX — reload to update" pill (patch-notes pill classes) in #toasts; click = `persist()` + refresh + reload. Test hook `?forceUpdateCheck=<v>` only on localhost / 127.x / *.localhost; `sld.checkForUpdate()`. Never touches localStorage. check-imports default entry is now `src/boot.js`. Tests: `ui.updater`. |
 
 ### 18.1 Accepted package readings (`// ARCH-R:`)
 

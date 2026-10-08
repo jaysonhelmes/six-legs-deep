@@ -10,6 +10,15 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.12.1',
+    date: '2026-10-08',
+    title: 'Smoother updates',
+    notes: [
+      "The game now checks for a new version when it loads and updates itself first, so you never play a half-updated mix of old and new files. You may see a short \"Updating…\" screen right after a release; your colony is untouched.",
+      "If a new version comes out while you play, an \"Update available\" notice appears. Click it to save and reload into the new version, or dismiss it and keep playing.",
+    ],
+  },
+  {
     version: '0.12.0',
     date: '2026-10-07',
     title: 'A gentler start, sound, and clearer everything',
