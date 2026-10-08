@@ -107,6 +107,15 @@ export function createNestCamera({ cols = GRID.cols, rows = GRID.rows, baseCell 
     fit: baseCell, zoom: 1,
     /** grid column at the horizontal centre (used only while the grid is wider than the canvas) */
     cx: cols / 2,
+    /** C215: the nest is `n` columns wide now (a wider run, or a save of another width): refit, centred. */
+    setCols(n) {
+      if (!(n > 0) || n === cols) return;
+      cols = n;
+      cam.cols = n;
+      cam.cx = n / 2;
+      if (cam.w > 0 && cam.h > 0) cam.setViewport(cam.w, cam.h);
+      else cam.clamp();
+    },
     /** Fit the cell size to a viewport (CSS px). Keeps the grid point at the view centre stable. */
     setViewport(w, h) {
       const hadView = cam.w > 0 && cam.h > 0 && cam.cell > 0;

@@ -13,8 +13,9 @@ import { RESEARCH } from '../data/research.js';
 import { hexDist } from '../core/hex.js';
 import { rgba, ramp, OWNED_TINT, NEST, SURFACE, hatchPattern, rivalColor, rivalPatternKind } from './palette.js';
 import { hexCorners } from './geom.js';
+import { COLS } from '../systems/nestgeom.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding (the active nest width)
 
 /** Layer list (data/strata.js LAYER_ORDER). */
 export function layerList() {

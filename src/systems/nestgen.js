@@ -9,9 +9,10 @@ import { CHAMBERS } from '../data/chambers.js';
 import { FLIGHT } from '../data/prestige.js';
 import { makeHolder, randInt, weighted } from '../core/rng.js';
 import { defaultNestCells } from '../core/state.js';
-import { idx, inBounds, footprint } from './nestgeom.js';
+import { idx, inBounds, footprint, useCols, COLS } from './nestgeom.js';
+import { validCols } from '../data/balance.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding; generateNest makes the new run's width the active one first.
 const ROWS = GRID.rows;
 
 // Occupancy codes of the generator's scratch grid.
@@ -23,23 +24,25 @@ const ROOT = 4;
 const CACHE = 5;
 
 /**
- * Generate the nest subtree of a new run (ARCHITECTURE §8.2): the default grid (§4.2) plus stones (3×3, rows 8–55;
- * ×2 with site_stony_ground) as CELL.STONE, caches (rows 5–60; ×2 stony; exactly one amber_bead in bedrock), water
+ * Generate the nest subtree of a new run (ARCHITECTURE §8.2): the default grid (§4.2) plus stones (C181: varied shapes,
+ * 1–9 cells, rows 8–55, their own seeded stream; ×2 with site_stony_ground) as CELL.STONE, caches (rows 5–60; ×2 stony; exactly one amber_bead in bedrock), water
  * pockets (2–3, +2 with site_wet_hollow, rows 40–70) as CELL.WATER and root lines at `rootCols` (y0 = 1,
  * y1 = randInt(6, 25); random columns are added until there are at least 6, at most 10 are kept). Features never
  * overlap the shaft, the Royal Chambers or each other; boulders and pockets also keep a 1-cell margin from the shaft,
  * the Royal Chambers and each other. royalCount ≥ 2 pre-digs extra Royal Chambers at rows 20–21 beside the first one,
  * linked by tunnel. Deterministic per (seed, options); uses makeHolder((seed ^ 0x9E3779B9) >>> 0).
  * @param {number} seed uint32 run seed
- * @param {{ tags?: string[], rootCols?: number[], royalCount?: number }} [opts]
+ * @param {{ tags?: string[], rootCols?: number[], royalCount?: number, cols?: number }} [opts] cols: the nest width (C215; 40)
  * @returns {Object} State['run']['nest']
  */
-export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } = {}) {
+export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1, cols: nestCols = GRID.baseCols } = {}) {
+  // C215: a run may start wider than 40 columns (nest.runStartCols); everything below is laid out in that width
+  const width = useCols(validCols(nestCols) ? nestCols : GRID.baseCols);
   const h = makeHolder((((seed >>> 0) ^ 0x9E3779B9) >>> 0));
   const tagList = Array.isArray(tags) ? tags : [];
   const stony = tagList.includes('site_stony_ground');
   const wet = tagList.includes('site_wet_hollow');
-  const cells = defaultNestCells();
+  const cells = defaultNestCells(width);
   const occ = new Uint8Array(COLS * ROWS);
   const royalDef = CHAMBERS.royal_chamber;
   const r0 = GRID.royal;
@@ -53,6 +56,7 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
 
   // Extra pre-dug Royal Chambers (fire ants: royalCount 2), alternating sides, joined by a tunnel along the bottom row.
   const extra = Math.max(0, Math.floor(Number(royalCount) || 1) - 1);
+  const court = []; // C214: the passage cells joining the queens' chambers (tagged in dugBy)
   if (extra > 0) {
     const w = royalDef.w0;
     const hh = royalDef.h0;
@@ -66,14 +70,14 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
       for (let tries = 0; tries < 2 && !placed; tries++) {
         if (side === 0 && left - gap - w >= 0) {
           const x = left - gap - w;
-          for (let c = x + w; c < left; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; }
+          for (let c = x + w; c < left; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; court.push(idx(c, row)); }
           digRect(cells, occ, x, r0.y, w, hh);
           chambers.push(royalAt(nextUid++, chambers.length, x, r0.y, w, hh));
           left = x;
           placed = true;
         } else if (side === 1 && right + gap + w <= COLS - 1) {
           const x = right + gap + 1;
-          for (let c = right + 1; c < x; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; }
+          for (let c = right + 1; c < x; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; court.push(idx(c, row)); }
           digRect(cells, occ, x, r0.y, w, hh);
           chambers.push(royalAt(nextUid++, chambers.length, x, r0.y, w, hh));
           right = x + w - 1;
@@ -106,8 +110,10 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
 
   // Root lines.
   const cols = [];
+  // C215: rootCols come in the base 40-wide frame (hex.colForHex); a wider nest shifts them by its extra columns per side
+  const side = (width - GRID.baseCols) / 2;
   for (const c of Array.isArray(rootCols) ? rootCols : []) {
-    let col = Math.round(Number(c));
+    let col = Math.round(Number(c)) + side;
     if (!Number.isFinite(col)) continue;
     col = Math.max(1, Math.min(COLS - 2, col));
     if (col === GRID.mainCol) col = cols.includes(col + 1) ? col - 1 : col + 1;
@@ -122,12 +128,15 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
   const roots = [];
   for (const col of cols) {
     let y1 = randInt(h, ROOTS.yMin, ROOTS.yMax);
-    // Never overlap a Royal Chamber or its connecting tunnel: stop above the reserved cells of this column.
+    // C178: roots grow down through chambers (the pre-dug Royal Chambers and their tunnels included); only a shaft
+    // stops one (the main shaft column is never a root column).
     for (let y = 1; y <= y1; y++) {
-      if (occ[idx(col, y)] !== FREE) { y1 = y - 1; break; }
+      const v = occ[idx(col, y)];
+      if (v !== FREE && v !== RESERVED) { y1 = y - 1; break; }
+      if (v === RESERVED && col === GRID.mainCol) { y1 = y - 1; break; }
     }
     y1 = Math.max(y1, 1);
-    for (let y = 1; y <= y1; y++) occ[idx(col, y)] = ROOT;
+    for (let y = 1; y <= y1; y++) if (occ[idx(col, y)] === FREE) occ[idx(col, y)] = ROOT;
     roots.push({ col, y0: 1, y1 });
   }
 
@@ -142,17 +151,23 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     markRect(keep, r0.x - sx, r0.y, r0.w + 2 * sx, Math.max(fp.h, r0.h), 1);
   }
 
-  // Stones.
+  // Stones. C181: varied shapes (pebbles, bars, blocks, slabs, Ls, blobs, the odd big boulder) from their own seeded
+  // stream, so a seed always gives the same stones; still never in the Royal growth zone, with the 1-cell margin.
+  const hs = makeHolder((((seed >>> 0) ^ 0x5BD1E995) >>> 0));
   const stoneMult = stony ? SITE_MODS.site_stony_ground.stones : 1;
-  const nStones = randInt(h, STONES.min, STONES.max) * stoneMult;
+  const nStones = randInt(hs, STONES.min, STONES.max) * stoneMult;
+  const shapeW = Object.keys(STONES.shapes).map((id) => ({ id, w: STONES.shapes[id] }));
   for (let n = 0; n < nStones; n++) {
+    const shape = stoneShape(hs, shapeW);
+    let sw = 0;
+    let sh = 0;
+    for (const [dx, dy] of shape) { sw = Math.max(sw, dx + 1); sh = Math.max(sh, dy + 1); }
     for (let t = 0; t < GEN.attempts; t++) {
-      const x = randInt(h, 0, COLS - STONES.size);
-      const y = randInt(h, STONES.yMin, STONES.yMax - STONES.size + 1);
-      if (!blockFree(occ, x, y, STONES.size, STONES.size, keep)) continue;
-      for (let yy = y; yy < y + STONES.size; yy++) {
-        for (let xx = x; xx < x + STONES.size; xx++) { cells[idx(xx, yy)] = CELL.STONE; occ[idx(xx, yy)] = STONE; }
-      }
+      const x = randInt(hs, 0, COLS - sw);
+      const y = randInt(hs, STONES.yMin, STONES.yMax - sh + 1);
+      const list = shape.map(([dx, dy]) => idx(x + dx, y + dy));
+      if (!cellsFree(occ, list, keep)) continue;
+      for (const c of list) { cells[c] = CELL.STONE; occ[c] = STONE; }
       break;
     }
   }
@@ -219,7 +234,87 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     bpPending: [],
     bpTunnels: [],
     bpNotes: [],
+    dugBy: court.length ? [{ w: 'court', t: 'royal_chamber', c: court }] : [],
+    ...(width !== GRID.baseCols ? { cols: width } : {}),
   };
+}
+
+/**
+ * C181: one boulder's cells as [dx, dy] offsets from its top-left corner (normalised to start at 0, 0), shape drawn by
+ * weight (STONES.shapes) from the stone stream `hs`.
+ */
+export function stoneShape(hs, shapeW) {
+  const pick = weighted(hs, shapeW);
+  const id = pick ? pick.id : 'block';
+  let out;
+  switch (id) {
+    case 'pebble': out = [[0, 0]]; break;
+    case 'bar': out = randInt(hs, 0, 1) ? [[0, 0], [1, 0]] : [[0, 0], [0, 1]]; break;
+    case 'block': out = [[0, 0], [1, 0], [0, 1], [1, 1]]; break;
+    case 'slab': {
+      const wide = randInt(hs, 0, 1) === 1;
+      out = [];
+      for (let a = 0; a < (wide ? 3 : 2); a++) for (let b = 0; b < (wide ? 2 : 3); b++) out.push([a, b]);
+      break;
+    }
+    case 'ell': {
+      const base = randInt(hs, 0, 1) ? [[0, 0], [0, 1], [1, 1]] : [[0, 0], [0, 1], [0, 2], [1, 2]];
+      const rot = randInt(hs, 0, 3);
+      const flip = randInt(hs, 0, 1) === 1;
+      out = base.map(([a, b]) => {
+        let p = flip ? [-a, b] : [a, b];
+        for (let r = 0; r < rot; r++) p = [-p[1], p[0]];
+        return p;
+      });
+      break;
+    }
+    case 'blob': {
+      const n = randInt(hs, STONES.blobMin, STONES.blobMax);
+      out = [[0, 0]];
+      const has = (a, b) => out.some(([p, q]) => p === a && q === b);
+      let guard = 0;
+      while (out.length < n && guard++ < 200) {
+        const [a, b] = out[randInt(hs, 0, out.length - 1)];
+        const dir = randInt(hs, 0, 3);
+        const na = a + (dir === 0 ? 1 : dir === 1 ? -1 : 0);
+        const nb = b + (dir === 2 ? 1 : dir === 3 ? -1 : 0);
+        if (!has(na, nb)) out.push([na, nb]);
+      }
+      break;
+    }
+    default: {
+      out = [];
+      for (let a = 0; a < STONES.size; a++) for (let b = 0; b < STONES.size; b++) out.push([a, b]);
+    }
+  }
+  let mx = Infinity;
+  let my = Infinity;
+  for (const [a, b] of out) { mx = Math.min(mx, a); my = Math.min(my, b); }
+  return out.map(([a, b]) => [a - mx, b - my]);
+}
+
+/**
+ * C181: blockFree for any cell set: every cell free (and outside `keep`) and no reserved / stone / water cell within the
+ * margin around the set (other than the set itself).
+ */
+function cellsFree(occ, list, keep = null) {
+  const m = GEN.margin;
+  const inSet = new Set(list);
+  for (const c of list) {
+    if (c < 0 || c >= occ.length || occ[c] !== FREE || (keep && keep[c])) return false;
+    const x = c % COLS;
+    const y = Math.floor(c / COLS);
+    for (let yy = y - m; yy <= y + m; yy++) {
+      for (let xx = x - m; xx <= x + m; xx++) {
+        if (!inBounds(xx, yy)) continue;
+        const k = idx(xx, yy);
+        if (inSet.has(k)) continue;
+        const v = occ[k];
+        if (v === RESERVED || v === STONE || v === WATER_OCC) return false;
+      }
+    }
+  }
+  return true;
 }
 
 /** A pre-dug Royal Chamber record. */

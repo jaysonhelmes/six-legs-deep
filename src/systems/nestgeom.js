@@ -3,7 +3,7 @@
 // Contract: ARCHITECTURE §8.2 (nestgeom.js), §5 (d.nest typed arrays), DESIGN §7.1–§7.9.
 // Pure helpers: render and the pacing bot may call every export; nothing here mutates the state.
 
-import { GRID, CELL } from '../data/balance.js';
+import { GRID, CELL, setActiveNestCols, validCols } from '../data/balance.js';
 import { LAYER_ORDER, LAYERS, DIG, GEOM } from '../data/strata.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { DRAINAGE } from '../data/soilFeatures.js';
@@ -12,9 +12,50 @@ import { TRAITS } from '../data/bloodline.js';
 import { FEDERATION } from '../data/federation.js';
 import { BOONS, EDICTS, HARDSHIP } from '../data/prestige.js';
 
-const COLS = GRID.cols;
 const ROWS = GRID.rows;
-const NCELLS = COLS * ROWS;
+/**
+ * C215: the active nest width and cell count (live bindings: importers see the current values). A nest is 40 columns
+ * unless its run started wider (s.run.nest.cols); syncCols(s) makes the active width that nest's before any work on it.
+ */
+let COLS = GRID.cols;
+let NCELLS = COLS * ROWS;
+
+/**
+ * C215: set the active nest width (GRID.cols / mainCol / royal follow). Anything invalid means the base 40.
+ * @param {number} n
+ * @returns {number} the width now active
+ */
+export function useCols(n) {
+  const c = setActiveNestCols(n);
+  if (c !== COLS) {
+    COLS = c;
+    NCELLS = COLS * ROWS;
+  }
+  return c;
+}
+
+/**
+ * C215: the width of a nest object: its cols field when valid, else its cell count / rows when that is a valid
+ * width, else the base 40.
+ * @param {Object|null} nest s.run.nest
+ * @returns {number}
+ */
+export function colsOfNest(nest) {
+  if (nest && validCols(nest.cols)) return nest.cols;
+  const n = nest && Array.isArray(nest.cells) ? nest.cells.length / ROWS : 0;
+  return validCols(n) ? n : GRID.baseCols;
+}
+
+/**
+ * C215: make the active width the one of the state's nest (cheap when it already is). Called by getGeom (so every
+ * geometry query), nest derive / tick and each nest render frame.
+ * @param {import('../core/types.js').State} s
+ * @returns {number}
+ */
+export function syncCols(s) {
+  const n = colsOfNest(s && s.run && s.run.nest);
+  return n === COLS && GRID.cols === n ? n : useCols(n);
+}
 /**
  * C125: the top rows of every shaft (row 0 is the entrance cell on the surface, row 1 the cell right below it) stay
  * shaft: no chamber footprint may cover them. Deeper shaft cells may be covered; the shaft then passes through.
@@ -338,6 +379,33 @@ export function isDiggable(s, i) {
 }
 
 /**
+ * C173: cell i is a WATER cell of a pocket not revealed yet (geo._hidden). The player does not know it is there, so
+ * placement and player routes treat it as plain soil; committing a plan that touches it strikes the pocket instead.
+ * @param {Object} geo
+ * @param {number} i
+ * @returns {boolean}
+ */
+export function hiddenWater(geo, i) {
+  return !!(geo && geo._hidden && geo._hidden[i]);
+}
+
+/**
+ * C173: isDiggable as the player knows the soil: an unrevealed water cell counts as soil (its layer and the Shallow
+ * Soil limit still apply).
+ * @param {import('../core/types.js').State} s
+ * @param {Object} geo
+ * @param {number} i
+ * @returns {boolean}
+ */
+export function diggableKnown(s, geo, i) {
+  if (!hiddenWater(geo, i)) return isDiggable(s, i);
+  const y = Math.floor(i / COLS);
+  if (!layerOpen(s, y)) return false;
+  if (s.run.hardship === 'shallow_soil' && y > DIG.shallowSoilRow) return false;
+  return true;
+}
+
+/**
  * Path distances (in cells) over open cells, 4-neighbour BFS. Only open start cells are seeded (distance 0).
  * @param {ArrayLike<number>} open 1 = open
  * @param {number[]} starts
@@ -427,6 +495,7 @@ export function inRect(r, i) {
  * @returns {Object} out
  */
 export function buildGeom(s, out = {}) {
+  syncCols(s); // C215
   const nest = s.run.nest;
   const cells = nest.cells;
   const reuse = (k, Ctor, fill) => {
@@ -444,6 +513,9 @@ export function buildGeom(s, out = {}) {
   const backfill = reuse('_backfill', Uint8Array, 0);
   const root = reuse('_root', Uint8Array, 0);
   const pocket = reuse('_pocket', Int8Array, -1);
+  // C173: WATER cells of pockets the player has not found yet (unrevealed): planning treats them as plain soil (no
+  // leak, no silent refusal), and committing a plan that touches one strikes the pocket (nest.js strikeWater).
+  const hidden = reuse('_hidden', Uint8Array, 0);
   // C137: chamber index whose reserved full-size rectangle covers the cell (−1 = none).
   const resv = reuse('_resv', Int16Array, -1);
 
@@ -495,7 +567,12 @@ export function buildGeom(s, out = {}) {
   for (let p = 0; p < water.length && p < 127; p++) {
     const w = water[p];
     for (let yy = w.y; yy < w.y + w.h; yy++) {
-      for (let xx = w.x; xx < w.x + w.w; xx++) if (inBounds(xx, yy)) pocket[idx(xx, yy)] = p;
+      for (let xx = w.x; xx < w.x + w.w; xx++) {
+        if (!inBounds(xx, yy)) continue;
+        const c = idx(xx, yy);
+        pocket[c] = p;
+        if (!w.revealed && cells[c] === CELL.WATER) hidden[c] = 1;
+      }
     }
   }
   out.dist = bfs(open, [idx(GRID.mainCol, 0)]);
@@ -515,6 +592,7 @@ const GEO_MEMO = new WeakMap();
  * @returns {Object}
  */
 export function getGeom(s, d) {
+  syncCols(s);
   const nest = s.run.nest;
   const dn = d && d.nest;
   if (dn && dn._cells === nest.cells && dn.rev === nest.rev && dn.chamberAt && dn._shaft) return dn;
@@ -624,6 +702,24 @@ export function exposedTo(ch, row) {
   return 2 * above > ch.h;
 }
 
+/**
+ * C213: how a rectangle sits against a frost row (the rule of exposedTo, in cells): { above, total, exposed,
+ * straddles }. above = cells with y < row; exposed = strictly more than half of the cells (exactly half is safe);
+ * straddles = some cells on each side of the line.
+ * @param {{ y: number, h: number, w?: number }} r
+ * @param {number} row
+ * @returns {{ above: number, total: number, exposed: boolean, straddles: boolean }}
+ */
+export function frostCells(r, row) {
+  const w = r && r.w > 0 ? r.w : 1;
+  const hgt = r && r.h > 0 ? r.h : 0;
+  const total = w * hgt;
+  if (!r || !(row > 0) || !(hgt > 0)) return { above: 0, total, exposed: false, straddles: false };
+  const rowsAbove = Math.max(0, Math.min(hgt, Math.ceil(row) - r.y));
+  const above = rowsAbove * w;
+  return { above, total, exposed: 2 * above > total, straddles: above > 0 && above < total };
+}
+
 // ------------------------------------------------------------------------------------------------------------------
 // Routing (Dijkstra over cell work; the heuristic would be 0 because open cells cost nothing, so plain Dijkstra)
 // ------------------------------------------------------------------------------------------------------------------
@@ -672,7 +768,7 @@ function heapPop(hc, hi, n) {
  * @param {{ from?: number[]|null, isGoal?: ((i: number) => boolean)|null, blocked?: Uint8Array|null, allowRes?: boolean }} opts
  * @returns {{ cost: Float64Array, prev: Int32Array, goal: number }}
  */
-export function digField(s, geo, { from = null, isGoal = null, blocked = null, allowRes = false } = {}) {
+export function digField(s, geo, { from = null, isGoal = null, blocked = null, allowRes = false, hidden = false } = {}) {
   const cost = new Float64Array(NCELLS).fill(Infinity);
   const prev = new Int32Array(NCELLS).fill(-1);
   const ctx = workCtx(s);
@@ -695,9 +791,12 @@ export function digField(s, geo, { from = null, isGoal = null, blocked = null, a
     if (blocked && blocked[i]) return -1;
     if (geo._backfill[i]) return -1;
     if (geo.open[i]) return 0;
-    if (cells[i] !== CELL.SOIL || geo.chamberAt[i] >= 0) return -1;
+    if (geo.chamberAt[i] >= 0) return -1;
+    // C173: with `hidden` (player-facing routes) an unrevealed water cell is soil as far as the player knows
+    const hid = hidden && hiddenWater(geo, i);
+    if (cells[i] !== CELL.SOIL && !hid) return -1;
     if (!allowRes && geo._resv && geo._resv[i] >= 0) return -1;
-    if (!isDiggable(s, i)) return -1;
+    if (hid ? !diggableKnown(s, geo, i) : !isDiggable(s, i)) return -1;
     return workAt(ctx, i, 'tunnel');
   };
   let goal = -1;
@@ -750,14 +849,15 @@ export function pathCells(s, prev, end) {
  * impassable, and so is soil another chamber reserved (C137; `allowRes` lifts that, e.g. to drain a pocket inside a
  * reservation); `blocked` cells are never path cells either; target cells themselves are never path cells. Returns
  * the cells to dig (in dig order) and their work; { cells: [], work: 0 } when a start already touches a target; null
- * when unreachable.
+ * when unreachable. C173 `hidden`: unrevealed water cells count as soil (player-facing routes; the caller strikes them on
+ * commit).
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number[]} targets
- * @param {{ from?: number[]|null, blocked?: number[]|null, allowRes?: boolean }} [opts]
+ * @param {{ from?: number[]|null, blocked?: number[]|null, allowRes?: boolean, hidden?: boolean }} [opts]
  * @returns {{ cells: number[], work: number } | null}
  */
-export function routeTo(s, d, targets, { from = null, blocked = null, allowRes = false } = {}) {
+export function routeTo(s, d, targets, { from = null, blocked = null, allowRes = false, hidden = false } = {}) {
   if (!Array.isArray(targets) || targets.length === 0) return null;
   const geo = getGeom(s, d);
   const tgt = new Uint8Array(NCELLS);
@@ -771,7 +871,7 @@ export function routeTo(s, d, targets, { from = null, blocked = null, allowRes =
     return (x > 0 && tgt[i - 1] === 1) || (x < COLS - 1 && tgt[i + 1] === 1)
       || (i >= COLS && tgt[i - COLS] === 1) || (i + COLS < NCELLS && tgt[i + COLS] === 1);
   };
-  const { prev, goal } = digField(s, geo, { from, isGoal, blocked: tgt, allowRes });
+  const { prev, goal } = digField(s, geo, { from, isGoal, blocked: tgt, allowRes, hidden });
   if (goal < 0) return null;
   const cells = pathCells(s, prev, goal);
   const ctx = workCtx(s);

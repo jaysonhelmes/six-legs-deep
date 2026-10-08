@@ -7,6 +7,7 @@ import { h, setText, toggleClass, setCost } from './dom.js';
 import { fmtCount } from './format.js';
 import {
   nameOf, reasonText, importErrorText, SITE_TIPS, BOON_TIPS, EDICT_TIPS, SPECIES_TIPS, HARDSHIP_TIPS, SEASON_NAMES, PUPA_CHOICES, TRAIT_TIPS,
+  LANDING_SHOP_NOTES,
 } from './text.js';
 import { num, arr, obj, fedLevel } from './reveal.js';
 import { landingPreview, projectAlates, projectKinship, projectGenes } from '../systems/prestige.js';
@@ -313,8 +314,10 @@ export function openSupercolonyDialog(ctx) {
     title: 'Form a Supercolony?', tag: 'supercolony', update,
     body: [
       h('p', null, 'Your daughter colonies fuse. You will earn ', kinEl, ' kinship.'),
-      resetList(['Everything a Flight resets', 'Unspent alates and the Lineage bonus', 'Bloodline traits (except Heirlooms)', 'Hardship tiers (rewards kept at 50%)'],
-        ['Kinship and Federation nodes', 'Innate research and achievements', 'Blueprints, Diapause, Strata and settings']),
+      h('p', { class: 'note' }, "This run's projected alates count toward it, as if the colony had flown."),
+      resetList(['Everything a Flight resets', 'Unspent alates and the Lineage bonus', 'Bloodline traits (except Heirlooms)', 'Hardship tiers (rewards kept at 50%)',
+        'Innate research and its run counts'],
+        ['Kinship and Federation nodes', 'Achievements, Field Guide and stats', 'Blueprints, Diapause, Strata and settings']),
       h('h4', { text: 'Choose a Royal Edict for this cycle' }), list,
     ],
     actions: [
@@ -509,7 +512,8 @@ export function landingShop(ctx, onBought = () => {}) {
           } } });
         const row = h('div', { class: 'buy-row', dataset: { id, tip: TRAIT_TIPS[id] || '' } },
           h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('trait', id) }), lvl,
-            h('span', { class: 'buy-desc', text: TRAIT_TIPS[id] || '' })),
+            h('span', { class: 'buy-desc', text: TRAIT_TIPS[id] || '' }),
+            LANDING_SHOP_NOTES[id] ? h('span', { class: 'buy-desc landing-note', text: LANDING_SHOP_NOTES[id] }) : null),
           h('div', { class: 'buy-side' }, costEl, btn));
         r = rows[id] = { row, lvl, costEl, btn };
         list.appendChild(row);
@@ -521,7 +525,7 @@ export function landingShop(ctx, onBought = () => {}) {
     }
   };
   const el = h('section', { class: 'sec landing-shop' }, h('h4', { text: 'Spend alates before landing' }),
-    h('p', { class: 'note' }, 'You have ', bal, ' alates. Bloodline traits bought now apply to this landing.'), list);
+    h('p', { class: 'note' }, 'You have ', bal, ' alates. Bloodline traits bought now apply to this landing (Wide Wings counts from your next flight).'), list);
   refresh(game.s);
   return { el, update: refresh };
 }

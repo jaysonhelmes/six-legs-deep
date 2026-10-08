@@ -15,7 +15,7 @@
 // C90: a raid whose rival fell during the warning is called off (win, nothing lost); one already fighting finishes,
 //   and never reads fields a C77 compact record lacks (traits).
 
-import { RAIDS } from '../data/combat.js';
+import { RAIDS, REWARDS } from '../data/combat.js';
 import { TRAITS } from '../data/rivals.js';
 import { RESEARCH } from '../data/research.js';
 import { CHAMBERS } from '../data/chambers.js';
@@ -190,13 +190,31 @@ function dispatch(s, d, raid) {
   raid.guard = clampNum(g.soldier + g.supermajor);
 }
 
-/** Close a raid: raiders return to their rival, waiting guards go home, raidResult. */
-function finish(s, raid, env, { win, foodLost = 0, broodLost = 0, workersLost = 0 }) {
+/**
+ * Close a raid: raiders return to their rival, waiting guards go home, raidResult. C227: raidResult always carries
+ * `loot` { food, chitin } — what the defence brought home (the chitin of the raiders your defenders killed), 0 when
+ * nothing was won.
+ */
+function finish(s, raid, env, { win, foodLost = 0, broodLost = 0, workersLost = 0, loot = null }) {
   raid.phase = 'done';
   const r = rivalByUid(s, raid.rival);
   if (r && r.alive) r.n = clampNum(r.n + raid.raiders);
   for (const p of s.run.war.parties) if (p.kind === 'guard' && p.target.uid === raid.uid && p.state === 'out') p.state = 'home';
-  env.emit('raidResult', { uid: raid.uid, win, foodLost, broodLost, workersLost, target: { ...raid.target }, rival: raid.rival });
+  const l = { food: num(loot && loot.food), chitin: num(loot && loot.chitin) };
+  env.emit('raidResult', { uid: raid.uid, win, foodLost, broodLost, workersLost, target: { ...raid.target }, rival: raid.rival, loot: l });
+}
+
+/**
+ * C227: chitin for the raiders killed in a won defence fight (REWARDS.chitinPerKillTier × tier per kill, like a raid's
+ * kill chitin) — the corpses' chitin glints carry it home. Returns the amounts granted.
+ */
+function defenceLoot(s, d, raid, e, env) {
+  const r = rivalByUid(s, raid.rival);
+  const tier = Math.max(1, num(r && r.tier, 1));
+  const kills = Math.max(0, num(e && e.kills));
+  if (!(kills > 0)) return { food: 0, chitin: 0 };
+  const got = combat.grantReward(s, d, { chitin: REWARDS.chitinPerKillTier * tier * kills }, env);
+  return { food: 0, chitin: num(got && got.chitin) };
 }
 
 /** Lost or undefended trail: workers killed, strength lost, 30 s of the trail's income taken (DESIGN §9.10). */
@@ -306,17 +324,17 @@ function afterFight(s, d, raid, e, env) {
     const escortsLost = Math.min(num(e.esc), num(lost.soldier));
     if (e.win) {
       if (t && escortsLost > 0) trails.hitTrail(s, d, t.uid, { escortsLost });
-      finish(s, raid, env, { win: true });
+      finish(s, raid, env, { win: true, loot: defenceLoot(s, d, raid, e, env) });
     } else if (t) {
       trailLoss(s, d, raid, t, env, escortsLost);
     } else {
       finish(s, raid, env, { win: false });
     }
   } else if (raid.phase === 'border') {
-    if (e.win) finish(s, raid, env, { win: true });
+    if (e.win) finish(s, raid, env, { win: true, loot: defenceLoot(s, d, raid, e, env) });
     else nestFight(s, d, raid, r, 'gate', env);
   } else if (raid.phase === 'gate') {
-    if (e.win) finish(s, raid, env, { win: true });
+    if (e.win) finish(s, raid, env, { win: true, loot: defenceLoot(s, d, raid, e, env) });
     else theft(s, d, raid, r, env);
   }
 }

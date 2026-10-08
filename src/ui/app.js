@@ -22,12 +22,13 @@ import {
 import { createEventCard } from './eventCard.js';
 import { openColonyHistory } from './history.js';
 import { openManual, toggleManual } from './manual.js';
+import { openBlueprintEditor } from './blueprintEditor.js';
 import { MANUAL_KEYS } from './manualContent.js';
 import { openPatchNotes, updateNotice, createUpdatePill, versionLabel, markSeen } from './patchNotes.js';
 import { CURRENT_VERSION } from '../data/changelog.js';
 import { openWelcome } from './welcome.js';
-import { createOnboarding } from './onboarding.js';
-import { isClickableSource } from './panels/map.js';
+import { createOnboarding, createCallout } from './onboarding.js';
+import { isClickableSource, escortMenuItems, eventObjectMenuItems, aphidMenuItems } from './panels/map.js';
 import { satelliteHexWhy, frontWindows, frontWindowSec, spanText } from './rules.js';
 import * as colonyPanel from './panels/colony.js';
 import * as buildPanel from './panels/build.js';
@@ -43,6 +44,9 @@ import { LOOP, GRID } from '../data/balance.js';
 import { RESET } from '../data/prestige.js';
 import { EVENTS } from '../data/events.js';
 import { bestOrigin } from '../systems/trails.js';
+import { createEventLog, logEntryFor, LOG_EVENTS, openEventLog } from './eventLog.js';
+import { createResourceTracker, setActiveTracker } from './resourceStats.js';
+import { createSound, setActiveSound, EVENT_SOUNDS } from './sound.js';
 
 /** Reveal key of every tab (ARCHITECTURE §14.5). */
 export const TAB_KEYS = Object.freeze({
@@ -57,10 +61,12 @@ const PANELS = {
 };
 
 /** Toast-worthy bus events (copy in text.js eventToast). */
-const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'raidResult', 'conquest', 'battleEnd', 'hungryStart', 'hungryEnd',
+const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'raidResult', 'tournamentEnd', 'conquest', 'battleEnd', 'hungryStart', 'hungryEnd',
   'winterSoon', 'seasonChanged', 'chamberActivated', 'cacheFound', 'softcapHit', 'beetleClaimed', 'beetleSpawned', 'pupaSpawned',
   'hardshipTier', 'entranceOpened', 'rivalSighted', 'adultsDied', 'broodDied', 'giftOpened', 'commandRejected', 'flightComplete',
-  'supercolonyComplete', 'speciationComplete', 'blueprintDropped', 'trailRehomed'];
+  'supercolonyComplete', 'speciationComplete', 'blueprintDropped', 'trailRehomed',
+  'expeditionFind', 'findClaimed', 'trailDetour',   // C182 / C188 (map and combat pass)
+  'waterStruck'];   // C173 (nest pass): "You struck water!"
 /**
  * Panel unlock keys and their tabs. A reveal never steals the open tab (the onboarding glow could otherwise point at
  * one tab while the shell had switched to another): the new tab slides in with a "new" dot. Only while the welcome
@@ -94,9 +100,105 @@ export function visibleTabs(s) {
   return TAB_IDS.filter((id) => isShown(s, TAB_KEYS[id]));
 }
 
-/** First-load inset mode: the Below view is a 30 % inset until panel_build is revealed (DESIGN §25.1). */
+/** C203: the uiFlag the inset's Expand button sets (the player opened the nest view before the first housing cap). */
+export const NEST_OPEN_FLAG = 'nest_open';
+
+/**
+ * First-load inset mode: the Below view is a labelled 30 % inset until panel_build is revealed (DESIGN §25.1), or
+ * until the player expands it from its label (C203).
+ */
 export function isInset(s) {
+  if (s && s.meta && obj(s.meta.onboarding && s.meta.onboarding.done)[NEST_OPEN_FLAG]) return false;
   return !isShown(s, 'panel_build');
+}
+
+/**
+ * C203 (player report "the Royal Chamber panel opens at once"): may a click on the nest canvas open Build → Inspect for
+ * this target? Not for the queen / Royal Chamber until its level-ups are revealed (there is nothing to do there yet,
+ * and clicking the queen is how the player feeds her), and never before the Build tab exists. Pure.
+ * @param {Object} s
+ * @param {Object|null} target the selection (bridge.select) the click made
+ * @returns {boolean}
+ */
+export function canvasInspectAllowed(s, target) {
+  if (!isShown(s, 'panel_build')) return false;
+  if (!target || target.view !== 'nest') return true;
+  const royal = target.kind === 'queen' || ((target.kind === 'chamber' || target.kind === 'nursery') && num(target.id) === 1);
+  return !royal || isShown(s, 'royal_levelup');
+}
+
+/**
+ * C197: overflow state of a horizontally scrolling row (the tab row): { scrolls, left, right } — whether it overflows
+ * and whether there is more to see on either side (the fade edges). Pure; reads scrollLeft / scrollWidth / clientWidth.
+ * @param {{ scrollLeft?: number, scrollWidth?: number, clientWidth?: number }} el
+ * @returns {{ scrolls: boolean, left: boolean, right: boolean }}
+ */
+export function rowOverflow(el) {
+  const sl = Math.max(0, num(el && el.scrollLeft));
+  const sw = num(el && el.scrollWidth);
+  const cw = num(el && el.clientWidth);
+  const scrolls = cw > 0 && sw > cw + 1;
+  return { scrolls, left: scrolls && sl > 1, right: scrolls && sl + cw < sw - 1 };
+}
+
+/** C197: localStorage key of the divider positions ({ split, side }: the Above view's share), per browser. */
+export const SPLIT_KEY = 'sld.ui.splitRatio';
+/** Smallest canvas (px) the divider leaves on either side, and the share limits. */
+export const SPLIT_MIN_PX = 120;
+const SPLIT_MIN = 0.15;
+
+/**
+ * C197: clamp the Above view's share so both canvases keep at least minPx of the available length.
+ * @param {number} ratio
+ * @param {number} availPx length shared by the two canvases (0 = unknown)
+ * @param {number} [minPx]
+ * @returns {number}
+ */
+export function clampSplit(ratio, availPx, minPx = SPLIT_MIN_PX) {
+  let lo = SPLIT_MIN;
+  if (availPx > 0) lo = Math.max(lo, Math.min(0.5, minPx / availPx));
+  const r = Number.isFinite(ratio) ? ratio : 0.5;
+  return Math.max(lo, Math.min(1 - lo, r));
+}
+
+/**
+ * C197: stored divider positions { split?, side? } (each the Above share, 0.15–0.85); {} when missing or unreadable.
+ * @param {Storage|null} storage
+ * @returns {{ split?: number, side?: number }}
+ */
+export function loadSplitRatios(storage) {
+  try {
+    const raw = storage ? storage.getItem(SPLIT_KEY) : null;
+    const o = raw ? JSON.parse(raw) : null;
+    const out = {};
+    for (const k of ['split', 'side']) if (o && Number.isFinite(o[k])) out[k] = clampSplit(o[k], 0);
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** C197: write the divider positions (best effort). */
+export function saveSplitRatios(storage, ratios) {
+  try {
+    if (!storage) return false;
+    const o = {};
+    for (const k of ['split', 'side']) if (Number.isFinite(ratios && ratios[k])) o[k] = Math.round(ratios[k] * 1000) / 1000;
+    if (Object.keys(o).length) storage.setItem(SPLIT_KEY, JSON.stringify(o));
+    else storage.removeItem(SPLIT_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * C197: grid tracks for an Above share: { above: 'minmax(0, 600fr)', below: 'minmax(0, 400fr)' }.
+ * @param {number} ratio
+ */
+export function splitTracks(ratio) {
+  const a = Math.round(clampSplit(ratio, 0) * 1000);
+  return { above: 'minmax(0, ' + a + 'fr)', below: 'minmax(0, ' + (1000 - a) + 'fr)' };
 }
 
 /**
@@ -122,8 +224,8 @@ export function mountUI(root, game, opts = {}) {
   let landingDeadline = 0;
   let endingShown = false;
   let pendingFocus = null;
+  let insetWas = null; // C203: inset state at the last syncViews (the inset → full view transition)
   let lastPointer = null; // last canvas pointer position (bridge.hover), for refusals raised without one
-  let audio = null;
   const panelErr = new Set();
 
   // ------------------------------------------------------------------ skeleton (index.html provides it; built if missing)
@@ -186,6 +288,7 @@ export function mountUI(root, game, opts = {}) {
     history: () => openColonyHistory(mctx),   // C130: Colony History gallery (Prestige tab)
     manual: (o) => openManual(manualCtx, o),  // C131: the Manual (book button, H / ?)
     patchNotes: () => openPatchNotes(patchCtx), // C150: patch notes (version label, Settings, update pill)
+    blueprintEditor: (slot) => openBlueprintEditor(mctx, slot), // C180: Architect's Table blueprint editor (Build tab)
   };
   /** C150: patch notes context. The last-seen version is a per-browser key outside the save (try/catch inside). */
   const browserStorage = (() => { try { return win && win.localStorage ? win.localStorage : null; } catch { return null; } })();
@@ -195,6 +298,15 @@ export function mountUI(root, game, opts = {}) {
     updatePill = null;
   };
   const patchCtx = { modals, storage: browserStorage, since: null, onSeen: hideUpdatePill };
+  // C190: the event log (last 200 in memory; the last 50 per browser, tied to this colony by meta.createdAt)
+  const eventLog = createEventLog({ storage: browserStorage });
+  const colonyId = () => num(game.s && game.s.meta && game.s.meta.createdAt);
+  eventLog.load(colonyId());
+  const logCtx = { modals, log: eventLog, game };
+  dialogs.eventLog = (o) => openEventLog(logCtx, o || {});
+  // C191: rolling resource statistics, sampled at every refresh (Stats tab, resource tooltips)
+  const resTracker = createResourceTracker();
+  setActiveTracker(resTracker);
   /** Manual context (C131): tab buttons inside entries open a revealed tab. */
   const manualCtx = { ...mctx, openTab: (id, sub) => openTab(id, sub), tabShown: (id) => tabVisible(id) };
 
@@ -216,6 +328,8 @@ export function mountUI(root, game, opts = {}) {
       if (target.view === 'surface' && target.kind === 'trail' && isShown(game.s, TAB_KEYS.map)) openTab('map', null);
     },
     openTab(tabId, sub = null) {
+      // C203: a nest click on the queen does not throw the Royal Chamber's inspect panel open before it can level up
+      if (tabId === 'build' && sub === 'inspect' && !canvasInspectAllowed(game.s, getUI().selection)) return;
       openTab(tabId, sub);
     },
     openChooser(kind, data = {}) {
@@ -257,6 +371,15 @@ export function mountUI(root, game, opts = {}) {
   rail.appendChild(railVersion);
   const eventCard = createEventCard(eventCardEl, { game, bridge });
   const onboarding = createOnboarding({ game, ui: uistate, root });
+  // C204: one-line callout for the first reveal of each feature (under the HUD, one at a time)
+  const callout = createCallout(stage, { game });
+  // C203: the first-load nest inset is labelled, and the player can open the full nest view from it
+  const insetLabel = h('div', { class: 'inset-label' },
+    h('span', { class: 'inset-label-text' }, 'Your nest', h('span', { class: 'inset-label-sub', text: ': the queen and her eggs' })),
+    h('button', { type: 'button', class: 'btn btn-small inset-expand', text: 'Expand', dataset: { tip: 'Show the nest full size.' },
+      on: { click: () => { game.actions.do('uiFlag', { key: NEST_OPEN_FLAG, value: true }); refresh(true); } } }));
+  viewBelow.appendChild(insetLabel);
+  try { callout.resume(); } catch { /* best effort */ }
 
   // ------------------------------------------------------------------ banner, view tabs, panel chrome
   const banner = h('div', { class: 'storage-banner', role: 'alert' }, h('span', { text: 'Saving unavailable: use Export (Settings) to keep your colony.' }),
@@ -369,8 +492,33 @@ export function mountUI(root, game, opts = {}) {
   const manualBtn = h('button', { type: 'button', class: 'tab util manual-btn', dataset: { manual: '1', tip: 'Manual: chambers, ants, resources and prestige. Key H.' },
     attrs: { 'aria-label': 'Manual', 'aria-keyshortcuts': 'H' }, on: { click: () => toggleManual(manualCtx) } },
   h('span', { class: 'tab-ico', attrs: { 'aria-hidden': 'true' } }));
+  manualBtn.appendChild(h('span', { class: 'tab-label', text: 'Manual' }));
   tabsEl.appendChild(manualBtn);
+  // C190: the event log (a modal, like the Manual): the last 200 happenings with their run time
+  const logBtn = h('button', { type: 'button', class: 'tab util log-btn', dataset: { tip: 'Event log: events, raids, blueprints and milestones, with times.' },
+    attrs: { 'aria-label': 'Event log' }, on: { click: () => dialogs.eventLog() } },
+  h('span', { class: 'tab-ico', attrs: { 'aria-hidden': 'true' } }), h('span', { class: 'tab-label', text: 'Log' }));
+  tabsEl.appendChild(logBtn);
   tabsEl.setAttribute('role', 'tablist');
+  // C197: on narrow screens the tab row scrolls sideways; fade edges show there is more, the wheel scrolls it
+  function syncTabOverflow() {
+    const o = rowOverflow(tabsEl);
+    toggleClass(tabsEl, 'scrolls', o.scrolls);
+    toggleClass(tabsEl, 'fade-left', o.left);
+    toggleClass(tabsEl, 'fade-right', o.right);
+    return o;
+  }
+  const onTabsScroll = () => syncTabOverflow();
+  const onTabsWheel = (ev) => {
+    if (!rowOverflow(tabsEl).scrolls || Math.abs(num(ev.deltaY)) <= Math.abs(num(ev.deltaX))) return;
+    tabsEl.scrollLeft = num(tabsEl.scrollLeft) + num(ev.deltaY);
+    if (ev.preventDefault) ev.preventDefault();
+    syncTabOverflow();
+  };
+  tabsEl.addEventListener('scroll', onTabsScroll, { passive: true });
+  tabsEl.addEventListener('wheel', onTabsWheel, { passive: false });
+  offs.push(() => { tabsEl.removeEventListener('scroll', onTabsScroll); tabsEl.removeEventListener('wheel', onTabsWheel); });
+  let tabSeen = null; // the tab last scrolled into view
   const panelHosts = {};
   const panelInst = {};
   // Opening state: a welcome card holds the panel column until the first gameplay panel reveals (src/ui/intro.js).
@@ -456,6 +604,14 @@ export function mountUI(root, game, opts = {}) {
   function syncViews() {
     const st = getUI();
     const inset = isInset(game.s);
+    // C203: when the inset opens up (first housing cap, or the Expand button) in a view that hides the nest (the narrow
+    // default), show the nest: that is where the next step happens. A view the player picked is kept.
+    if (insetWas === true && !inset && !viewShows(effectiveView(st.view, st.layout), st.layout).below && !storedView()) {
+      insetWas = inset;
+      setUI({ view: viewsFor(st.layout).includes('split') && st.layout !== 'narrow' ? 'split' : 'below' });
+      return;
+    }
+    insetWas = inset;
     const view = effectiveView(st.view, st.layout);
     root.setAttribute('data-inset', inset ? 'true' : 'false');
     root.setAttribute('data-view', view);
@@ -470,6 +626,7 @@ export function mountUI(root, game, opts = {}) {
       toggleClass(viewBtns[id], 'active', view === id);
       viewBtns[id].setAttribute('aria-pressed', view === id ? 'true' : 'false');
     }
+    syncSplit(view, inset);
     const shows = viewShows(view, st.layout);
     const aboveVis = shows.above || inset;
     const belowVis = shows.below || inset;
@@ -485,8 +642,120 @@ export function mountUI(root, game, opts = {}) {
     try { fn(); } catch (err) { console.error('[ui]', err); }
   }
 
+  // ------------------------------------------------------------------ divider (C197)
+  // Dragging the flow strip between the two canvases (Stacked and Side by side) resizes them; the Above share is kept per
+  // browser for each of the two views, a double-click returns to the default split. The canvases re-frame through their
+  // ResizeObserver. Arrow keys move the focused divider.
+  let splitRatios = loadSplitRatios(browserStorage);
+  let splitDrag = null;
+  flowStrip.setAttribute('role', 'separator');
+  flowStrip.setAttribute('tabindex', '0');
+  flowStrip.setAttribute('aria-label', 'Resize the map and the nest. Drag, or use the arrow keys; double-click to reset.');
+  flowStrip.dataset.tip = 'Drag to resize the map and the nest. Double-click resets.';
+  function syncSplit(view, inset) {
+    const two = !inset && (view === 'split' || view === 'side');
+    const ratio = two ? splitRatios[view] : undefined;
+    const key = view + ':' + (Number.isFinite(ratio) ? ratio : '-');
+    if (root.__splitKey === key) return;   // runs at every refresh: touch the style only on a change
+    root.__splitKey = key;
+    const style = root.style;
+    if (Number.isFinite(ratio)) {
+      const tr = splitTracks(ratio);
+      if (style.setProperty) { style.setProperty('--above-track', tr.above); style.setProperty('--below-track', tr.below); }
+      flowStrip.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    } else {
+      if (style.removeProperty) { style.removeProperty('--above-track'); style.removeProperty('--below-track'); }
+      flowStrip.removeAttribute('aria-valuenow');
+    }
+    flowStrip.setAttribute('aria-orientation', view === 'side' ? 'vertical' : 'horizontal');
+    root.setAttribute('data-resized', Number.isFinite(ratio) ? 'true' : 'false');
+  }
+  /** The Above share under a pointer position, from the two canvases' rectangles. */
+  function ratioAt(clientX, clientY) {
+    const view = effectiveView(getUI().view, getUI().layout);
+    const ra = viewAbove.getBoundingClientRect();
+    const rb = viewBelow.getBoundingClientRect();
+    if (view === 'side') {
+      const left = Math.min(ra.left, rb.left);
+      const right = Math.max(ra.right, rb.right);
+      const span = right - left;
+      if (!(span > 0)) return null;
+      const first = (clientX - left) / span;                 // share of the left canvas
+      const aboveLeft = ra.left < rb.left;
+      return { view, ratio: clampSplit(aboveLeft ? first : 1 - first, ra.width + rb.width) };
+    }
+    const top = Math.min(ra.top, rb.top);
+    const bottom = Math.max(ra.bottom, rb.bottom);
+    const span = bottom - top;
+    if (!(span > 0)) return null;
+    const first = (clientY - top) / span;
+    const aboveTop = ra.top < rb.top;
+    return { view, ratio: clampSplit(aboveTop ? first : 1 - first, ra.height + rb.height) };
+  }
+  function setSplit(view, ratio, persist) {
+    if (ratio === null) { const n = { ...splitRatios }; delete n[view]; splitRatios = n; } else splitRatios = { ...splitRatios, [view]: ratio };
+    syncViews();
+    if (persist) saveSplitRatios(browserStorage, splitRatios);
+  }
+  const onSplitDown = (ev) => {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    const view = effectiveView(getUI().view, getUI().layout);
+    if (isInset(game.s) || (view !== 'split' && view !== 'side')) return;
+    splitDrag = { id: ev.pointerId, moved: false };
+    try { if (flowStrip.setPointerCapture && ev.pointerId !== undefined) flowStrip.setPointerCapture(ev.pointerId); } catch { /* capture is best effort */ }
+    root.setAttribute('data-dragging', 'split');
+    if (ev.preventDefault) ev.preventDefault();
+  };
+  const onSplitMove = (ev) => {
+    if (!splitDrag) return;
+    const x = ratioAt(num(ev.clientX), num(ev.clientY));
+    if (!x) return;
+    splitDrag.moved = true;
+    setSplit(x.view, x.ratio, false);
+  };
+  const onSplitUp = () => {
+    if (!splitDrag) return;
+    const moved = splitDrag.moved;
+    splitDrag = null;
+    root.removeAttribute('data-dragging');
+    if (moved) saveSplitRatios(browserStorage, splitRatios);
+  };
+  const onSplitDbl = () => {
+    const view = effectiveView(getUI().view, getUI().layout);
+    if (view === 'split' || view === 'side') setSplit(view, null, true);
+  };
+  const onSplitKey = (ev) => {
+    const view = effectiveView(getUI().view, getUI().layout);
+    if (isInset(game.s) || (view !== 'split' && view !== 'side')) return;
+    const keys = view === 'side' ? { ArrowLeft: -1, ArrowRight: 1 } : { ArrowUp: -1, ArrowDown: 1 };
+    let dir = keys[ev.key];
+    if (ev.key === 'Home' || ev.key === 'Enter') { setSplit(view, null, true); if (ev.preventDefault) ev.preventDefault(); if (ev.stopPropagation) ev.stopPropagation(); return; }
+    if (!dir) return;
+    // the key moves the divider toward the arrow: the first (top / left) canvas grows with Down / Right
+    const ra = viewAbove.getBoundingClientRect();
+    const rb = viewBelow.getBoundingClientRect();
+    const aboveFirst = view === 'side' ? ra.left < rb.left : ra.top < rb.top;
+    if (!aboveFirst) dir = -dir;
+    const cur = Number.isFinite(splitRatios[view]) ? splitRatios[view] : (view === 'side' ? 0.6 : getUI().layout === 'wide-tall' ? 0.55 : 0.5);
+    const avail = view === 'side' ? ra.width + rb.width : ra.height + rb.height;
+    setSplit(view, clampSplit(cur + dir * 0.03, avail), true);
+    if (ev.preventDefault) ev.preventDefault();
+    if (ev.stopPropagation) ev.stopPropagation();
+  };
+  flowStrip.addEventListener('pointerdown', onSplitDown);
+  flowStrip.addEventListener('pointermove', onSplitMove);
+  flowStrip.addEventListener('pointerup', onSplitUp);
+  flowStrip.addEventListener('pointercancel', onSplitUp);
+  flowStrip.addEventListener('lostpointercapture', onSplitUp);
+  flowStrip.addEventListener('dblclick', onSplitDbl);
+  flowStrip.addEventListener('keydown', onSplitKey);
+  offs.push(() => {
+    for (const [ty, fn] of [['pointerdown', onSplitDown], ['pointermove', onSplitMove], ['pointerup', onSplitUp], ['pointercancel', onSplitUp],
+      ['lostpointercapture', onSplitUp], ['dblclick', onSplitDbl], ['keydown', onSplitKey]]) flowStrip.removeEventListener(ty, fn);
+  });
+
   if (win && win.addEventListener) {
-    const onResize = () => applyLayout();
+    const onResize = () => { applyLayout(); syncTabOverflow(); };
     win.addEventListener('resize', onResize);
     offs.push(() => win.removeEventListener('resize', onResize));
   }
@@ -514,6 +783,9 @@ export function mountUI(root, game, opts = {}) {
   function menuItems(t) {
     const s = game.s;
     const A = (type, args, label) => ({ label, run: (ev) => runAct(type, args, ev) });
+    // C236 / C237: a menu entry from a panel helper: a command, a tool to arm, or a disabled note
+    const M = (it) => (it.disabled ? { label: it.label, disabled: true, run: () => {} }
+      : it.tool ? { label: it.label, run: () => setUI({ tool: it.tool }) } : A(it.type, it.args, it.label));
     const items = [];
     if (!t) return items;
     if (t.kind === 'chamber' || t.kind === 'nursery' || t.kind === 'queen') { // nursery/queen picks carry the chamber uid
@@ -523,6 +795,9 @@ export function mountUI(root, game, opts = {}) {
     } else if (t.kind === 'trail') {
       if (isShown(s, 'ability_mark')) items.push(A('mark', { uid: t.id }, 'Mark'));
       if (isShown(s, 'ability_rally')) items.push(A('rally', { uid: t.id }, 'Rally'));
+      // C185: a Lycaenid trail takes escorts straight from the menu
+      const tr = arr(s.run.surface.trails).find((x) => x && x.uid === t.id);
+      for (const it of escortMenuItems(s, game.d, tr)) items.push(M(it));
       items.push({ label: 'Reroute', run: () => setUI({ tool: { kind: 'reroute', uid: t.id } }) });
       items.push(A('deleteTrail', { uid: t.id }, 'Delete trail'));
     } else if (t.kind === 'rival') {
@@ -544,7 +819,11 @@ export function mountUI(root, game, opts = {}) {
       // trails reach every forageable source, Lycaenid caterpillars too (escorted honeydew trails, job 'lycaenid')
       // one trail per destination (C100): a source that already has a trail offers to remove it instead (player request)
       const existing = src ? arr(s.run.surface.trails).find((x) => x && x.src === src.uid) : null;
+      if (existing) for (const it of escortMenuItems(s, game.d, existing)) items.push(M(it));   // C185 / C236
+      if (src) for (const it of aphidMenuItems(s, game.d, src)) items.push(M(it));   // C237: Aphid Shepherding moves a colony
       if (existing) items.push(A('deleteTrail', { uid: existing.uid }, 'Remove trail to here'));
+      // C185: an antlion pit is cleared by garrison soldiers, any time while it is there
+      if (t.kind === 'eventObject') for (const it of eventObjectMenuItems(s, game.d, t.id)) items.push(A(it.type, it.args, it.label));
       if (src && !existing && (isClickableSource(src.type) || src.type === 'lycaenid_caterpillar')) {
         const main = arr(s.run.surface.entrances).find((e) => e && e.kind === 'main');
         let origin = -1;
@@ -585,7 +864,8 @@ export function mountUI(root, game, opts = {}) {
     menu = h('div', { class: 'ctx-menu', role: 'menu' });
     for (const it of items) {
       menu.appendChild(h('button', { type: 'button', class: 'ctx-item', role: 'menuitem', text: it.label,
-        on: { click: (ev) => { closeMenu(); it.run(ev); } } }));
+        attrs: it.disabled ? { disabled: 'disabled', 'aria-disabled': 'true' } : {},
+        on: { click: (ev) => { if (it.disabled) return; closeMenu(); it.run(ev); } } }));
     }
     const vw = win ? win.innerWidth : 1280;
     const vh = win ? win.innerHeight : 900;
@@ -728,40 +1008,75 @@ export function mountUI(root, game, opts = {}) {
     return arr(s.run.rivals.list).filter((r) => r && r.type === 'great_rival' && r.group === g).length;
   }
 
-  // ------------------------------------------------------------------ sound
-  function chime() {
-    if (!game.s.meta.settings.sound || !win) return;
-    try {
-      const AC = win.AudioContext || win.webkitAudioContext;
-      if (!AC) return;
-      audio = audio || new AC();
-      const t0 = audio.currentTime;
-      const o = audio.createOscillator();
-      const g = audio.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(880, t0);
-      o.frequency.exponentialRampToValueAtTime(1320, t0 + 0.18);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.7);
-      o.connect(g);
-      g.connect(audio.destination);
-      o.start(t0);
-      o.stop(t0 + 0.75);
-    } catch { /* audio is optional */ }
+  // ------------------------------------------------------------------ sound (C234: ui/sound.js)
+  // Procedural Web Audio sounds. Settings are per browser (Settings → Sound); the AudioContext starts on the first
+  // pointer or key input and pauses while the tab is hidden. Player actions sound from the game.actions.do wrapper
+  // (automation never goes through it, so it stays silent); notifications from the bus (sound.EVENT_SOUNDS).
+  const sfx = createSound({ storage: browserStorage, AudioContext: (win && (win.AudioContext || win.webkitAudioContext)) || null, doc: docu });
+  setActiveSound(sfx);
+  offs.push(sfx.attach(docu), () => { setActiveSound(null); sfx.destroy(); });
+  function chime() { sfx.forEvent('unlock', {}); }   // the reveal chime (called by the unlock handler below)
+  for (const type of Object.keys(EVENT_SOUNDS)) {
+    if (type !== 'unlock') offs.push(game.bus.on(type, (e) => { sfx.forEvent(type, e || {}); }));
   }
+  const baseDo = game.actions && game.actions.do;
+  if (typeof baseDo === 'function') {
+    const doWithSound = function (type, args) { const r = baseDo.call(this, type, args); sfx.forAction(type, r); return r; };
+    game.actions.do = doWithSound;
+    offs.push(() => { if (game.actions.do === doWithSound) game.actions.do = baseDo; });
+  }
+  let sfxTab = getUI().tab;   // a very soft tick when the player switches tabs (not when the shell switches one)
+  offs.push(onUI((st) => { if (st.tab !== sfxTab) { sfxTab = st.tab; if (sfx.recentGesture(400)) sfx.play('tab'); } }));
+  if (win) win.sldSound = sfx;   // debug: sldSound.info() in the console
 
   // ------------------------------------------------------------------ bus subscriptions
   const bus = game.bus;
   const sub = (type, fn) => offs.push(bus.on(type, (e) => { try { fn(e || {}); } catch (err) { console.error('[ui] handler error', type, err); } }));
+  // C190: the event log. Subscribed before the toasts, so a toast can link to its entry ("Log").
+  const logged = new WeakMap(); // bus event → log entry
+  function addLog(e, entry) {
+    if (!entry) return null;
+    const s = game.s;
+    const added = eventLog.add({ ...entry, t: num(s && s.run && s.run.time), run: num(s && s.run && s.run.index) });
+    if (added && e && typeof e === 'object') logged.set(e, added);
+    return added;
+  }
+  for (const type of LOG_EVENTS) sub(type, (e) => { addLog(e, logEntryFor(e, game.s)); });
+  // the map pass's finds (C182 / C188) use their toast copy
+  for (const type of ['expeditionFind', 'findClaimed']) {
+    sub(type, (e) => { const tt = eventToast(e, game.s); if (tt && tt.text) addLog(e, { cat: 'events', text: tt.text, kind: tt.kind === 'bad' || tt.kind === 'danger' ? 'bad' : 'good' }); });
+  }
+  const logLink = (e, cat) => {
+    const entry = logged.get(e);
+    return entry ? { label: 'Log', fn: () => dialogs.eventLog({ cat, highlight: entry.id }) } : null;
+  };
+  const LOG_LINKED = { raidResult: 'war', conquest: 'war', battleEnd: 'war', flightComplete: 'prestige', blueprintDropped: 'nest' };
   for (const type of TOAST_EVENTS) {
     sub(type, (e) => {
       const t = eventToast(e, game.s);
-      if (t) toasts.push(t.text, t.kind, { priority: t.priority });
+      if (t) toasts.push(t.text, t.kind, { priority: t.priority, link: LOG_LINKED[type] ? logLink(e, LOG_LINKED[type]) : null });
     });
+  }
+  // C190: how an event ended (the card choice, or the outcome the events system reports) toasts with a "Log" link
+  sub('eventResolved', (e) => {
+    const id = e.eventId || e.id;
+    const outcome = typeof e.outcomeText === 'string' && e.outcomeText.trim() !== '';
+    const cardChoice = arr(EVENTS[id] && EVENTS[id].choices).some((c) => c && c.id === e.choice);
+    if (!outcome && !cardChoice) return;
+    const entry = logged.get(e);
+    if (!entry) return;
+    toasts.push(entry.text, entry.kind === 'bad' ? 'bad' : 'event', { priority: entry.kind === 'bad' ? 'high' : 'low', link: logLink(e, 'events') });
+  });
+  // persist the log with the save (and on page hide)
+  const persistLog = () => { if (eventLog.isDirty()) eventLog.persist(colonyId()); };
+  sub('saved', persistLog);
+  if (win && win.addEventListener) {
+    win.addEventListener('pagehide', persistLog);
+    offs.push(() => win.removeEventListener('pagehide', persistLog));
   }
   sub('unlock', (e) => {
     chime();
+    try { callout.show(e.key); } catch (err) { console.error('[ui] callout failed', err); }
     const tab = PANEL_UNLOCKS[e.key];
     if (!tab) return;
     freshTabs.add(tab);
@@ -826,6 +1141,9 @@ export function mountUI(root, game, opts = {}) {
       closeMenu();
       setUI({ tool: null, selection: null, hover: null, ghostDemo: null });
       if (type === 'reset') { visited.clear(); saveVisited(); }   // a brand-new colony: every tab is new again
+      if (type !== 'runStarted') callout.hide();   // C204: the callout belonged to the old colony
+      if (type === 'reset') { eventLog.clear(); eventLog.persist(colonyId()); resTracker.reset(); }
+      if (type === 'imported') { eventLog.load(colonyId()); resTracker.reset(); }
       tooltips.hide();
       if (type !== 'runStarted') {
         endingShown = false;
@@ -919,8 +1237,10 @@ export function mountUI(root, game, opts = {}) {
     if ((ev.key === 'q' || ev.key === 'Q') && !ev.shiftKey) {
       const hv = getUI().hover;
       const ref = hv && hv.view === 'nest' && (hv.kind === 'chamber' || hv.kind === 'nursery' || hv.kind === 'queen') ? hv : sel;
-      const a = buildPanel.placeAnotherAction(game.s, game.d, ref);
-      if (a && a.tool) {
+      // C180: Q toggles: with that placement tool already active it clears the tool (exits build mode)
+      const a = buildPanel.placeAnotherAction(game.s, game.d, ref, getUI().tool);
+      if (a && a.clear) setUI({ tool: null });
+      else if (a && a.tool) {
         setUI({ tool: a.tool });
         const lay = getUI().layout;
         if ((lay === 'medium' || lay === 'narrow') && getUI().view === 'above') chooseView('below');
@@ -977,6 +1297,7 @@ export function mountUI(root, game, opts = {}) {
     const s = game.s;
     const d = game.d;
     if (!s || !s.meta || !s.run) return;
+    try { resTracker.sample(s, d); } catch (err) { if (!panelErr.has('stats')) { panelErr.add('stats'); console.error('[ui] resource stats failed', err); } }
     const st0 = s.meta.settings || {};
     setNotation(st0.notation);
     root.setAttribute('data-reduced-motion', st0.reducedMotion ? 'true' : 'false');
@@ -1013,6 +1334,11 @@ export function mountUI(root, game, opts = {}) {
       toggleClass(b, 'fresh', freshTabs.has(id) && st.tab !== id);
       toggleClass(b, 'glow', st.glow === 'tab:' + id);
     }
+    const ov = syncTabOverflow();
+    if (ov.scrolls && tabSeen !== st.tab && tabBtns[st.tab] && typeof tabBtns[st.tab].scrollIntoView === 'function') {
+      try { tabBtns[st.tab].scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* best effort */ }
+    }
+    tabSeen = st.tab;
     // closed sheet / drawer: cue new panels and onboarding glows that point inside the panels (DESIGN §25.6 rule 1)
     const closed = (st.layout === 'medium' && !drawerOpen) || (st.layout === 'narrow' && sheet === 'peek');
     const glowInside = typeof st.glow === 'string' && /^(job|build|adapt|research):/.test(st.glow);
@@ -1070,6 +1396,7 @@ export function mountUI(root, game, opts = {}) {
       endingShown = true;
       openEnding(mctx);
     }
+    try { callout.update(now); } catch (err) { if (!panelErr.has('callout')) { panelErr.add('callout'); console.error('[ui] callout failed', err); } }
     if (tickCount % 4 === 0) {
       try { onboarding.update(s, d, now); } catch (err) { if (!panelErr.has('onb')) { panelErr.add('onb'); console.error('[ui] onboarding failed', err); } }
     }
@@ -1140,6 +1467,8 @@ export function mountUI(root, game, opts = {}) {
     openTab,
     /** Services, exposed for main.js and tests. */
     toasts,
+    eventLog,
+    resTracker,
     modals,
     dialogs,
     destroy() {
@@ -1150,6 +1479,7 @@ export function mountUI(root, game, opts = {}) {
       tooltips.destroy();
       eventCard.destroy();
       onboarding.destroy();
+      callout.destroy();
       intro.destroy();
       hud.destroy();
       toasts.clear();
@@ -1162,6 +1492,8 @@ export function mountUI(root, game, opts = {}) {
       if (drawerClose.parentNode) drawerClose.parentNode.removeChild(drawerClose);
       if (railVersion.parentNode) railVersion.parentNode.removeChild(railVersion);
       hideUpdatePill();
+      persistLog();
+      setActiveTracker(null);
     },
   };
 }

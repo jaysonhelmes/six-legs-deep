@@ -1,6 +1,6 @@
-// Prestige panel: sub-tabs Flight (checklist, alate rearing (C116), projection, alates/min meter with peak glow) · Bloodline (+ heirlooms) ·
-// Hardships · Supercolony · Federation (+ automation, satellites) · Edicts · Speciation · Genome (+ auto-supercolony,
-// chronobiology) · Species, each revealed by its unlock key (teasers greyed); the Flight sub-tab ends with the Colony
+// Prestige panel: sub-tabs Flight (checklist, alate rearing (C116), projection, alates/min meter with peak glow, Auto-Flight
+// (C166)) · Bloodline (+ heirlooms) · Hardships · Supercolony (+ kinship breakdown C169, Auto-Supercolony C166) ·
+// Federation (+ satellites) · Edicts · Speciation · Genome (+ chronobiology) · Species, each revealed by its unlock key (teasers greyed); the Flight sub-tab ends with the Colony
 // History button (C130: gallery of past runs, ui/history.js). Owner: WP9.
 // Contract: ARCHITECTURE §14.5 (Prestige row), §8.6, §11; DESIGN §13–§15, §23.
 // Queries: d.meta.proj, prestige.project*, traits.*Cost, hardships.goal / effectiveTier.
@@ -9,10 +9,14 @@ import { h, setText, setProp, show, toggleClass, syncList, setCost, clear } from
 import { fmt, fmtCount, fmtTime, fmtMult, fmtPct } from '../format.js';
 import {
   nameOf, TRAIT_TIPS, FED_TIPS, GENOME_TIPS, HARDSHIP_TIPS, EDICT_TIPS, SPECIES_TIPS, SUBTAB_NAMES, SEASON_NAMES, unlockHint, oldRidgeHint,
+  AUTO_POINTER_TEXT,
 } from '../text.js';
 import { isShown, traitLevel, fedLevel, genomeLevel, num, arr, obj } from '../reveal.js';
-import { projectAlates, projectKinship, projectGenes } from '../../systems/prestige.js';
-import { broodSummary } from '../../systems/population.js';
+import { projectAlates, projectKinship, projectGenes, kinshipBreakdown } from '../../systems/prestige.js';
+import * as TEXT from '../text.js';
+import { broodSummary, alateQueueCost } from '../../systems/population.js';
+import { CASTES } from '../../data/castes.js';
+import { EVENTS } from '../../data/events.js';
 import { eggCost } from '../../systems/stats.js';
 import { traitCost, fedCost, genomeCost } from '../../systems/traits.js';
 import { goal as hardshipGoal, effectiveTier } from '../../systems/hardships.js';
@@ -20,9 +24,11 @@ import { TRAIT_ORDER, TRAITS } from '../../data/bloodline.js';
 import { FED_ORDER, FEDERATION } from '../../data/federation.js';
 import { GENOME_ORDER, GENOME, SPECIES_ORDER, SPECIES } from '../../data/genome.js';
 import { FLIGHT, SUPER, SPEC, HARDSHIP, HARDSHIPS, EDICTS } from '../../data/prestige.js';
-import { YEAR } from '../../data/seasons.js';
+import { SOFTCAPS } from '../../data/balance.js';
+import { YEAR, SEASON_MODS } from '../../data/seasons.js';
 import { makeAct, note, progressBar, subTabStrip, sliderRow } from './common.js';
 import { historyCount } from '../history.js';
+import { flightAutoBox, superAutoBox } from './automation.js';
 import { flightFactorRows, flightTerms } from '../manualContent.js';
 
 const SUBS = ['flight', 'bloodline', 'hardships', 'supercolony', 'federation', 'edicts', 'speciation', 'genome', 'species'];
@@ -54,6 +60,84 @@ export function rearedRuleText(max = num(FLIGHT.rearedMax, 25)) {
   const pct = Math.round(per * 100);
   return 'Each reared alate gives +' + pct + '% more alates on your next flight (+' + pct + '% each, additive: ' + max + ' reared = +'
     + Math.round(per * max * 100) + '%).';
+}
+
+/**
+ * C232: a cost in words, "1.2K food + 6.6 honeydew" ('' for null).
+ * @param {Object|null} cost
+ * @returns {string}
+ */
+export function costWords(cost) {
+  if (!cost) return '';
+  return Object.keys(cost).filter((r) => num(cost[r]) > 0).map((r) => fmt(num(cost[r])) + ' ' + r).join(' + ');
+}
+
+/**
+ * C232: tooltip of a Rear n button: what the n alates will cost when laid, and that nothing is paid now.
+ * @param {number} n
+ * @param {Object|null} cost population.alateQueueCost(s, d, n)
+ * @returns {string}
+ */
+export function rearButtonTip(n, cost) {
+  const w = costWords(cost);
+  return 'Queue ' + n + (n === 1 ? ' alate' : ' alates') + (w ? ': about ' + w + ' in all, paid as the queen lays each egg' : '')
+    + '. Nothing is paid now, and Cancel queued is free.';
+}
+
+/**
+ * C232: Flight Day in one line, from the event data (summer only, needs Nuptial Preparation, lasts N min): shown on the
+ * "Flight weather" row of "What increases flight alates" (the row's tooltip is flightDayTip()).
+ * @returns {string}
+ */
+export function flightDayLine() {
+  const ev = EVENTS && EVENTS.ev_flight_day ? EVENTS.ev_flight_day : null;
+  const n = ev && ev.num ? ev.num : {};
+  const sec = num(n.sec, 180);
+  const dur = sec % 60 === 0 ? (sec / 60) + ' min' : fmtTime(sec);
+  return 'Flight Day: a random summer event (once you have Nuptial Preparation) that gives perfect flight weather, ×'
+    + num(n.w, 1.5) + ' alates for ' + dur + '. Fly while it lasts; it replaces summer\'s ×'
+    + num(SEASON_MODS.summer && SEASON_MODS.summer.flightW, 1.25) + ' (the better one counts).';
+}
+
+/**
+ * C232: the weather row's tooltip: the Manual's Flight Day text (text.js flightDayText, C210) when present, else the
+ * short line.
+ * @returns {string}
+ */
+export function flightDayTip() {
+  const t = TEXT.flightDayText;
+  if (typeof t === 'function') {
+    try {
+      const v = t();
+      if (typeof v === 'string' && v) return v;
+    } catch { /* fall back */ }
+  }
+  return flightDayLine();
+}
+
+/** C169: what raises kinship, in words (shown under the kinship breakdown). */
+export const KINSHIP_HOW = Object.freeze([
+  'More alates this cycle: every Nuptial Flight banks its alates here, so bigger and more flights raise kinship.',
+  "This run's alates count too: the merge counts them as if the colony had flown, so grow this run (food, territory, reared alates, summer weather) before merging.",
+  'Anything that raises flight alates (Wide Wings, kinship already earned, achievements) raises kinship through them.',
+]);
+
+/**
+ * C169 kinship breakdown rows (prestige.kinshipBreakdown → { id, label, how, value, mult }).
+ * @param {{ banked: number, run: number, total: number, raw: number, softcapped: boolean, kinship: number, nextAt: number|null }} kb
+ * @returns {{ id: string, label: string, how: string, value: string, mult: string }[]}
+ */
+export function kinshipRows(kb) {
+  const cap = SOFTCAPS && SOFTCAPS.kinship && SOFTCAPS.kinship[0] ? SOFTCAPS.kinship[0][0] : 1e5;
+  return [
+    { id: 'banked', label: 'Alates this cycle', how: 'banked by the Nuptial Flights of this cycle', value: fmtCount(kb.banked) + ' alates', mult: '' },
+    { id: 'run', label: "This run's alates", how: 'projected alates of this run, counted as if it flew', value: '+' + fmtCount(kb.run) + ' alates', mult: '' },
+    { id: 'total', label: 'Alates counted', how: (num(SUPER.mult, 2)) + ' × (alates / ' + fmtCount(num(SUPER.div, 1000)) + ')^' + num(SUPER.exp, 0.35)
+      + ': 10× the alates gives about ×' + fmt(10 ** num(SUPER.exp, 0.35)) + ' kinship', value: fmtCount(kb.total) + ' alates', mult: fmt(kb.raw) + ' kinship' },
+    { id: 'softcap', label: 'Softcap', how: 'kinship above ' + fmtCount(cap) + ' per merge grows more slowly', value: kb.softcapped ? 'active' : 'not reached', mult: '' },
+    { id: 'kinship', label: 'Kinship on merging', how: 'rounded down' + (kb.nextAt ? '; the next point at ' + fmtCount(kb.nextAt) + ' alates' : ''),
+      value: '', mult: fmtCount(kb.kinship) + ' kinship' },
+  ];
 }
 
 /** Safe query. */
@@ -160,13 +244,24 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const alateCost = h('span', { class: 'cost' });
   const rear1 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 1', on: { click: (ev) => act('rearAlate', { n: 1 }, ev, rear1) } });
   const rear5 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 5', on: { click: (ev) => act('rearAlate', { n: 5 }, ev, rear5) } });
+  // C232: the queue can be emptied (free: eggs are paid when laid), and the price of queueing 1 / 5 more is shown
+  const cancelRear = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Cancel queued',
+    dataset: { tip: 'Empty the rearing queue. Free: queued alates cost nothing until the queen lays their eggs. Eggs already laid keep growing.' },
+    on: { click: (ev) => act('cancelRear', {}, ev, cancelRear) } });
+  const q1Cost = h('span', { class: 'cost' });
+  const q5Cost = h('span', { class: 'cost' });
+  const queueCostEl = h('p', { class: 'note rear-queue-cost',
+    dataset: { tip: 'What the queued alates will cost when laid, at today\'s egg price. Each alate egg costs more honeydew than the last (×'
+      + fmt(num(CASTES.alate && CASTES.alate.extra && CASTES.alate.extra.honeydew && CASTES.alate.extra.honeydew.growth, 1.15))
+      + ' per alate laid this run). Nothing is paid when you queue.' } },
+  'Queue 1: ', q1Cost, ' · Queue 5: ', q5Cost);
   const autoRear = h('input', { type: 'checkbox', class: 'check' });
   autoRear.addEventListener('change', (ev) => act('setAutomation', { patch: { autoRear: !!autoRear.checked } }, ev, autoRear));
   const rearRule = h('p', { class: 'note rear-rule', text: rearedRuleText() });
   const alateSec = h('section', { class: 'sec sec-alates' }, h('h3', { class: 'sec-title', text: 'Alate rearing' }),
     rearRule,
     h('dl', { class: 'kv' }, h('dt', { text: 'Reared / cells' }), alateCount, h('dt', { text: 'Next alate egg' }), h('dd', null, alateCost)),
-    h('div', { class: 'btn-row' }, rear1, rear5),
+    h('div', { class: 'btn-row' }, rear1, rear5, cancelRear), queueCostEl,
     h('label', { class: 'toggle-row', dataset: { tip: 'Rear alates whenever a cell is free.' } }, autoRear, h('span', { text: 'Auto-rear' })));
   views.flight.append(
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Nuptial Flight' }),
@@ -179,6 +274,9 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const factorSec = h('section', { class: 'sec sec-factors' }, h('h3', { class: 'sec-title', text: 'What increases flight alates' }),
     h('p', { class: 'note', text: 'Your flight multiplies these together. Current values:' }), factorList);
   views.flight.append(factorSec);
+  // C166: Auto-Flight lives with the Flight it automates (shown once Federation Auto-Flight is owned)
+  const afBox = flightAutoBox({ game, bridge });
+  views.flight.append(afBox.el);
   // Colony History (C130): replaces the Strata fossils once drawn in the nest's bedrock
   const histNote = h('p', { class: 'note' });
   const histBtn = h('button', { type: 'button', class: 'btn', text: 'Open Colony History', on: { click: () => dlg('history') } });
@@ -186,7 +284,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   views.flight.append(histSec);
 
   // ------------------------------------------------------------------ Generic buy list (traits, federation, genome)
-  function buyList(kind, ids, tips, costFn, cmd, levelFn, maxFn) {
+  function buyList(kind, ids, tips, costFn, cmd, levelFn, maxFn, lockFn = null) {
     const list = h('div', { class: 'list buy-list' });
     const create = (id) => {
       const lvl = h('span', { class: 'lvl' });
@@ -208,10 +306,12 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         const c = q(() => costFn(s, id), null);
         const atMax = max > 0 && L >= max;
         const ok = setCost(r.costEl, atMax ? null : c, s);
-        toggleClass(row, 'cant', !ok);
+        const locked = !atMax && !!lockFn && lockFn(s, id); // C172: a node that needs another node first
+        toggleClass(row, 'cant', !ok || locked);
         toggleClass(row, 'owned', atMax);
-        setProp(r.btn, 'disabled', !!greyed || atMax || c === null);
-        setText(r.btn, atMax ? 'Owned' : 'Buy');
+        toggleClass(row, 'locked', locked);
+        setProp(r.btn, 'disabled', !!greyed || atMax || c === null || locked);
+        setText(r.btn, atMax ? 'Owned' : locked ? 'Locked' : 'Buy');
       });
     };
     return { list, update };
@@ -224,14 +324,8 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const heirBox = h('div', { class: 'heirlooms' });
   const heirSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Heirlooms' }),
     h('p', { class: 'note', text: 'Choose up to three traits to keep through Supercolonies.' }), heirBox);
-  // F10: Automaton Instincts' Adaptation autobuyer needs the autobuy master toggle, which otherwise lives in the
-  // Federation sub-tab (hidden or a greyed preview for the whole first cycle). Its own switch lives here.
-  const abTrait = toggle('Adaptation autobuyer', (v) => patchAuto({ autobuy: v ? { on: true, adaptations: true } : { adaptations: false } }));
-  const abTraitSec = h('section', { class: 'sec auto-trait' }, h('h3', { class: 'sec-title', text: 'Automaton Instincts' }), abTrait.el,
-    h('p', { class: 'note', text: 'Buys the cheapest affordable Adaptation level once a second.' }));
   views.bloodline.append(
     h('div', { class: 'row-between balance' }, h('span', null, h('i', { class: 'ico ico-alates' }), ' ', alatesBal, ' alates'), alatesMeta),
-    abTraitSec,
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Bloodline traits' }), traitList.list,
       TRAIT_ORDER.length ? null : note('Trait data not loaded yet.')), heirSec);
 
@@ -250,36 +344,34 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const kinProj = h('span', { class: 'big-num' });
   const daughtersEl = h('p', { class: 'note' });
   const mergeBtn = h('button', { type: 'button', class: 'btn btn-primary btn-big', text: 'Form a Supercolony', on: { click: () => dlg('supercolony') } });
+  const kinNote = h('p', { class: 'note' });
   views.supercolony.append(h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Supercolony' }),
     h('p', { class: 'note', text: 'Fuse your daughter colonies into one. Earn kinship.' }), superList.el,
-    h('p', null, 'Projected: ', kinProj, ' kinship'), daughtersEl, mergeBtn));
+    h('p', null, 'Projected: ', kinProj, ' kinship'), kinNote, daughtersEl, mergeBtn));
+  // C169 "What increases kinship": the kinship formula's terms with the player's values (like the C146 alates box)
+  const kinFactors = h('div', { class: 'flight-factors kin-factors' });
+  const kinSec = h('section', { class: 'sec sec-factors' }, h('h3', { class: 'sec-title', text: 'What increases kinship' }),
+    h('p', { class: 'note', text: 'kinship = ' + num(SUPER.mult, 2) + ' × (alates / ' + fmtCount(num(SUPER.div, 1000)) + ')^' + num(SUPER.exp, 0.35)
+      + ', rounded down. Current values:' }), kinFactors,
+    h('ul', { class: 'plain-list' }, KINSHIP_HOW.map((x) => h('li', { text: x }))));
+  views.supercolony.append(kinSec);
+  // C166: Auto-Supercolony lives with the Supercolony it automates (shown once Genome Deep-Time Automation is owned)
+  const asBox = superAutoBox({ game, bridge });
+  views.supercolony.append(asBox.el);
 
   // ------------------------------------------------------------------ Federation (+ automation, satellites)
   const kinBal = h('span', { class: 'big-num' });
   const fedList = buyList('federation', () => FED_ORDER, FED_TIPS, fedCost, 'buyFederation', fedLevel,
-    (id) => { const f = FEDERATION[id]; return f ? num(f.max, f.cost && Array.isArray(f.cost.list) ? f.cost.list.length : 1) : 0; });
-  const autoSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Automation' }));
-  const ab = {
-    on: toggle('Autobuyers on', (v) => patchAuto({ autobuy: { on: v } })),
-    adaptations: toggle('Adaptations', (v) => patchAuto({ autobuy: { adaptations: v } })),
-    chambers: toggle('Chamber levels', (v) => patchAuto({ autobuy: { chambers: v } })),
-    mound: toggle('Mound levels', (v) => patchAuto({ autobuy: { mound: v } })),
-  };
-  const prioList = h('ol', { class: 'prio-list' });
-  const abBox = h('div', { class: 'auto-box' }, h('h4', { class: 'sub-title', text: 'Autobuyers' }), ab.on.el, ab.adaptations.el, ab.chambers.el, ab.mound.el,
-    h('p', { class: 'note', text: 'Priority (tried first to last, one purchase per second):' }), prioList);
-  const af = {
-    on: toggle('Auto-Flight on', (v) => patchAuto({ autoFlight: { on: v } })),
-    mode: selectRow('Trigger', [['peak', 'Alates/min peak'], ['alates', 'Alate count'], ['minutes', 'Run time']], (v) => patchAuto({ autoFlight: { mode: v } })),
-    alates: numberRow('Alates', 0, 1e12, (v) => patchAuto({ autoFlight: { alates: v } })),
-    minutes: numberRow('Minutes', 1, 1440, (v) => patchAuto({ autoFlight: { minutes: v } })),
-  };
-  const afBox = h('div', { class: 'auto-box' }, h('h4', { class: 'sub-title', text: 'Auto-Flight' }), af.on.el, af.mode.el, af.alates.el, af.minutes.el);
+    (id) => { const f = FEDERATION[id]; return f ? num(f.max, f.cost && Array.isArray(f.cost.list) ? f.cost.list.length : 1) : 0; },
+    (s, id) => { const f = FEDERATION[id]; return !!(f && typeof f.requires === 'string') && !(fedLevel(s, f.requires) > 0); });
+  // C166: the automation switches moved to where they act (AUTO_POINTER_TEXT); this section keeps the satellites.
+  const autoSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Satellites and automation' }));
+  const autoPointer = h('p', { class: 'note auto-pointer', text: AUTO_POINTER_TEXT });
   const satBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Place a satellite on the map…',
     on: { click: () => { ui.setUI({ tool: { kind: 'placeSatellite' } }); const st = ui.getUI(); if (st.layout === 'medium' || st.layout === 'narrow') ui.setUI({ view: 'above' }); } } });
   const satNote = h('p', { class: 'note' });
   const satBox = h('div', { class: 'auto-box' }, h('h4', { class: 'sub-title', text: 'Satellites' }), satNote, satBtn);
-  autoSec.append(abBox, afBox, satBox);
+  autoSec.append(autoPointer, satBox);
   views.federation.append(h('div', { class: 'row-between balance' }, h('span', null, h('i', { class: 'ico ico-kinship' }), ' ', kinBal, ' kinship')),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Federation' }), fedList.list, FED_ORDER.length ? null : note('Federation data not loaded yet.')),
     autoSec);
@@ -307,13 +399,6 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   // ------------------------------------------------------------------ Genome (+ auto-supercolony, chronobiology)
   const genesBal = h('span', { class: 'big-num' });
   const genomeList = buyList('genome', () => GENOME_BUYABLE, GENOME_TIPS, genomeCost, 'buyGenome', genomeLevel, (id) => num(GENOME[id] && GENOME[id].max, 0));
-  const as = {
-    on: toggle('Auto-Supercolony on', (v) => patchAuto({ autoSuper: { on: v } })),
-    mode: selectRow('Trigger', [['kinship', 'Kinship gain'], ['hours', 'Cycle time']], (v) => patchAuto({ autoSuper: { mode: v } })),
-    kinship: numberRow('Kinship', 0, 1e12, (v) => patchAuto({ autoSuper: { kinship: v } })),
-    hours: numberRow('Hours', 1, 1000, (v) => patchAuto({ autoSuper: { hours: v } })),
-  };
-  const asBox = h('div', { class: 'auto-box' }, h('h4', { class: 'sub-title', text: 'Deep-Time Automation' }), as.on.el, as.mode.el, as.kinship.el, as.hours.el);
   // F17: the season length applies at once (the position in the year is kept); the starting season is stored and
   // applies from the next landing or merge, so Apply can never skip a winter. 'none' = let the clock run on.
   let chronoStart = 'none';
@@ -336,7 +421,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     h('span', { class: 'field-label', text: 'Starting season' }), chronoSeg, chronoNote, chronoApply);
   views.genome.append(h('div', { class: 'row-between balance' }, h('span', null, h('i', { class: 'ico ico-genes' }), ' ', genesBal, ' genes')),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Genome' }), genomeList.list, GENOME_ORDER.length ? null : note('Genome data not loaded yet.')),
-    asBox, chronoBox);
+    chronoBox);
 
   // ------------------------------------------------------------------ Species
   const speciesList = h('div', { class: 'list' });
@@ -344,43 +429,6 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     h('p', { class: 'note', text: 'Chosen at each Speciation. Signature genes are permanent.' }), speciesList));
 
   // ------------------------------------------------------------------ small widgets
-  function toggle(label, onChange) {
-    const input = h('input', { type: 'checkbox', class: 'check' });
-    input.addEventListener('change', () => onChange(!!input.checked));
-    return { el: h('label', { class: 'toggle-row' }, input, h('span', { text: label })), input };
-  }
-  function selectRow(label, options, onChange) {
-    const input = h('select', { class: 'select' }, options.map(([v, t]) => h('option', { value: v, text: t })));
-    input.addEventListener('change', () => onChange(input.value));
-    return { el: h('label', { class: 'field' }, h('span', { class: 'field-label', text: label }), input), input };
-  }
-  function numberRow(label, min, max, onChange) {
-    const input = h('input', { type: 'number', class: 'input input-small', min, max, step: 1 });
-    input.addEventListener('change', () => {
-      const v = Math.max(min, Math.min(max, Math.floor(Number(input.value) || 0)));
-      onChange(v);
-    });
-    return { el: h('label', { class: 'field' }, h('span', { class: 'field-label', text: label }), input), input };
-  }
-  function patchAuto(patch) {
-    act('setAutomation', { patch });
-  }
-
-  function renderPrio(s) {
-    const prio = arr(s.meta.automation && s.meta.automation.autobuy && s.meta.automation.autobuy.priority);
-    const sig = prio.join(',');
-    if (prioList.__sig === sig) return;
-    prioList.__sig = sig;
-    clear(prioList);
-    prio.forEach((p, i) => {
-      const up = h('button', { type: 'button', class: 'btn btn-icon', text: '↑', disabled: i === 0, attrs: { 'aria-label': 'Earlier' },
-        on: { click: () => { const n = prio.slice(); [n[i - 1], n[i]] = [n[i], n[i - 1]]; patchAuto({ autobuy: { priority: n } }); } } });
-      const down = h('button', { type: 'button', class: 'btn btn-icon', text: '↓', disabled: i === prio.length - 1, attrs: { 'aria-label': 'Later' },
-        on: { click: () => { const n = prio.slice(); [n[i + 1], n[i]] = [n[i], n[i + 1]]; patchAuto({ autobuy: { priority: n } }); } } });
-      prioList.appendChild(h('li', null, h('span', { text: { adaptations: 'Adaptations', chambers: 'Chamber levels', mound: 'Mound levels' }[p] || p }), up, down));
-    });
-  }
-
   function renderHeirlooms(s) {
     const owned = TRAIT_ORDER.filter((id) => traitLevel(s, id) > 0);
     const cur = arr(s.era && s.era.heirlooms);
@@ -487,6 +535,17 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
             + (num(c.rearRequested) > 0 ? ' · ' + fmtCount(c.rearRequested) + ' queued' : ''));
           setCost(alateCost, q(() => eggCost(s, d, 'alate'), null), s);
           setProp(autoRear, 'checked', !!(s.meta.automation && s.meta.automation.autoRear));
+          const queued = num(c.rearRequested);
+          show(cancelRear, queued > 0);
+          if (queued > 0) setText(cancelRear, 'Cancel queued (' + fmtCount(queued) + ')');
+          const c1 = q(() => alateQueueCost(s, d, 1), null);
+          const c5 = q(() => alateQueueCost(s, d, 5), null);
+          setCost(q1Cost, c1, s);
+          setCost(q5Cost, c5, s);
+          const t1 = rearButtonTip(1, c1);
+          const t5 = rearButtonTip(5, c5);
+          if (rear1.title !== t1) rear1.title = t1;
+          if (rear5.title !== t5) rear5.title = t5;
         }
         const alates = num(proj.alates, q(() => projectAlates(s, d), 0));
         setText(projEl, fmtCount(alates));
@@ -515,7 +574,10 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
           const how = h('span', { class: 'ff-how' });
           const val = h('span', { class: 'ff-val' });
           const mult = h('span', { class: 'ff-mult' });
-          const row = h('div', { class: 'ff-row', dataset: { id: r.id } }, h('div', { class: 'ff-main' }, label, how), h('div', { class: 'ff-side' }, val, mult));
+          // C232: the weather row explains Flight Day inline (and as its tooltip)
+          const extra = r.id === 'weather' ? h('span', { class: 'ff-how ff-extra', text: flightDayLine() }) : null;
+          const row = h('div', { class: 'ff-row', dataset: r.id === 'weather' ? { id: r.id, tip: flightDayTip() } : { id: r.id } },
+            h('div', { class: 'ff-main' }, label, how, extra), h('div', { class: 'ff-side' }, val, mult));
           row.__r = { label, how, val, mult };
           return row;
         }, (row, r) => {
@@ -531,6 +593,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         setProp(flyBtn, 'disabled', !fly.ok);
         toggleClass(flyBtn, 'glow', !!fly.ok && glow);
         setText(flyHint, fly.ok ? '' : 'Complete the checklist to fly. Flights are never blocked by season.');
+        afBox.update(s, d);
         const nHist = historyCount(s);
         show(histSec, nHist > 0);
         if (nHist > 0) setText(histNote, 'The nests of your last ' + fmtCount(nHist) + (nHist === 1 ? ' run' : ' runs') + ', kept as a gallery.');
@@ -538,12 +601,6 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         setText(alatesBal, fmtCount(num(s.cycle.alates)));
         setText(alatesMeta, fmtCount(num(s.cycle.alatesCycle)) + ' this cycle · Lineage ' + fmtMult(num(meta.lineage, 1)));
         traitList.update(s, false);
-        const aiOn = traitLevel(s, 'automaton_instincts') > 0;
-        show(abTraitSec, aiOn);
-        if (aiOn) {
-          const a = obj(s.meta.automation && s.meta.automation.autobuy);
-          setProp(abTrait.input, 'checked', !!a.on && a.adaptations !== false);
-        }
         const heirOn = fedLevel(s, 'heirloom_bloodline') > 0;
         show(heirSec, heirOn);
         if (heirOn) renderHeirlooms(s);
@@ -561,6 +618,24 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
           oldRidge: 'The Old Ridge Supercolony conquered this run' + (sc.oldRidge || ridgeUp ? '' : ' (it appears ' + oldRidgeHint() + ')'),
         });
         setText(kinProj, fmtCount(num(proj.kinship, q(() => projectKinship(s, d), 0))));
+        const kb = q(() => kinshipBreakdown(s, d), null);
+        setText(kinNote, kb ? 'Counts ' + fmtCount(kb.banked) + ' alates from this cycle\'s flights + ' + fmtCount(kb.run)
+          + " from this run (as if it flew)." + (kb.nextAt ? ' Next kinship at ' + fmtCount(kb.nextAt) + ' alates.' : '') : '');
+        syncList(kinFactors, kb ? kinshipRows(kb) : [], (r) => r.id, (r) => {
+          const label = h('span', { class: 'ff-label' });
+          const how = h('span', { class: 'ff-how' });
+          const val = h('span', { class: 'ff-val' });
+          const mult = h('span', { class: 'ff-mult' });
+          const row = h('div', { class: 'ff-row', dataset: { id: r.id } }, h('div', { class: 'ff-main' }, label, how), h('div', { class: 'ff-side' }, val, mult));
+          row.__r = { label, how, val, mult };
+          return row;
+        }, (row, r) => {
+          setText(row.__r.label, r.label);
+          setText(row.__r.how, r.how);
+          setText(row.__r.val, r.value);
+          setText(row.__r.mult, r.mult);
+        });
+        asBox.update(s, d);
         setText(daughtersEl, fmtCount(arr(s.cycle.daughters).length) + ' daughter colonies founded this cycle.');
         setProp(mergeBtn, 'disabled', !sc.ok);
       } else if (sub === 'federation') {
@@ -569,36 +644,14 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         if (g) setText(teaserNote.federation, 'Preview: ' + unlockHint('tab_federation'));
         setText(kinBal, fmtCount(num(s.era.kinship)));
         fedList.update(s, g);
-        const auto = obj(s.meta.automation);
-        const abOn = fedLevel(s, 'autobuyers') > 0 || traitLevel(s, 'automaton_instincts') > 0;
-        show(abBox, abOn && !g);
-        if (abOn) {
-          const a = obj(auto.autobuy);
-          setProp(ab.on.input, 'checked', !!a.on);
-          setProp(ab.adaptations.input, 'checked', a.adaptations !== false);
-          setProp(ab.chambers.input, 'checked', a.chambers !== false);
-          setProp(ab.mound.input, 'checked', a.mound !== false);
-          show(ab.chambers.el, fedLevel(s, 'autobuyers') > 0);
-          show(ab.mound.el, fedLevel(s, 'autobuyers') > 0);
-          renderPrio(s);
-        }
-        const afOn = fedLevel(s, 'auto_flight') > 0;
-        show(afBox, afOn && !g);
-        if (afOn) {
-          const f = obj(auto.autoFlight);
-          setProp(af.on.input, 'checked', !!f.on);
-          setProp(af.mode.input, 'value', f.mode || 'peak');
-          setProp(af.alates.input, 'value', String(num(f.alates)));
-          setProp(af.minutes.input, 'value', String(num(f.minutes, 30)));
-          show(af.alates.el, f.mode === 'alates');
-          show(af.minutes.el, f.mode === 'minutes');
-        }
+        const anyAuto = ['automated_brood', 'autobuyers', 'auto_flight'].some((id) => fedLevel(s, id) > 0) || genomeLevel(s, 'deep_time_automation') > 0;
+        show(autoPointer, anyAuto);
         const satL = fedLevel(s, 'satellite_nest');
         const satN = arr(s.run.surface && s.run.surface.entrances).filter((e) => e && e.kind === 'satellite').length;
         show(satBox, satL > 0 && !g);
         setText(satNote, fmtCount(satN) + ' of ' + fmtCount(satL) + ' satellites placed.');
         show(satBtn, satL > satN);
-        show(autoSec, !g && (abOn || afOn || satL > 0));
+        show(autoSec, !g && (anyAuto || satL > 0));
       } else if (sub === 'edicts') {
         setText(edictCur, s.cycle.edict ? 'Active: ' + nameOf('edict', s.cycle.edict) + ' — ' + (EDICT_TIPS[s.cycle.edict] || '') : 'No edict active this cycle.');
         for (const li of Array.from(edictList.children)) toggleClass(li, 'active', li.dataset.id === s.cycle.edict);
@@ -613,17 +666,6 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         if (g) setText(teaserNote.genome, 'Preview: ' + unlockHint('tab_genome'));
         setText(genesBal, fmtCount(num(s.meta.genes)));
         genomeList.update(s, g);
-        const asOn = genomeLevel(s, 'deep_time_automation') > 0;
-        show(asBox, asOn && !g);
-        if (asOn) {
-          const a = obj(s.meta.automation && s.meta.automation.autoSuper);
-          setProp(as.on.input, 'checked', !!a.on);
-          setProp(as.mode.input, 'value', a.mode || 'kinship');
-          setProp(as.kinship.input, 'value', String(num(a.kinship)));
-          setProp(as.hours.input, 'value', String(num(a.hours, 6)));
-          show(as.kinship.el, a.mode !== 'hours');
-          show(as.hours.el, a.mode === 'hours');
-        }
         const chronoOn = genomeLevel(s, 'chronobiology') > 0 && !g;
         show(chronoBox, chronoOn);
         if (chronoOn && !chronoSynced) {

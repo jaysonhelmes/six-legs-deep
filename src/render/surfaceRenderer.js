@@ -61,7 +61,10 @@ const OBJECT_ICON = {
   fruit: 'fallen_fruit', ladybug: 'ladybug', molehill: 'molehill', antlion: 'antlion', lizard: 'lizard', termite_swarm: 'termite_swarm',
   golden_aphid: 'golden_aphid', rival_alate: 'rival_alate', phengaris: 'phengaris', myrmecophile: 'myrmecophile',
   wandering_queen: 'wandering_queen', army_column: 'army_column', footstep: 'footstep',
+  fossil_cache: 'fossil', lost_queen: 'wandering_queen',   // C188 expedition finds (the fossil is drawn here, drawFossil)
 };
+/** C188: expedition-find sources drawn with an existing icon (rich seed patch: a seed patch with a gold rim). */
+const ICON_ALIAS = { rich_seed_patch: 'seed_patch', beetle_carcass: 'prey_beetle' };
 
 /** Behaviour states (Above). */
 const ST = Object.freeze({ OUT: 0, BACK: 1, AWAY: 2, WANDER: 3, HOME: 4 });
@@ -236,7 +239,13 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     if (!s || !e) return;
     const src = (s.run.surface.sources || []).find((x) => x && x.uid === e.src);
     const p = src ? hexWorldPt(src.hex) : hexWorldPt(0);
-    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 10, `+${compactInt(Number(e.amount) || 0)}`, '#fff3c4');
+    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 10, `+${compactInt(Number(e.amount) || 0)} ${e.res || 'food'}`, '#fff3c4', e.res || 'food');
+  });
+  // C223: a clicked event object that pays out (a caught rival alate, a fossil cache) shows its gain like a crumb
+  sub('objectGain', (e) => {
+    if (!e || !(e.hex >= 0) || !(Number(e.amount) > 0)) return;
+    const p = hexWorldPt(e.hex);
+    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 12, `+${compactInt(Number(e.amount) || 0)} ${e.res || ''}`.trim(), '#fff3c4', e.res || null);
   });
   sub('hexRevealed', (e) => {
     if (!e || !(e.hex >= 0) || reduced) return;
@@ -566,24 +575,86 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       }
     }
     // base fill, slightly enlarged to hide seams
+    const groundOf = (i) => under.get(i) || terrainId(ter[i]);
+    const fillCol = new Array(n);
     for (let i = 0; i < n; i++) {
       const [x, y] = hexToPixel(i, SIZE);
-      const id = under.get(i) || terrainId(ter[i]);
+      const id = groundOf(i);
       const [base, detail] = terrainColor(season, id);
       const nz = noise2(x / 70, y / 70, 3);
-      g.fillStyle = mix(base, detail, nz * 0.45 + (hash01(i, 5) - 0.5) * 0.08);
+      fillCol[i] = mix(base, detail, nz * 0.45 + (hash01(i, 5) - 0.5) * 0.08);
+      g.fillStyle = fillCol[i];
       g.beginPath();
       hexPathOn(g, x, y, SIZE * 1.03);
       g.fill();
     }
+    // C183: soft ground transitions where two grounds meet (under the details, then a lighter pass over them)
+    paintTransitions(g, n, groundOf, fillCol, 1);
     for (let i = 0; i < n; i++) {
       const [x, y] = hexToPixel(i, SIZE);
-      const id = under.get(i) || terrainId(ter[i]);
+      const id = groundOf(i);
       paintTerrainDetail(g, id, season, i, x, y);
     }
+    paintTransitions(g, n, groundOf, fillCol, 0.35);
     paintPaths(g, season, linkSet(ter, nMap, 'garden_path'));
     paintPools(g, season, linkSet(ter, nMap, 'puddle'), under);
     paintBoulders(g, season, { hexes: stones.hexes.filter((i) => boulder.has(i)), nb: stones.nb });
+  }
+
+  /**
+   * C183: feathered, noise-shaped boundaries between different grounds (grass / sand / leaf litter / roots, and the
+   * ground under puddles, paths and boulders). Along each edge shared by two different grounds, a few radial blobs
+   * push one side's colour across the edge by a noise-driven amount (so the boundary wanders instead of following the
+   * hex edge) and a soft wash of each colour fades into the other. `k` scales the opacity (the second, lighter pass runs
+   * over the ground details). Deterministic (geom.hash01 / value noise), cached with the terrain.
+   * @param {CanvasRenderingContext2D} g
+   * @param {number} n hexes to consider
+   * @param {(i: number) => string} groundOf ground id of a hex
+   * @param {string[]} fillCol base fill colour per hex
+   * @param {number} k opacity scale
+   */
+  function paintTransitions(g, n, groundOf, fillCol, k) {
+    if (typeof g.createRadialGradient !== 'function') return;
+    const blob = (x, y, r, col, a) => {
+      if (!(r > 0.5) || !(a > 0.01)) return;
+      const gr = g.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, rgba(col, a));
+      gr.addColorStop(0.55, rgba(col, a * 0.6));
+      gr.addColorStop(1, rgba(col, 0));
+      g.fillStyle = gr;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    };
+    for (let i = 0; i < n; i++) {
+      const gi = groundOf(i);
+      const [q, r] = hexQR(i);
+      const [x, y] = hexToPixel(i, SIZE);
+      for (const [dq, dr] of DIRS) {
+        const h = hexIndex(q + dq, r + dr);
+        if (h <= i || h >= n || groundOf(h) === gi) continue;
+        const [hx, hy] = hexToPixel(h, SIZE);
+        const L = Math.hypot(hx - x, hy - y) || 1;
+        const ux = (hx - x) / L;
+        const uy = (hy - y) / L;
+        const mx = (x + hx) / 2;
+        const my = (y + hy) / 2;
+        const S2 = 4;
+        for (let s2 = 0; s2 < S2; s2++) {
+          const t = ((s2 + 0.5) / S2 - 0.5) * SIZE * 0.98 + (hash01(i * 7 + h, s2 + 31) - 0.5) * SIZE * 0.12;
+          const ex = mx - uy * t;
+          const ey = my + ux * t;
+          // the boundary wanders: positive pushes this hex's ground into the neighbour, negative the other way
+          const off = (noise2(ex / 17, ey / 17, 13) - 0.5) * SIZE * 0.85 + (hash01(i * 13 + h, s2 + 37) - 0.5) * SIZE * 0.2;
+          const rad = SIZE * (0.2 + 0.22 * noise2(ex / 23, ey / 23, 17)) + Math.abs(off) * 0.55;
+          const into = off >= 0 ? fillCol[i] : fillCol[h];
+          blob(ex + ux * off * 0.55, ey + uy * off * 0.55, rad, into, 0.85 * k);
+          // soft wash both ways across the edge
+          blob(ex - ux * SIZE * 0.12, ey - uy * SIZE * 0.12, SIZE * 0.34, fillCol[h], 0.32 * k);
+          blob(ex + ux * SIZE * 0.12, ey + uy * SIZE * 0.12, SIZE * 0.34, fillCol[i], 0.32 * k);
+        }
+      }
+    }
   }
 
   /** C135: clip to the union of a set's hexes (corner radius SIZE: the fog / void hexes, 1.04 x SIZE, cover it). */
@@ -699,46 +770,94 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       }
       g.fill();
     }
-    // cracks: a jagged seam across every link (where two stones fused) and a hairline per hex
-    g.strokeStyle = 'rgba(38,38,44,0.5)';
-    g.lineWidth = 1.1;
-    g.lineCap = 'round';
-    g.lineJoin = 'round';
-    g.beginPath();
-    for (const st of mids) {
-      const r = (q) => hash01(st.seed * 29 + q, q * 7 + 11);
-      const px = -Math.sin(st.ang);
-      const py = Math.cos(st.ang);
-      const L = SIZE * (0.3 + 0.15 * r(1));
-      g.moveTo(st.x - px * L, st.y - py * L);
-      for (let q = 1; q <= 3; q++) {
-        const f = -1 + (2 * q) / 3;
-        const j = q === 3 ? 0 : (r(q + 2) - 0.5) * SIZE * 0.18;
-        g.lineTo(st.x + px * L * f + Math.cos(st.ang) * j, st.y + py * L * f + Math.sin(st.ang) * j);
+    // C183: mottled shading — darker and lighter weathering patches scattered over the mass (not per hex outline)
+    if (typeof g.createRadialGradient === 'function') {
+      for (const st of stations) {
+        for (let q = 0; q < 2; q++) {
+          const r = (k) => hash01(st.seed * 41 + q * 7 + k, k * 11 + 3);
+          const px = st.x + (r(1) - 0.5) * SIZE * 0.9;
+          const py = st.y + (r(2) - 0.5) * SIZE * 0.8;
+          const rad = SIZE * (0.22 + 0.26 * r(3));
+          const col = r(4) < 0.55 ? shade(base, -0.3) : mix(base, '#ffffff', 0.3);
+          const gr = g.createRadialGradient(px, py, 0, px, py, rad);
+          gr.addColorStop(0, rgba(col, 0.3 + 0.14 * r(5)));
+          gr.addColorStop(1, rgba(col, 0));
+          g.fillStyle = gr;
+          g.beginPath();
+          g.arc(px, py, rad, 0, Math.PI * 2);
+          g.fill();
+        }
       }
     }
-    for (const i of set.hexes) {
-      const [x, y] = hexToPixel(i, SIZE);
-      const r = (q) => hash01(i * 31 + q, q * 13 + 5);
-      const a = r(1) * 6.28;
-      const L = SIZE * (0.18 + 0.14 * r(2));
-      const sx = x + (r(3) - 0.5) * SIZE * 0.5;
-      const sy = y + (r(4) - 0.5) * SIZE * 0.4;
-      g.moveTo(sx, sy);
-      g.lineTo(sx + Math.cos(a) * L * 0.5 + (r(5) - 0.5) * 3, sy + Math.sin(a) * L * 0.5 + (r(6) - 0.5) * 3);
-      g.lineTo(sx + Math.cos(a) * L, sy + Math.sin(a) * L);
+    // C183: organic fissures — noise-steered cracks that wander across the whole rock (they ignore the hex grid), taper
+    // toward their tips and sometimes branch; a lit lip above each (light from the upper left)
+    const cracks = boulderCracks(set);
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    for (const pass of [0, 1]) {
+      g.save();
+      if (pass === 1) g.translate(-0.7, -0.8);
+      g.strokeStyle = pass === 0 ? 'rgba(32,30,36,0.58)' : 'rgba(255,255,255,0.13)';
+      for (const c of cracks) {
+        const m = c.pts.length;
+        for (let j = 1; j < m; j++) {
+          g.lineWidth = Math.max(0.35, c.w * (1 - (0.8 * (j - 1)) / Math.max(1, m - 1)) * (pass ? 0.7 : 1));
+          g.beginPath();
+          g.moveTo(c.pts[j - 1][0], c.pts[j - 1][1]);
+          g.lineTo(c.pts[j][0], c.pts[j][1]);
+          g.stroke();
+        }
+      }
+      g.restore();
     }
-    g.stroke();
-    // a lit lip just above each crack
-    g.strokeStyle = 'rgba(255,255,255,0.14)';
-    g.save();
-    g.translate(-0.8, -0.8);
-    g.stroke();
-    g.restore();
     g.restore();
     g.restore();
     g.lineCap = 'butt';
     g.lineJoin = 'miter';
+  }
+
+  /**
+   * C183: fissure polylines for a boulder: about one main crack per stone hex, started at a hashed point of a hashed
+   * hex and steered by value noise (so neighbouring cracks bend alike), 5–9 steps long, with a branch now and then.
+   * Deterministic from the hexes. Each crack: { pts: [[x, y]…], w } (w = start width).
+   */
+  function boulderCracks(set) {
+    const out = [];
+    const hexes = set.hexes;
+    if (!hexes.length) return out;
+    const nC = Math.max(1, hexes.length);
+    const seed0 = hexes[0];
+    const walk = (x, y, ang, steps, seed, w) => {
+      const pts = [[x, y]];
+      let a = ang;
+      let px = x;
+      let py = y;
+      for (let k = 0; k < steps; k++) {
+        a += (noise2(px / 11, py / 11, 19 + (seed % 7)) - 0.5) * 0.95;
+        const L = SIZE * (0.11 + 0.08 * hash01(seed * 5 + k, 83));
+        px += Math.cos(a) * L;
+        py += Math.sin(a) * L * 0.92;
+        pts.push([px, py]);
+      }
+      return { pts, w };
+    };
+    for (let c = 0; c < nC; c++) {
+      const r = (k) => hash01(seed0 * 131 + c * 17 + k, k * 13 + 7);
+      const i0 = hexes[c % hexes.length];   // one per stone hex, so the fissures spread over the whole mass
+      const [x, y] = hexToPixel(i0, SIZE);
+      const sx = x + (r(2) - 0.5) * SIZE * 0.8;
+      const sy = y + (r(3) - 0.5) * SIZE * 0.7;
+      const main = walk(sx, sy, r(4) * Math.PI * 2, 5 + Math.floor(r(5) * 5), seed0 + c * 3, 1.6 + 1.1 * r(6));
+      out.push(main);
+      if (r(7) < 0.55 && main.pts.length > 3) {
+        const at = 1 + Math.floor(r(8) * (main.pts.length - 2));
+        const [bx, by] = main.pts[at];
+        const [px, py] = main.pts[at - 1];
+        const dir = Math.atan2(by - py, bx - px) + (r(9) < 0.5 ? -1 : 1) * (0.6 + 0.5 * r(10));
+        out.push(walk(bx, by, dir, 2 + Math.floor(r(11) * 3), seed0 + c * 3 + 1, main.w * 0.6));
+      }
+    }
+    return out;
   }
 
   /**
@@ -905,7 +1024,17 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     g.restore();
   }
 
-  /** C111: garden paths — continuous strips from each path hex centre to each linked neighbour, rounded ends. */
+  /**
+   * C111: garden paths — continuous strips through the linked path hexes, rounded ends. C183: the strip runs through
+   * the midpoints of the links and bends at each hex centre on a quadratic curve (tangent along the link at every
+   * midpoint), so turns and zig-zags read as smooth curves instead of polygon steps; junctions join every pair of links.
+   */
+  function pathMid(i, h) {
+    const [x, y] = hexToPixel(i, SIZE);
+    const [hx, hy] = hexToPixel(h, SIZE);
+    return [(x + hx) / 2, (y + hy) / 2];
+  }
+
   function paintPaths(g, season, set) {
     if (!set.hexes.length) return;
     const [base, detail] = terrainColor(season, 'garden_path');
@@ -918,11 +1047,20 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       g.beginPath();
       for (const i of set.hexes) {
         const [x, y] = hexToPixel(i, SIZE);
-        for (const h of set.nb.get(i)) {
-          if (h < i) continue;
-          const [hx, hy] = hexToPixel(h, SIZE);
+        const links = set.nb.get(i).filter((h) => h >= 0);
+        if (links.length === 1) {
+          const [mx, my] = pathMid(i, links[0]);
           g.moveTo(x, y);
-          g.lineTo(hx, hy);
+          g.lineTo(mx, my);
+          continue;
+        }
+        for (let a = 0; a < links.length; a++) {
+          for (let b = a + 1; b < links.length; b++) {
+            const [ax, ay] = pathMid(i, links[a]);
+            const [bx, by] = pathMid(i, links[b]);
+            g.moveTo(ax, ay);
+            g.quadraticCurveTo(x, y, bx, by);
+          }
         }
       }
       g.stroke();
@@ -942,10 +1080,16 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     // gravel speckle
     const stations = set.hexes.map((i) => {
       const [x, y] = hexToPixel(i, SIZE);
-      const first = set.nb.get(i).find((h) => h >= 0);
+      const links = set.nb.get(i).filter((h) => h >= 0);
       let ang = 0;
-      if (first !== undefined) {
-        const [hx, hy] = hexToPixel(first, SIZE);
+      if (links.length === 2) {
+        // C183: on a bend, the stones sit on the curve's apex and follow its direction there
+        const [ax, ay] = pathMid(i, links[0]);
+        const [bx, by] = pathMid(i, links[1]);
+        return { x: 0.25 * ax + 0.5 * x + 0.25 * bx, y: 0.25 * ay + 0.5 * y + 0.25 * by, ang: Math.atan2(by - ay, bx - ax), seed: i };
+      }
+      if (links.length) {
+        const [hx, hy] = hexToPixel(links[0], SIZE);
         ang = Math.atan2(hy - y, hx - x);
       }
       return { x, y, ang, seed: i };
@@ -1570,6 +1714,64 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     return SURFACE.trail;
   }
 
+  /**
+   * C182: trails off their own route. A detour shows the trail's own (blocked) route as a faint dashed line and an
+   * amber marker with a bend arrow on each blocked hex; a paused trail (no way round) gets a red marker with a pause
+   * sign (its line is drawn dotted in drawTrails).
+   */
+  function drawDetours(ctx, trails, zoomK) {
+    for (const tr of trails) {
+      const det = tr && tr.detour;
+      if (!det || !Array.isArray(det.home) || det.home.length < 2) continue;
+      const paused = !!det.paused;
+      if (!paused) {
+        ctx.strokeStyle = 'rgba(255,236,190,0.42)';
+        ctx.lineWidth = Math.max(1, 1.6 * zoomK);
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        det.home.forEach((h, j) => {
+          const p = hexToScreen(h);
+          if (j) ctx.lineTo(p.x, p.y);
+          else ctx.moveTo(p.x, p.y);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const r = 6.5 * zoomK;
+      for (const h of Array.isArray(det.block) ? det.block : []) {
+        const p = hexToScreen(h);
+        if (!visiblePt(p, 20)) continue;
+        ctx.fillStyle = paused ? 'rgba(170,40,30,0.92)' : 'rgba(205,140,30,0.92)';
+        ctx.strokeStyle = 'rgba(20,14,8,0.75)';
+        ctx.lineWidth = 1.2;
+        const cy = p.y - SIZE * curView.zoom * 0.55;
+        ctx.beginPath();
+        ctx.arc(p.x, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#fff6e0';
+        ctx.fillStyle = '#fff6e0';
+        ctx.lineWidth = Math.max(1, r * 0.22);
+        ctx.beginPath();
+        if (paused) {
+          ctx.fillRect(p.x - r * 0.42, cy - r * 0.45, r * 0.26, r * 0.9);
+          ctx.fillRect(p.x + r * 0.16, cy - r * 0.45, r * 0.26, r * 0.9);
+        } else {
+          // a bend-around arrow
+          ctx.arc(p.x, cy + r * 0.15, r * 0.48, Math.PI, Math.PI * 1.95);
+          ctx.stroke();
+          const ax = p.x + r * 0.48;
+          const ay = cy + r * 0.05;
+          ctx.beginPath();
+          ctx.moveTo(ax - r * 0.3, ay - r * 0.12);
+          ctx.lineTo(ax + r * 0.02, ay + r * 0.3);
+          ctx.lineTo(ax + r * 0.3, ay - r * 0.16);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
   function drawTrails(ctx, s, d, polys) {
     const trails = s.run.surface.trails || [];
     const dts = (d && d.surface && d.surface.trails) || [];
@@ -1615,7 +1817,9 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       stroke();
       ctx.strokeStyle = rgba(col, alpha);
       ctx.lineWidth = width;
+      const paused = !!(tr.detour && tr.detour.paused);   // C182: blocked with no way round
       if (tr.job === 'lycaenid') ctx.setLineDash([5, 5]);
+      else if (paused) ctx.setLineDash([2, 6]);
       stroke();
       ctx.setLineDash([]);
       // rally: travelling dashes
@@ -1630,6 +1834,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.lineDashOffset = 0;
       }
     }
+    drawDetours(ctx, trails, zoomK);
     // ability pulses
     for (let k = pulses.length - 1; k >= 0; k--) {
       const p = pulses[k];
@@ -1704,14 +1909,32 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       let alpha = 1;
       if (src.ttl > 0 && src.ttl < 20) alpha = 0.55 + 0.45 * Math.abs(Math.sin(time * 5));
       ctx.globalAlpha = alpha;
-      if (amb.on) {
+      if (src.type === 'rich_seed_patch') {
+        // C188: a gold rim marks the scouts' rich find
+        ctx.strokeStyle = `rgba(255,214,90,${0.55 + 0.25 * Math.sin(time * 2.2 + src.uid)})`;
+        ctx.lineWidth = Math.max(1.5, size * 0.07);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (src.type === 'beetle_carcass') {
+        // C188: a beetle on its back (static), with the dead insect's fly
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(Math.PI * 0.85);
+        ctx.globalAlpha = alpha * 0.85;
+        atlas.drawIcon(ctx, 'prey_beetle', 0, 0, size * 1.05);
+        ctx.restore();
+        ctx.globalAlpha = alpha;
+        if (amb.on) drawAmbientExtras(ctx, 'dead_insect', p.x, p.y, size, { t: time, uid: src.uid, wind: amb.wind });
+      } else if (amb.on) {
         // C161: idle life (sway / crawl / inch, then a fly, termites …), visual only, deterministic phase per uid
         const wp = hexWorldPt(src.hex);
         const ao = { t: time, uid: src.uid, wind: amb.wind, wx: wp.x, wy: wp.y };
-        drawIconAmbient(ctx, atlas, src.type, p.x, p.y, size, ao);
-        drawAmbientExtras(ctx, src.type, p.x, p.y, size, ao);
+        drawIconAmbient(ctx, atlas, ICON_ALIAS[src.type] || src.type, p.x, p.y, size, ao);
+        drawAmbientExtras(ctx, ICON_ALIAS[src.type] || src.type, p.x, p.y, size, ao);
       } else {
-        atlas.drawIcon(ctx, src.type, p.x, p.y, size);
+        atlas.drawIcon(ctx, ICON_ALIAS[src.type] || src.type, p.x, p.y, size);
       }
       ctx.globalAlpha = 1;
       if (src.max > 0 && src.stock >= 0) {
@@ -1744,9 +1967,27 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
   }
 
+  /** C220: the drawn mound size eases toward the Mound's growth value (level + progress), so it rises smoothly. */
+  let moundDisp = -1;
+  let moundAt = 0;
+  function moundSize(s) {
+    const lvl = Number(s.run.surface.mound) || 0;
+    let want = lvl;
+    try {
+      const g = surfaceSys.moundGrowth(s);
+      if (g && Number.isFinite(g.shown)) want = Math.max(lvl, g.shown);
+    } catch { want = lvl; }
+    const t = nowMs();
+    const dt = moundAt > 0 ? Math.min(1, Math.max(0, (t - moundAt) / 1000)) : 1;
+    moundAt = t;
+    if (moundDisp < 0 || reduced || Math.abs(want - moundDisp) > 3) moundDisp = want;
+    else moundDisp += (want - moundDisp) * Math.min(1, dt * 1.5);
+    return moundDisp;
+  }
+
   function drawMound(ctx, s) {
     const surf = s.run.surface;
-    const level = surf.mound || 0;
+    const level = moundSize(s);
     const p = hexToScreen(0);
     const z = curView.zoom;
     const r = SIZE * z * (0.48 + Math.min(0.5, 0.09 * Math.log2(1 + level)));
@@ -1887,6 +2128,19 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.moveTo(p.x + r * 0.7, p.y - r * 1.1);
         ctx.lineTo(p.x + r * 0.7, p.y - r * 0.2);
         ctx.stroke();
+        // C225: the truce's time left beside the white flag ("Truce 4:12")
+        const secs = Math.max(0, Math.ceil(Number(rv.truce) || 0));
+        const tl = 'Truce ' + Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+        ctx.font = `600 ${Math.max(8, 9 * Math.sqrt(z))}px system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const fw = ctx.measureText(tl).width + 6;
+        const fx = p.x + r * 0.7 + Math.max(5, r * 0.45) + 3;
+        const fy = p.y - r * 1.1 + Math.max(4, r * 0.3) / 2;
+        ctx.fillStyle = 'rgba(15,10,5,0.8)';
+        ctx.fillRect(fx, fy - 6, fw, 12);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(tl, fx + 3, fy);
       }
     }
   }
@@ -2042,7 +2296,18 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         }
         continue;
       }
-      const bob = o.kind === 'golden_aphid' || o.kind === 'wandering_queen' ? Math.sin(time * 3) * 2 : 0;
+      if (o.kind === 'fossil_cache') {
+        drawFossil(ctx, p.x, p.y, size, o.uid);
+        continue;
+      }
+      if (o.kind === 'lost_queen') {
+        // C188: a soft gold halo marks the scouts' find
+        ctx.fillStyle = `rgba(255,226,140,${0.22 + 0.12 * Math.sin(time * 2.5 + o.uid)})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 0.62, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const bob = o.kind === 'golden_aphid' || o.kind === 'wandering_queen' || o.kind === 'lost_queen' ? Math.sin(time * 3) * 2 : 0;
       const osz = size * (o.kind === 'lizard' ? 1.3 : 1);
       if (amb.on) {
         // C161: molehill soil puffs, swarm alates, the rove beetle's antennae, the Phengaris caterpillar's inching
@@ -2062,6 +2327,38 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
           ctx.stroke();
         }
       }
+    }
+  }
+
+  /** C188: a fossil cache — a pale stone slab with an ammonite spiral, glinting. */
+  function drawFossil(ctx, x, y, size, uid) {
+    const r = size * 0.42;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(x + r * 0.12, y + r * 0.22, r * 1.05, r * 0.72, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#d9cbb0';
+    ctx.beginPath();
+    ctx.ellipse(x, y, r * 1.05, r * 0.75, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#8a7556';
+    ctx.lineWidth = Math.max(1, size * 0.05);
+    ctx.beginPath();
+    for (let k = 0; k <= 40; k++) {
+      const a = k * 0.42;
+      const rr = r * 0.08 + (r * 0.62 * k) / 40;
+      const px = x + Math.cos(a) * rr;
+      const py = y + Math.sin(a) * rr * 0.8;
+      if (k === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    const g = (time * 0.6 + hash01(uid | 0, 71)) % 1;
+    if (g < 0.25) {
+      ctx.fillStyle = `rgba(255,250,220,${0.9 * Math.sin((g / 0.25) * Math.PI)})`;
+      ctx.beginPath();
+      ctx.arc(x - r * 0.45, y - r * 0.3, Math.max(1.2, size * 0.06), 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -2519,6 +2816,17 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     ctx.setLineDash([]);
   }
 
+  /** C237: valid aphid-move hexes, memoised on the surface revision and the colony. */
+  const aphidMemo = { key: '', list: [] };
+  function aphidTargetsFor(s, d, src) {
+    const key = `${src}|${s.run.surface.rev}|${(s.run.surface.sources || []).length}`;
+    if (aphidMemo.key !== key) {
+      aphidMemo.key = key;
+      aphidMemo.list = safe(() => surfaceSys.aphidTargets(s, d, src), []) || [];
+    }
+    return aphidMemo.list;
+  }
+
   function drawToolPreviews(ctx, s, d) {
     const ui0 = uiOf(ui);
     const tool = ui0.tool;
@@ -2537,8 +2845,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.beginPath();
         hexPathOn(ctx, p.x, p.y, SIZE * curView.zoom * 0.95);
         ctx.fill();
-      } else if (tool.kind === 'flag' || tool.kind === 'moveAphids' || tool.kind === 'tournament') {
+      } else if (tool.kind === 'moveAphids') {
+        const ok = aphidTargetsFor(s, d, tool.src).includes(hh);   // C237
+        hexOutline(ctx, hh, ok ? SURFACE.claimOk : SURFACE.claimBad, 3);
+      } else if (tool.kind === 'flag' || tool.kind === 'tournament') {
         hexOutline(ctx, hh, tool.kind === 'flag' ? SURFACE.flag : '#ffffff', 2.5);
+      }
+    }
+    // C237: while moving an aphid colony, every hex it may move to is tinted green
+    if (tool && tool.kind === 'moveAphids') {
+      for (const hx of aphidTargetsFor(s, d, tool.src)) {
+        const p = hexToScreen(hx);
+        if (!visiblePt(p)) continue;
+        ctx.fillStyle = rgba(SURFACE.claimOk, 0.28);
+        ctx.beginPath();
+        hexPathOn(ctx, p.x, p.y, SIZE * curView.zoom * 0.95);
+        ctx.fill();
+        hexOutline(ctx, hx, SURFACE.claimOk, 1.5);
       }
     }
     if (tool && tool.kind === 'placeSatellite') drawSatelliteTool(ctx, s, d, hh);
@@ -2618,6 +2941,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     ctx.fillRect(6, H - 22, tw + 10, 16);
     ctx.fillStyle = '#f4ecd8';
     ctx.fillText(text, 11, H - 14);
+  }
+
+  /** C184: "Trails 7 / 11" (slots used / available) at the bottom left, above the scale label; amber when full. */
+  function drawTrailBadge(ctx, s, d, H) {
+    const used = (s.run.surface.trails || []).length;
+    const slots = d && d.surface && Number.isFinite(d.surface.slots) ? d.surface.slots : 0;
+    if (!(slots > 0) || used === 0) return;
+    const text = `Trails ${used} / ${slots}`;
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(text).width;
+    const y = H - 42;
+    ctx.fillStyle = 'rgba(15,20,10,0.6)';
+    ctx.fillRect(6, y, tw + 10, 16);
+    ctx.fillStyle = used >= slots ? '#ffcf6a' : '#f4ecd8';
+    ctx.fillText(text, 11, y + 8);
   }
 
   function publishSeamX() {
@@ -2778,6 +3118,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       drawCeremonySurface(ctx, { W, H, s, hexToScreen, unit: 11 * Math.pow(curView.zoom, 0.75), zoom: curView.zoom, flightW: w });
     }
     drawScaleLabel(ctx, s, H);
+    drawTrailBadge(ctx, s, d, H);
     publishSeamX();
   }
 

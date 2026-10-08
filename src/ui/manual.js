@@ -4,10 +4,13 @@
 // DOM is rebuilt only when the content signature changes (a reveal, a new sighting, a purchase that changes structure)
 // or the search / section changes. Entry points: the book button in the tab row and the H / ? keys (ui/app.js).
 // Owner: WP9. Contract: ARCHITECTURE §14.6 (Manual), §18 C131; DESIGN §25.3. Top level is DOM-free (Node imports it).
+// C210: search results are one list ranked by relevance (manualContent.rankEntries: title > heading > body, whole word >
+// prefix > substring, entries about things you have now boosted), each under a small section label, with the query
+// words highlighted (<mark>) in titles and plain text (live values are not marked).
 
 import { h, clear, setText, toggleClass } from './dom.js';
 import {
-  SECTIONS, MORE_NOTE, manualIndex, manualSignature, buildEntry, textOf, entryText, matchesQuery,
+  SECTIONS, MORE_NOTE, manualIndex, manualSignature, buildEntry, textOf, rankEntries, queryWords, highlightParts,
 } from './manualContent.js';
 
 /** localStorage key of the last section viewed (a per-browser convenience; every access in try/catch). */
@@ -41,6 +44,7 @@ export function createManualView(ctx) {
   const win = ctx.win || (globalThis.window || null);
   let section = ctx.section || loadSection(win) || 'start';
   let query = '';
+  let words = [];   // C210: lower-case search words for highlighting
   let sig = null;
   let index = [];
   let visible = new Set();
@@ -76,7 +80,15 @@ export function createManualView(ctx) {
       lives.push({ el: span, t });
       return span;
     }
-    return textOf(t, s0(), d0());
+    return mark(textOf(t, s0(), d0()));
+  }
+
+  /** C210: a plain string with the search words wrapped in <mark> (the string itself when nothing matches). */
+  function mark(str) {
+    if (!words.length || typeof str !== 'string' || !str) return str;
+    const parts = highlightParts(str, words);
+    if (!parts.some((x) => x.hit)) return str;
+    return h('span', { class: 'manual-marked' }, parts.map((x) => (x.hit ? h('mark', { class: 'manual-hit', text: x.t }) : x.t)));
   }
 
   function kvList(rows, keys = false) {
@@ -84,7 +96,7 @@ export function createManualView(ctx) {
     for (const row of rows) {
       if (!row) continue;
       const [k, v] = row;
-      dl.append(h('dt', null, keys ? h('kbd', { class: 'kbd', text: k }) : k), h('dd', null, textNode(v)));
+      dl.append(h('dt', null, keys ? h('kbd', { class: 'kbd', text: k }) : mark(k)), h('dd', null, textNode(v)));
     }
     return dl;
   }
@@ -92,8 +104,8 @@ export function createManualView(ctx) {
   function block(b) {
     if (!b) return null;
     if (b.p !== undefined) return b.p === '' ? null : h('p', { class: 'manual-p' }, textNode(b.p));
-    if (b.note !== undefined) return h('p', { class: 'note manual-note', text: b.note });
-    if (b.h !== undefined) return h('h4', { class: 'manual-h', text: b.h });
+    if (b.note !== undefined) return h('p', { class: 'note manual-note' }, mark(b.note));
+    if (b.h !== undefined) return h('h4', { class: 'manual-h' }, mark(b.h));
     if (b.list) return b.list.length ? h('ul', { class: 'manual-list' }, b.list.map((t) => h('li', null, textNode(t)))) : null;
     if (b.kv) return kvList(b.kv, !!b.keys);
     if (b.table) {
@@ -110,7 +122,7 @@ export function createManualView(ctx) {
     const links = (e.links || []).filter((l) => l && visible.has(l.entry) && l.entry !== e.id);
     const tabs = (e.tabs || []).filter((t) => t && (typeof ctx.tabShown !== 'function' || ctx.tabShown(t.tab)));
     return h('article', { class: 'manual-entry', dataset: { entry: e.id } },
-      h('h3', { class: 'manual-entry-title', text: e.title }),
+      h('h3', { class: 'manual-entry-title' }, mark(e.title)),
       (e.blocks || []).map(block),
       links.length || tabs.length ? h('div', { class: 'manual-links' },
         links.length ? h('span', { class: 'manual-see', text: 'See also:' }) : null,
@@ -140,13 +152,16 @@ export function createManualView(ctx) {
     clear(main);
     lives = [];
     if (query) {
-      let n = 0;
-      for (const sec of index) {
-        const hits = sec.entries.map(entry).filter((e) => e && matchesQuery(entryText(e, s0(), d0()), query));
-        if (!hits.length) continue;
-        n += hits.length;
-        main.appendChild(h('h2', { class: 'manual-sec-title', text: sec.title }));
-        for (const e of hits) main.appendChild(article(e));
+      // C210: one list, best matches first, each under its section's name
+      const secOf = new Map();
+      for (const sec of index) for (const id of sec.entries) secOf.set(id, sec.title);
+      const ranked = rankEntries(index.flatMap((sec) => sec.entries.map(entry)), s0(), d0(), query);
+      const n = ranked.length;
+      if (n) main.appendChild(h('h2', { class: 'manual-sec-title', text: n + ' result' + (n === 1 ? '' : 's') + ' for “' + query + '”' }));
+      for (const { entry: e } of ranked) {
+        const a = article(e);
+        a.insertBefore(h('p', { class: 'manual-hit-sec', text: secOf.get(e.id) || '' }), a.firstChild);
+        main.appendChild(a);
       }
       if (!n) main.appendChild(h('p', { class: 'note manual-empty', text: 'Nothing in the Manual matches “' + query + '” yet.' }));
     } else {
@@ -193,7 +208,7 @@ export function createManualView(ctx) {
     if (!index.some((x) => x.id === id)) return;
     section = id;
     saveSection(win, id);
-    if (query) { query = ''; search.value = ''; }
+    if (query) { query = ''; words = []; search.value = ''; }
     main.scrollTop = 0;
     renderContent();
   }
@@ -204,7 +219,7 @@ export function createManualView(ctx) {
     pendingEntry = id;
     section = sec.id;
     saveSection(win, sec.id);
-    if (query) { query = ''; search.value = ''; }
+    if (query) { query = ''; words = []; search.value = ''; }
     renderContent();
   }
 
@@ -212,6 +227,7 @@ export function createManualView(ctx) {
     const qv = String(text || '').trim();
     if (qv === query) return;
     query = qv;
+    words = queryWords(qv);
     if (search.value !== text && typeof text === 'string') search.value = text;
     main.scrollTop = 0;
     renderContent();

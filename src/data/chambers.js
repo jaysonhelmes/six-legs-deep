@@ -1,4 +1,4 @@
-// The 17 chambers (DESIGN §7.6; War Hall C136), their cost model (§7.5), placement rules (§7.4) and adjacency rules (§7.7).
+// The 19 chambers (DESIGN §7.6; War Hall C136; Carapace Store and Workshop C179), their cost model (§7.5), placement rules (§7.4) and adjacency rules (§7.7).
 // Owner: WP3. Contract: ARCHITECTURE §6.3 (entry shape and `fx` keys per chamber).
 //
 // Entry fields: unlock (§11 key gating placement; null = pre-dug), maxInst (number | 'perPocket'), instBonus
@@ -16,10 +16,23 @@ const freeze = (o) => {
 
 /** Chamber ids in Build-panel order (DESIGN §7.6 table order). */
 export const CHAMBER_ORDER = freeze([
-  'royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'root_aphid_pen',
-  'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber',
-  'deep_vault',
+  'royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'carapace_store',
+  'carapace_workshop', 'root_aphid_pen', 'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate',
+  'water_well', 'nuptial_chamber', 'deep_vault',
 ]);
+
+/**
+ * C219: stable one-character codes of chamber types for the Colony History record (s.meta.strata[].ch). APPEND ONLY:
+ * a code, once used in a save, must keep meaning the same type.
+ */
+export const CHAMBER_CODES = freeze({
+  royal_chamber: 'a', gallery: 'b', nursery: 'c', granary: 'd', scent_library: 'e', midden: 'f', barracks: 'g', war_hall: 'h',
+  carapace_store: 'i', carapace_workshop: 'j', root_aphid_pen: 'k', fungus_garden: 'l', repletion_hall: 'm', hibernaculum: 'n',
+  thermal_chimney: 'o', gate: 'p', water_well: 'q', nuptial_chamber: 'r', deep_vault: 's',
+});
+
+/** C219: chambers kept per Colony History record, the largest first (the save budget: about 9 characters each). */
+export const HISTORY_CHAMBERS_MAX = 24;
 
 /** Chambers by id (ARCHITECTURE §6.3 shape). */
 export const CHAMBERS = freeze({
@@ -88,6 +101,26 @@ export const CHAMBERS = freeze({
     place: { food: 25000 }, placeGrowth: 2.5,
     f0: 6250, s0: 2500, g: 1.80, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
     fx: { berths: 4 },
+  },
+  // C179 (player decision): the chitin chambers. The Store raises the chitin storage cap (chitinCap × capGrowth^(L−1)
+  // per Store, summed into d.nest.agg.chitinCapBase); the Workshop boosts chitin from every source (+chitinBoost per
+  // level, all Workshops together at most boostMax, d.nest.agg.chitinBoost) and recycles `recycle` chitin per level
+  // from every fallen soldier or supermajor (d.nest.agg.chitinRecycle).
+  carapace_store: {
+    id: 'carapace_store', name: 'Carapace Store', unlock: 'chamber_carapace_store',
+    maxInst: 2, instBonus: [],
+    w0: 2, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
+    place: { food: 600 }, placeGrowth: 2.5,
+    f0: 150, s0: 90, g: 1.60, levelExtra: null, maxL: 0, maxLBonus: null, frostImmune: false,
+    fx: { chitinCap: 300, capGrowth: 1.6 },
+  },
+  carapace_workshop: {
+    id: 'carapace_workshop', name: 'Carapace Workshop', unlock: 'chamber_carapace_workshop',
+    maxInst: 1, instBonus: [],
+    w0: 3, h0: 2, grows: true, rowMin: 1, rowMax: 79, rule: null,
+    place: { food: 3000, chitin: 30 }, placeGrowth: 2.5,
+    f0: 750, s0: 300, g: 1.75, levelExtra: null, maxL: 10, maxLBonus: null, frostImmune: false,
+    fx: { chitinBoost: 0.10, boostMax: 1.0, recycle: 0.25 },
   },
   root_aphid_pen: {
     id: 'root_aphid_pen', name: 'Root Aphid Pen', unlock: 'chamber_root_aphid_pen',
@@ -180,7 +213,7 @@ export const ADJACENCY_ORDER = freeze(['adj_nursery_royal', 'adj_library_royal',
  */
 export const ADJACENCY = freeze({
   adj_nursery_royal:      { id: 'adj_nursery_royal', a: 'nursery', b: 'royal_chamber', path: 4, text: '+15% brood speed' },
-  adj_library_royal:      { id: 'adj_library_royal', a: 'scent_library', b: 'royal_chamber', path: 4, text: 'Library ×1.10' },
+  adj_library_royal:      { id: 'adj_library_royal', a: 'scent_library', b: 'royal_chamber', path: 4, text: 'Scent Library ×1.10' },
   adj_granary_repletion:  { id: 'adj_granary_repletion', a: 'granary', b: 'repletion_hall', path: 4, text: 'Replete cap bonus ×1.25' },
   adj_garden_well:        { id: 'adj_garden_well', a: 'fungus_garden', b: 'water_well', path: 4, text: 'Garden +30%' },
   hyg_midden:             { id: 'hyg_midden', a: 'midden', b: ['nursery', 'fungus_garden'], path: 6, text: 'Hygiene −20%' },

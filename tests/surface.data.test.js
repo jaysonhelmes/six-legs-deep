@@ -21,8 +21,8 @@ test('TERRAIN_ORDER is the documented order and codes equal indices', () => {
   assert.ok(total <= 1 && total > 0.95);
 });
 
-test('SOURCE_ORDER has the 15 DESIGN sources (termite_swarm included, gift excluded) and every entry is well formed', () => {
-  assert.equal(SOURCE_ORDER.length, 15);
+test('SOURCE_ORDER has the 15 DESIGN sources plus the 2 C188 expedition finds (termite_swarm included, gift excluded) and every entry is well formed', () => {
+  assert.equal(SOURCE_ORDER.length, 17);
   assert.ok(SOURCE_ORDER.includes('termite_swarm'));
   assert.ok(!SOURCE_ORDER.includes('gift'));
   assert.deepEqual(Object.keys(SOURCES).sort(), [...SOURCE_ORDER].sort());
@@ -33,7 +33,7 @@ test('SOURCE_ORDER has the 15 DESIGN sources (termite_swarm included, gift exclu
     assert.ok(s.job === null || ['forager', 'herder', 'leafcutter', 'lycaenid'].includes(s.job), id);
     assert.ok(s.y && typeof s.y === 'object');
     for (const k of ['spring', 'summer', 'autumn', 'winter']) assert.equal(typeof s.season[k], 'number', id + ' season ' + k);
-    assert.ok(['fixed', 'random', 'event', 'research', 'conquest'].includes(s.spawn.mode), id);
+    assert.ok(['fixed', 'random', 'event', 'research', 'conquest', 'expedition'].includes(s.spawn.mode), id);
     if (s.stock) for (const k of ['base', 'sec', 'regrow']) assert.equal(typeof s.stock[k], 'number', id);
   }
   assert.equal(SOURCES.seed_patch.stock.dynamic, true);
@@ -61,7 +61,8 @@ test('abilities, slots, trail, scout, territory and mound constants match DESIGN
   assert.equal(SCOUT.forceExp, 0.6);
   assert.equal(MAP.radiusBase, 8);
   assert.equal(TERRITORY.claimGrowth, 1.06);
-  assert.equal(MOUND.growth, 1.9);
+  assert.equal(MOUND.freeMax, 5);
+  assert.ok(MOUND.grow && MOUND.grow.adults.w > 0, "C220 growth weights");
   assert.ok(Object.isFrozen(TERRAIN) && Object.isFrozen(SOURCES.seed_patch.stock));
 });
 
@@ -82,16 +83,3 @@ test('claim cost sequence: claimed 0/10/30/50/80 → 10 / 18 / 57 / 184 / 1,059 
   assert.ok(Math.abs(surface.claimCost(s).pheromone - 9) < 1e-9);
 });
 
-test('mound cost: L1 300, L5 3,910, L10 96,800, L20 5.9e7 soil; null past COST_MAX', () => {
-  const s = newState();
-  const lv = (L) => {
-    s.run.surface.mound = L - 1;
-    return surface.moundCost(s).soil;
-  };
-  assert.equal(lv(1), 300);
-  assert.equal(Math.round(lv(5)), 3910);
-  assert.ok(Math.abs(lv(10) - 96800) < 10);
-  assert.ok(Math.abs(lv(20) / 5.9e7 - 1) < 0.01);
-  s.run.surface.mound = 2000;
-  assert.equal(surface.moundCost(s), null);
-});

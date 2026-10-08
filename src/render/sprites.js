@@ -398,6 +398,13 @@ export function createFieldCache() {
     fields: new Map(),
     /** Refresh the open map when the rev (or the cells array identity) changed. */
     sync(cells, rev) {
+      // C215: a nest of another width (a wider run or another save): resize the buffers first
+      if (Array.isArray(cells) && cells.length !== cache.open.length) {
+        cache.open = new Uint8Array(cells.length);
+        cache.queue = new Int32Array(cells.length);
+        cache.fields.clear();
+        cache.rev = -1;
+      }
       if (rev === cache.rev && cells === cache.cellsRef) return false;
       cache.rev = rev;
       cache.cellsRef = cells;

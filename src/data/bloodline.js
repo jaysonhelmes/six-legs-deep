@@ -28,6 +28,8 @@ export const TRAITS = deepFreeze({
   remembered_paths: { id: 'remembered_paths', name: 'Remembered Paths', cost: { base: 2, growth: 1 }, max: 1, fx: { trails: 2, strength: 0.5 } },
   ancestral_blueprint: { id: 'ancestral_blueprint', name: 'Ancestral Blueprint', cost: { base: 3, growth: 1 }, max: 1,
     fx: { cellDiv: 3, placeMult: 0.5 } },
+  // C166: automatic jobs and the Adaptation autobuyer moved to the Federation (Automated Brood / Autobuyers). Kept: dig
+  // queue +2 and the carry of your last job targets into every run (auto jobs start on when Age Polyethism is known).
   automaton_instincts: { id: 'automaton_instincts', name: 'Automaton Instincts', cost: { base: 5, growth: 1 }, max: 1, fx: { queue: 2 } },
   hardy_workers: { id: 'hardy_workers', name: 'Hardy Workers', cost: { base: 5, growth: 3.5 }, max: 12, fx: { mult: 1.4 } },
   deep_diggers: { id: 'deep_diggers', name: 'Deep Diggers', cost: { base: 5, growth: 3.5 }, max: 12, fx: { mult: 1.4 } },

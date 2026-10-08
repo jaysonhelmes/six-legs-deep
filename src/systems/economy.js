@@ -19,10 +19,14 @@
 // C76: d.rates[res].avg (ledger resources) is an exponential moving average of gross with time constant INCOME_AVG.sec,
 //   advanced by econDt; a derived cache without history starts it at the current gross. wallet.incomeSeconds uses it.
 // C103: ledger chitin.midden = CHAMBERS.midden.fx.chitin × agg.middenL × stats.chitin (Midden recycling).
+// C199: chitin is capped at d.stats.chitinCap like honeydew (income adds up to the cap, never lowering a stock above it);
+//   the stock above the cap (one-shot overflow, a cap that shrank) decays at CHITIN.decayPerMin of the excess per minute,
+//   integrated exactly over econDt (offline too: it is a resource, not an ant). d.rates.chitin.decay = that loss per
+//   second, cap = the cap; net = income × eff − decay.
 
 import { SOFTCAPS } from '../data/balance.js';
 import { JOBS } from '../data/jobs.js';
-import { HUNGRY, SPOILAGE, CLICK, INCOME_AVG } from '../data/economy.js';
+import { HUNGRY, SPOILAGE, CLICK, INCOME_AVG, CHITIN } from '../data/economy.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { scChain, clampNum, safeDiv } from '../core/math.js';
 import { grant } from '../core/wallet.js';
@@ -31,7 +35,7 @@ import { killAdults } from './population.js';
 
 const LEDGER_RES = ['food', 'insight', 'honeydew', 'fungus', 'chitin', 'leaves'];
 const ADULT_CASTES = ['minor', 'soldier', 'supermajor', 'replete'];
-const CAP_KEY = { honeydew: 'honeydewCap', fungus: 'fungusCap', leaves: 'leafCap', pheromone: 'pheromoneCap' };
+const CAP_KEY = { honeydew: 'honeydewCap', fungus: 'fungusCap', leaves: 'leafCap', pheromone: 'pheromoneCap', chitin: 'chitinCap' };
 
 /** Finite number or the fallback. */
 function num(v, dflt = 0) {
@@ -47,6 +51,12 @@ function own(obj, k) {
 function fx(table, id, key, dflt) {
   const e = own(table, id) ? table[id] : null;
   return e && e.fx ? num(e.fx[key], dflt) : dflt;
+}
+
+/** C199: the chitin cap (no cap known → unlimited). */
+function chitinCapOf(st) {
+  const c = st ? st.chitinCap : undefined;
+  return typeof c === 'number' && Number.isFinite(c) && c >= 0 ? c : Infinity;
 }
 
 /** Σ of the finite values of a ledger bucket. */
@@ -249,7 +259,10 @@ export function tick(s, d, dt, env) {
 
     // 6. other resources and soil
     res.insight = hot(res.insight, res.insight + gross.insight * eff * econDt);
-    res.chitin = hot(res.chitin, res.chitin + gross.chitin * eff * econDt);
+    const chitinCap = chitinCapOf(st);
+    let chitin = addCapped(num(res.chitin), gross.chitin * eff * econDt, chitinCap);
+    if (chitin > chitinCap) chitin = chitinCap + (chitin - chitinCap) * Math.exp(-CHITIN.decayPerMin / 60 * econDt);
+    res.chitin = hot(res.chitin, chitin);
     res.honeydew = hot(res.honeydew, addCapped(res.honeydew, gross.honeydew * eff * econDt, num(st[CAP_KEY.honeydew])));
     res.fungus = hot(res.fungus, addCapped(res.fungus, gross.fungus * eff * econDt, num(st[CAP_KEY.fungus])));
     const used = leavesUsedRate * econDt * eff;
@@ -298,7 +311,9 @@ export function tick(s, d, dt, env) {
   // 10. d.rates (gross = after softcap at efficiency 1; net = income − sinks incl. efficiency)
   setRate(d, 'food', { net: netFood, upkeep: clampNum(upkeepRate), clicks: clickAverage(s, d) });
   setRate(d, 'insight', { net: clampNum(gross.insight * eff) });
-  setRate(d, 'chitin', { net: clampNum(gross.chitin * eff) });
+  const chitinCap = chitinCapOf(st);
+  const chitinDecay = Math.max(0, num(res.chitin) - chitinCap) * CHITIN.decayPerMin / 60;
+  setRate(d, 'chitin', { net: gross.chitin * eff - chitinDecay, decay: clampNum(chitinDecay), cap: clampNum(chitinCap) });
   setRate(d, 'honeydew', { net: clampNum(gross.honeydew * eff) });
   setRate(d, 'fungus', { net: clampNum(gross.fungus * eff) });
   setRate(d, 'leaves', { net: (gross.leaves - leavesUsedRate) * eff });

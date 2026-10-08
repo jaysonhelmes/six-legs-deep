@@ -97,6 +97,9 @@ export const handlers = {
   /** buyFederation { id }: next Federation level (kinship). Allowed while paused. */
   buyFederation: {
     validate(s, d, cmd) {
+      // C172: a node with `requires` (Architect's Table → Blueprint Library) is locked until that node is owned.
+      const node = typeof cmd.id === 'string' && Object.prototype.hasOwnProperty.call(FEDERATION, cmd.id) ? FEDERATION[cmd.id] : null;
+      if (node && typeof node.requires === 'string' && !(lv(s.era.federation, node.requires) > 0)) return 'locked';
       return buyReason(FEDERATION, cmd.id, fedCost, s);
     },
     apply(s, d, cmd) {

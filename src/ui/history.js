@@ -5,12 +5,16 @@
 // Owner: WP9. Contract: ARCHITECTURE §14.5 (Prestige row), §18 C130; DESIGN §25.8.
 // The silhouette decoder here is a small standalone copy of the 'bits:' (and legacy 'rle:') formats written by
 // systems/prestige.strataSilhouette (core/save bitsEncode), so the UI imports neither core/save nor the nest renderer.
+// C219: newer records also carry their chambers (`ch`, nest.strataChambers: type code, rectangle, level), drawn as
+// coloured rooms with a level pip, and a legend of the types shown; C215: and the nest width (`cols`, absent = 40).
 
 import { h } from './dom.js';
 import { fmtCount, fmtTime } from './format.js';
 import { nameOf, HISTORY_LAYERS, HISTORY_GAINS } from './text.js';
 import { arr } from './reveal.js';
-import { GRID, CELL } from '../data/balance.js';
+import { GRID, CELL, validCols } from '../data/balance.js';
+import { CHAMBER_CODES } from '../data/chambers.js';
+import { footprint } from '../systems/nestgeom.js';
 import { LAYER_ORDER, LAYERS } from '../data/strata.js';
 
 const BITS_PREFIX = 'bits:';
@@ -20,6 +24,41 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 /** Soil colour per layer for the mini drawing (close to the Below view's strata). */
 const LAYER_COLORS = { topsoil: '#6b4a2b', loam: '#5c3f25', clay: '#7a4b2c', gravel: '#5d554b', bedrock: '#45403c', aquifer: '#34424a' };
 const CAVITY = '#1a110a';
+/** C219: chamber fill colours in the gallery drawing (close to the Below view's chamber palettes). */
+export const HISTORY_CHAMBER_COLORS = Object.freeze({
+  royal_chamber: '#f0c674', gallery: '#d9b27c', nursery: '#f2dcc0', granary: '#e3bd5c', scent_library: '#a9c6f0', midden: '#9c8a62',
+  barracks: '#cf7a5f', war_hall: '#d9614b', carapace_store: '#c99a6a', carapace_workshop: '#d8a873', root_aphid_pen: '#a8cf78',
+  fungus_garden: '#d4e6dc', repletion_hall: '#efb35a', hibernaculum: '#bcd8ec', thermal_chimney: '#e2915f', gate: '#c2b8a4',
+  water_well: '#8fc8ea', nuptial_chamber: '#e2cdf4', deep_vault: '#f4c35e',
+});
+const CODE_TYPES = Object.freeze(Object.fromEntries(Object.entries(CHAMBER_CODES).map(([k, v]) => [v, k])));
+
+/**
+ * C219: decode a record's chambers ("bx.y.L,…" or "bx.y.L.w.h": a type code letter, then base-36 numbers; without w.h
+ * the size is the level's footprint). Malformed entries are skipped; anything that is not a string gives [].
+ * @param {string} str
+ * @returns {Array<{ type: string, x: number, y: number, w: number, h: number, level: number }>}
+ */
+export function decodeChambers(str) {
+  if (typeof str !== 'string' || !str) return [];
+  const out = [];
+  for (const part of str.split(',')) {
+    const type = CODE_TYPES[part[0]];
+    if (!type) continue;
+    const n = part.slice(1).split('.').map((v) => parseInt(v, 36));
+    if ((n.length !== 3 && n.length !== 5) || !n.every((v) => Number.isInteger(v) && v >= 0)) continue;
+    const [x, y, level] = n;
+    const fp = n.length === 5 ? { w: n[3], h: n[4] } : footprint(type, level);
+    if (!(fp.w > 0) || !(fp.h > 0)) continue;
+    out.push({ type, x, y, w: fp.w, h: fp.h, level });
+  }
+  return out;
+}
+
+/** C215: a record's nest width (its cols, else 40). */
+export function recordCols(rec) {
+  return rec && validCols(rec.cols) ? rec.cols : GRID.baseCols;
+}
 const GRASS = '#5f8f3a';
 /** Fewest rows a drawing shows (shallow nests still read as a nest under the surface). */
 const MIN_ROWS = 18;
@@ -90,9 +129,11 @@ function layerAt(y) {
  */
 export function drawSilhouette(canvas, cells, opts = {}) {
   if (!canvas || typeof canvas.getContext !== 'function') return false;
-  const cols = GRID.cols;
+  const cols = validCols(opts.cols) ? opts.cols : GRID.baseCols;
   const mask = decodeSilhouette(cells, cols * GRID.rows);
-  const rows = silhouetteRows(mask, cols, GRID.rows);
+  const chambers = Array.isArray(opts.chambers) ? opts.chambers : [];
+  let rows = silhouetteRows(mask, cols, GRID.rows);
+  for (const c of chambers) rows = Math.min(GRID.rows, Math.max(rows, c.y + c.h + 3));
   const k = opts.cell > 0 ? opts.cell : 4;
   const top = 2 * k;
   canvas.width = cols * k;
@@ -115,6 +156,20 @@ export function drawSilhouette(canvas, cells, opts = {}) {
       while (x2 + 1 < cols && mask[y * cols + x2 + 1]) x2++;
       g.fillRect(x * k, top + y * k, (x2 - x + 1) * k, k);
       x = x2;
+    }
+  }
+  // C219: the chambers as coloured rooms (a dark rim), with a small level pip from L5 up
+  for (const c of chambers) {
+    if (c.y >= rows) continue;
+    const px = c.x * k;
+    const py = top + c.y * k;
+    g.fillStyle = 'rgba(10,6,3,0.85)';
+    g.fillRect(px, py, c.w * k, c.h * k);
+    g.fillStyle = HISTORY_CHAMBER_COLORS[c.type] || '#d9b27c';
+    g.fillRect(px + 1, py + 1, Math.max(1, c.w * k - 2), Math.max(1, c.h * k - 2));
+    if (c.level >= 5 && c.w * k >= 6) {
+      g.fillStyle = c.level >= 8 ? '#fff4c2' : '#3a2412';
+      g.fillRect(px + c.w * k - 3, py + 1, 2, 2);
     }
   }
   return true;
@@ -158,6 +213,9 @@ export function historyCards(s) {
       when: has('date') && r.date > 0 ? fmtDate(r.date) : has('at') ? 'After ' + fmtTime(Math.max(0, r.at)) + ' of play' : '',
       hardship: typeof r.hs === 'string' && r.hs ? nameOf('hardship', r.hs) : null,
       cells: typeof r.cells === 'string' ? r.cells : '',
+      // C219 / C215: chambers and nest width (older records have neither: their drawing shows the tunnels only)
+      chambers: decodeChambers(r.ch),
+      cols: recordCols(r),
     });
   }
   return out;
@@ -170,7 +228,8 @@ export function historyCards(s) {
  */
 export function historyCard(c) {
   const canvas = h('canvas', { class: 'history-nest', attrs: { role: 'img', 'aria-label': c.title + ' nest layout' } });
-  drawSilhouette(canvas, c.cells);
+  const chambers = Array.isArray(c.chambers) ? c.chambers : [];
+  drawSilhouette(canvas, c.cells, { chambers, cols: c.cols });
   const kv = h('dl', { class: 'history-kv' });
   const row = (label, value) => {
     if (value) kv.append(h('dt', { text: label }), h('dd', { text: value }));
@@ -180,6 +239,8 @@ export function historyCard(c) {
   row('Peak', c.peak);
   row('Earned', c.gain);
   row('Hardship', c.hardship);
+  // C219: how many chambers, and the biggest ones by type
+  if (chambers.length) row('Chambers', chamberSummary(chambers));
   return h('article', { class: 'history-card history-' + c.kind, dataset: { key: c.key } },
     canvas,
     h('div', { class: 'history-head' },
@@ -187,6 +248,33 @@ export function historyCard(c) {
       h('span', { class: 'history-layer', text: c.layer })),
     kv,
     c.when ? h('p', { class: 'history-when', text: c.when }) : null);
+}
+
+/**
+ * C219: "12 chambers · Royal L7" style summary of a record's chambers.
+ * @param {Array<{ type: string, level: number }>} chambers
+ * @returns {string}
+ */
+export function chamberSummary(chambers) {
+  const list = Array.isArray(chambers) ? chambers : [];
+  const royal = list.filter((c) => c.type === 'royal_chamber').reduce((m, c) => Math.max(m, c.level), 0);
+  return fmtCount(list.length) + ' chamber' + (list.length === 1 ? '' : 's') + (royal > 0 ? ' · Royal L' + fmtCount(royal) : '');
+}
+
+/**
+ * C219: the legend under the gallery: a swatch and name per chamber type drawn in any card (data order).
+ * @param {Array<{ chambers?: Array<{ type: string }> }>} cards
+ * @returns {HTMLElement|null}
+ */
+export function historyLegend(cards) {
+  const seen = new Set();
+  for (const c of cards) for (const ch of Array.isArray(c.chambers) ? c.chambers : []) seen.add(ch.type);
+  const types = Object.keys(HISTORY_CHAMBER_COLORS).filter((t) => seen.has(t));
+  if (!types.length) return null;
+  return h('div', { class: 'history-legend', attrs: { 'aria-label': 'Chamber colours' } },
+    types.map((t) => h('span', { class: 'history-legend-item' },
+      h('i', { class: 'history-swatch', style: { background: HISTORY_CHAMBER_COLORS[t] }, attrs: { 'aria-hidden': 'true' } }),
+      nameOf('chamber', t))));
 }
 
 /**
@@ -199,6 +287,7 @@ export function historyGallery(s) {
   if (!cards.length) return h('p', { class: 'note', text: 'No past runs yet. Your first Nuptial Flight starts the record.' });
   return h('div', { class: 'history-wrap' },
     h('p', { class: 'note', text: 'Your last ' + fmtCount(cards.length) + ' nests, newest first. Older runs fade from the record.' }),
+    historyLegend(cards),
     h('div', { class: 'history-grid' }, cards.map(historyCard)));
 }
 
