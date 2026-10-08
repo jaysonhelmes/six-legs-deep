@@ -28,6 +28,7 @@ const OWNED = {
   setChitinReserve: ['run.colony.chitinReserve'],
   setFungalBrood: ['run.colony.fungalBrood'],
   rearAlate: ['run.colony.rearRequested'],
+  cancelRear: ['run.colony.rearRequested'],
   groomBrood: ['run.colony.brood', 'run.clicks', 'meta.counters.clicks'],
   clickQueen: ['run.clicks', 'meta.counters.clicks', 'meta.counters.queenClicks'],
   retireAdults: ['run.colony.adults', 'run.colony.jobs'],

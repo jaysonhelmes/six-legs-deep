@@ -11,6 +11,77 @@ export const PK = Object.freeze({ rain: 1, snow: 2, leaf: 3, pellet: 4, glint: 5
 const LEAF_COLORS = ['#c9782a', '#b5552a', '#d8a23a', '#8f6a2a', '#a4442a'];
 const SPARK_COLORS = ['#fff6c2', '#ffd447', '#ffffff'];
 
+/**
+ * C223: resource icon colours for the floating gain numbers (the HUD's --c-* resource colours, dark theme); every
+ * "+X food" / "+X chitin" … float draws the resource's icon before its text so the resource is obvious.
+ */
+export const RES_ICON_COLORS = Object.freeze({ food: '#e6b45c', soil: '#a87a4f', insight: '#9fbcf0', pheromone: '#db92d4',
+  chitin: '#8c949c', honeydew: '#f2a63c', leaves: '#7cb852', fungus: '#e9e2d1', alates: '#f4d47f', kinship: '#f0a0b8', genes: '#a0e0c8' });
+
+/** Resource words a float text may end with ("+12 food"), mapped to their icon id (plural/singular forms). */
+const RES_WORDS = Object.freeze({ food: 'food', soil: 'soil', insight: 'insight', pheromone: 'pheromone', chitin: 'chitin',
+  honeydew: 'honeydew', leaves: 'leaves', leaf: 'leaves', fungus: 'fungus', alates: 'alates', alate: 'alates', kinship: 'kinship',
+  genes: 'genes' });
+
+/**
+ * C223 [pure]: the resource icon a float should carry: the explicit `res` when it is known, else the resource word a
+ * gain text ends with ("+1.2K food" → 'food'); null when none.
+ * @param {string} text
+ * @param {string|null} [res]
+ * @returns {string|null}
+ */
+export function floatIconRes(text, res = null) {
+  if (typeof res === 'string' && RES_ICON_COLORS[res]) return res;
+  const m = /^\+\S+\s+([a-z]+)\.?$/i.exec(String(text || '').trim());
+  return m && RES_WORDS[m[1].toLowerCase()] ? RES_WORDS[m[1].toLowerCase()] : null;
+}
+
+/** C223: draw a resource icon (the HUD's shapes) of size z centred at (x, y). */
+function drawResIcon(ctx, res, x, y, z) {
+  const c = RES_ICON_COLORS[res] || '#ffffff';
+  const r = z / 2;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = c;
+  ctx.strokeStyle = 'rgba(20,12,6,0.85)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  switch (res) {
+    case 'soil': ctx.rect(-r * 0.85, -r * 0.85, r * 1.7, r * 1.7); break;
+    case 'insight': ctx.moveTo(0, -r); ctx.lineTo(r * 0.8, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.8, 0); ctx.closePath(); break;
+    case 'chitin':
+      for (let k = 0; k < 6; k++) {
+        const a = (Math.PI / 3) * k;
+        if (k) ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r * 0.9);
+        else ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r * 0.9);
+      }
+      ctx.closePath();
+      break;
+    case 'honeydew': case 'pheromone':
+      ctx.moveTo(0, -r);
+      ctx.quadraticCurveTo(r, r * 0.1, 0, r);
+      ctx.quadraticCurveTo(-r, r * 0.1, 0, -r);
+      break;
+    case 'leaves':
+      ctx.moveTo(-r, r * 0.6);
+      ctx.quadraticCurveTo(-r * 0.6, -r, r, -r * 0.6);
+      ctx.quadraticCurveTo(r * 0.6, r, -r, r * 0.6);
+      break;
+    case 'fungus':
+      ctx.arc(0, 0, r * 0.9, Math.PI, 0);
+      ctx.lineTo(r * 0.3, 0);
+      ctx.lineTo(r * 0.3, r * 0.8);
+      ctx.lineTo(-r * 0.3, r * 0.8);
+      ctx.lineTo(-r * 0.3, 0);
+      ctx.closePath();
+      break;
+    default: ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2); break;
+  }
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
 /** Weather kinds in spawn order. */
 const WEATHER_KINDS = Object.freeze(['rain', 'snow', 'leaves']);
 /** Weather particles per 100,000 CSS px² of view at intensity 1. */
@@ -288,10 +359,11 @@ export function createParticles(max = MAX_PARTICLES) {
    * @param {number} y
    * @param {string} text
    * @param {string} [color]
+   * @param {string|null} [res] C223: resource icon to draw before the text (else read from a "+X food" text)
    */
-  function float(x, y, text, color = '#fff3c4') {
+  function float(x, y, text, color = '#fff3c4', res = null) {
     if (p.floats.length >= 24) p.floats.shift();
-    p.floats.push({ x, y, text, color, life: 1.1 });
+    p.floats.push({ x, y, text, color, life: 1.1, res: floatIconRes(text, res) });
   }
 
   /**
@@ -369,10 +441,18 @@ export function createParticles(max = MAX_PARTICLES) {
       ctx.textBaseline = 'middle';
       for (const f of p.floats) {
         ctx.globalAlpha = Math.max(0, Math.min(1, f.life / 0.4));
+        let tx = f.x;
+        if (f.res) {
+          // C223: icon + text centred together
+          const w = typeof ctx.measureText === 'function' ? Number(ctx.measureText(f.text).width) || 0 : 0;
+          const iz = 10;
+          tx = f.x + (iz + 3) / 2;
+          drawResIcon(ctx, f.res, tx - w / 2 - 3 - iz / 2, f.y, iz);
+        }
         ctx.fillStyle = 'rgba(20,12,6,0.7)';
-        ctx.fillText(f.text, f.x + 1, f.y + 1);
+        ctx.fillText(f.text, tx + 1, f.y + 1);
         ctx.fillStyle = f.color;
-        ctx.fillText(f.text, f.x, f.y);
+        ctx.fillText(f.text, tx, f.y);
       }
       ctx.globalAlpha = 1;
     }

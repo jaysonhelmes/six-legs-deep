@@ -1,20 +1,24 @@
 // Automation: 1 Hz autobuyers (Adaptations, chamber level-ups, Mound) in the player's priority order, Auto-Flight,
 // Auto-Supercolony, the setAutomation patch handler and the Diapause toggle. Owner: WP7.
 // Contract: ARCHITECTURE §8.6, §9 (DESIGN §14.5 autobuyers / auto_flight, §15.5 deep_time_automation, §21.5).
-// ARCH-R: autobuyers also need meta.automation.autobuy.on (the player's master toggle), including the Adaptation
-//   autobuyer granted by automaton_instincts. Turning a toggle ON for a feature that is not owned is refused 'locked'.
-// ARCH-R: auto-flight 'peak' mode fires once the live alates/min falls below FLIGHT.peakGlow (97 %) of the recorded peak
-//   (the same signal as the Alates/min meter's glow). Auto-Supercolony runs online only, like Auto-Flight.
+// ARCH-R: autobuyers also need meta.automation.autobuy.on (the player's master toggle). Every autobuyer, the Adaptation
+//   one included, needs the Federation node autobuyers (C166: Automaton Instincts no longer grants it). Turning a toggle
+//   ON for a feature that is not owned is refused 'locked'.
+// C166: auto-flight 'peak' mode fires once the run is AUTO_FLIGHT.minSec old and the weather-free alates/min has stayed
+//   below AUTO_FLIGHT.drop of this run's best weather-free rate for AUTO_FLIGHT.holdSec (run.prestige.belowAt, tracked by
+//   prestige.tick). The landing is picked by pickLanding (AUTO_LANDING scores). Auto-Supercolony runs online only, like
+//   Auto-Flight.
 // ARCH-R: Auto-Supercolony keeps "the cycle's current edict"; in the first cycle of an era that is null (no edict).
 // The 1 Hz cadence counts integer run-second crossings (offline 60 s steps run up to AUTOMATION.maxPassesPerTick
 // passes, so offline autobuying stays O(1) per call).
 
-import { AUTOMATION, FLIGHT } from '../data/prestige.js';
+import { AUTOMATION, AUTO_FLIGHT, AUTO_LANDING } from '../data/prestige.js';
 import { CLAMP_MAX } from '../data/balance.js';
 import * as adaptations from './adaptations.js';
 import * as nest from './nest.js';
 import * as surface from './surface.js';
-import { doFlight, doSupercolony, startRun, flightRequirements, superRequirements, projectAlates, projectKinship } from './prestige.js';
+import * as seasons from './seasons.js';
+import { doFlight, doSupercolony, startRun, flightRequirements, superRequirements, projectAlates, projectKinship, landingCarry } from './prestige.js';
 
 /** Autobuyer categories (meta.automation.autobuy.priority is a permutation of these). */
 const CATEGORIES = Object.freeze(['adaptations', 'chambers', 'mound']);
@@ -61,12 +65,10 @@ const DEFAULT_STEPS = Object.freeze({
 export function autobuyPass(s, d, env, steps = DEFAULT_STEPS) {
   const a = s.meta.automation.autobuy;
   if (!a || a.on !== true) return false;
-  const fedOn = lv(s.era.federation, 'autobuyers') > 0;
-  const adaptOn = fedOn || lv(s.cycle.traits, 'automaton_instincts') > 0;
+  if (!(lv(s.era.federation, 'autobuyers') > 0)) return false;
   const order = isPriority(a.priority) ? a.priority : CATEGORIES;
   for (const cat of order) {
     if (a[cat] !== true) continue;
-    if (cat === 'adaptations' ? !adaptOn : !fedOn) continue;
     if (steps[cat](s, d, env)) return true;
   }
   return false;
@@ -80,9 +82,62 @@ function flightDue(s, d) {
   const run = s.run;
   if (af.mode === 'alates') return projectAlates(s, d) >= af.alates;
   if (af.mode === 'minutes') return run.time >= af.minutes * 60;
-  const peak = run.prestige.peakRate;
-  const perMin = run.time > 0 ? projectAlates(s, d) / (run.time / 60) : 0;
-  return peak > 0 && perMin < FLIGHT.peakGlow * peak;
+  return peakPassed(s);
+}
+
+/**
+ * C166 peak rule: run ≥ AUTO_FLIGHT.minSec and the weather-free rate below AUTO_FLIGHT.drop × its best for
+ * AUTO_FLIGHT.holdSec in a row (run.prestige.belowAt, kept by prestige.tick).
+ * @param {import('../core/types.js').State} s
+ * @returns {boolean}
+ */
+export function peakPassed(s) {
+  const run = s.run;
+  const at = run.prestige ? run.prestige.belowAt : -1;
+  return run.time >= AUTO_FLIGHT.minSec && Number.isFinite(at) && at >= 0 && run.time - at >= AUTO_FLIGHT.holdSec;
+}
+
+/** Score of one id in a points map (missing → 0). */
+function pts(map, id) {
+  const v = map ? map[id] : 0;
+  return Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * C166 auto-flight landing pick: the option whose tags score highest and the boon that scores highest (AUTO_LANDING;
+ * ties keep the first offered), and with Seasonal Wisdom the starting season AUTO_LANDING.season. Pure.
+ * @param {import('../core/types.js').State} s
+ * @param {Object} p meta.pending (kind 'landing')
+ * @param {string|null} [season] the season the run will start in (default: Seasonal Wisdom's pick, else Chronobiology's)
+ * @returns {{ index: number, boon: string|null, season: string|null }}
+ */
+export function pickLanding(s, p, season) {
+  const L = AUTO_LANDING;
+  const pickSeason = p && p.chooseSeason ? L.season : null;
+  let sea = season;
+  if (sea === undefined) sea = pickSeason || seasons.chronoStart(s) || null;
+  const options = p && Array.isArray(p.options) ? p.options : [];
+  let index = 0;
+  let best = -Infinity;
+  options.forEach((o, i) => {
+    if (!o) return;
+    let sc = 0;
+    for (const t of Array.isArray(o.tags) ? o.tags : []) sc += pts(L.sites, t) + pts(L.seasonSites[sea], t);
+    if (sc > best) { best = sc; index = i; }
+  });
+  const tr = s.cycle.traits;
+  const boons = p && Array.isArray(p.boons) ? p.boons : [];
+  let boon = boons.length ? boons[0] : null;
+  let bestB = -Infinity;
+  for (const b of boons) {
+    let sc = pts(L.boons, b) + pts(L.seasonBoons[sea], b);
+    if (b === 'boon_blueprint_rush' && Number.isInteger(s.era.activeBlueprint) && s.era.activeBlueprint >= 0) sc += L.blueprintRush;
+    if (b === 'boon_peaceful_start' && p.hardship === 'pacifist') sc += L.pacifistPeace;
+    if (b === 'boon_old_trails' && lv(tr, 'remembered_paths') > 0) sc += L.rememberedOldTrails;
+    if (b === 'boon_scouts_lead' && lv(tr, 'keen_antennae') > 0) sc += L.keenScouts;
+    if (sc > bestB) { bestB = sc; boon = b; }
+  }
+  return { index, boon, season: pickSeason };
 }
 
 /** Auto-Supercolony condition (genome deep_time_automation, toggle on, merge requirements met, mode condition). */
@@ -95,17 +150,19 @@ function superDue(s, d) {
 }
 
 /**
- * Flight + chooseLanding(option 0, first boon) in one go (auto-flight).
+ * Flight + chooseLanding(pickLanding) in one go (auto-flight).
  * @returns {number} alates awarded
  */
 function autoFly(s, d, env) {
   const alates = doFlight(s, d, env);
   const p = s.meta.pending;
-  if (!p || !Array.isArray(p.options) || !p.options[0]) return alates;
-  const opt = p.options[0];
+  if (!p || !Array.isArray(p.options) || !p.options.length) return alates;
+  const clock = d && d.season && typeof d.season.id === 'string' ? d.season.id : null;
+  const pick = pickLanding(s, p, (p.chooseSeason ? AUTO_LANDING.season : null) || seasons.chronoStart(s) || clock);
+  const opt = p.options[pick.index] || p.options[0];
   s.meta.pending = null;
-  startRun(s, d, { seed: opt.seed, tags: opt.tags, boon: Array.isArray(p.boons) && p.boons.length ? p.boons[0] : null,
-    hardship: p.hardship ?? null, startSeason: null, carryAdults: p.carryAdults, env });
+  startRun(s, d, { seed: opt.seed, tags: opt.tags, boon: pick.boon, hardship: p.hardship ?? null, startSeason: pick.season,
+    carryAdults: landingCarry(s, p), env });
   return alates;
 }
 
@@ -176,9 +233,7 @@ export const handlers = {
         const r = checkSub(p[k], SCHEMA[k]);
         if (r) return r;
       }
-      if (p.autobuy && p.autobuy.on === true && !(lv(s.era.federation, 'autobuyers') > 0 || lv(s.cycle.traits, 'automaton_instincts') > 0)) {
-        return 'locked';
-      }
+      if (p.autobuy && p.autobuy.on === true && !(lv(s.era.federation, 'autobuyers') > 0)) return 'locked';
       if (p.autoFlight && p.autoFlight.on === true && !(lv(s.era.federation, 'auto_flight') > 0)) return 'locked';
       if (p.autoSuper && p.autoSuper.on === true && !(lv(s.meta.genome, 'deep_time_automation') > 0)) return 'locked';
       return null;

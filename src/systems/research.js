@@ -1,7 +1,10 @@
 // Research: purchases paid in insight, prerequisites, branch refinements, and the run-start Innate grant.
 // Owner: WP5. Contract: ARCHITECTURE §8.4 (systems/research.js), §9 (buyResearch / buyRefinement); DESIGN §11.
+// C200: the Archive — buyArchive { branch } buys one level of a branch's permanent track (s.era.archive[branch]; kept
+//   through Flights and Supercolonies, reset at Speciation) for ARCHIVE.base × ARCHIVE.growth^L insight. Open once the
+//   branch is complete in this run or the track already has a level; WP2 stats applies × (1 + ARCHIVE.per × L).
 
-import { RESEARCH, RESEARCH_ORDER, BRANCHES, REFINEMENT } from '../data/research.js';
+import { RESEARCH, RESEARCH_ORDER, BRANCHES, REFINEMENT, ARCHIVE } from '../data/research.js';
 import { SPECIES } from '../data/genome.js';
 import { geoCost, lvl } from '../core/math.js';
 import { canAfford, spend } from '../core/wallet.js';
@@ -81,6 +84,38 @@ export function refinementCost(s, branch) {
 }
 
 /**
+ * C200: Archive level of a branch (era scope).
+ * @param {import('../core/types.js').State} s
+ * @param {string} branch
+ * @returns {number}
+ */
+export function archiveLevel(s, branch) {
+  return s && s.era && isBranch(branch) ? lvl(s.era.archive, branch) : 0;
+}
+
+/**
+ * C200: true once the branch's Archive track is open: the branch is complete in this run, or the track has a level.
+ * @param {import('../core/types.js').State} s
+ * @param {string} branch
+ * @returns {boolean}
+ */
+export function archiveOpen(s, branch) {
+  return isBranch(branch) && (archiveLevel(s, branch) > 0 || branchComplete(s, branch));
+}
+
+/**
+ * C200: next Archive level cost of a branch: { insight: base × growth^L }; null while the track is closed and null
+ * (MAX) once the cost passes COST_MAX.
+ * @param {import('../core/types.js').State} s
+ * @param {string} branch
+ * @returns {import('../core/types.js').Cost|null}
+ */
+export function archiveCost(s, branch) {
+  if (!archiveOpen(s, branch)) return null;
+  return geoCost({ insight: ARCHIVE.base }, ARCHIVE.growth, archiveLevel(s, branch));
+}
+
+/**
  * Run start (WP7 startRun): grant every Innate node (era.innate) and the species' innate list for free.
  * @param {import('../core/types.js').State} s
  * @returns {number} nodes newly granted
@@ -137,6 +172,26 @@ export const handlers = {
       const level = lvl(s.run.refinements, cmd.branch) + 1;
       s.run.refinements[cmd.branch] = level;
       env.emit('refinementBought', { branch: cmd.branch, level });
+    },
+  },
+
+  /** buyArchive { branch } — C200: track open (branch complete this run, or already levelled), cost not MAX, affordable. */
+  buyArchive: {
+    validate(s, d, cmd) {
+      if (!isBranch(cmd.branch)) return 'invalid';
+      if (!archiveOpen(s, cmd.branch)) return 'locked';
+      const c = archiveCost(s, cmd.branch);
+      if (!c) return 'max';
+      if (!canAfford(s, c)) return 'cantAfford';
+      return null;
+    },
+    apply(s, d, cmd, env) {
+      const c = archiveCost(s, cmd.branch);
+      if (!c || !spend(s, c)) return;
+      if (!s.era.archive || typeof s.era.archive !== 'object') s.era.archive = {};
+      const level = archiveLevel(s, cmd.branch) + 1;
+      s.era.archive[cmd.branch] = level;
+      env.emit('archiveBought', { branch: cmd.branch, level });
     },
   },
 };

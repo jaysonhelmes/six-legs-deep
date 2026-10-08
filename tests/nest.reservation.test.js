@@ -307,7 +307,9 @@ test('C139: Use during a run applies the blueprint now (queues what it can, plan
   assert.ok(s.run.nest.chambers.some((c) => c.type === 'nursery' && c.blueprint), 'queued at once');
   assert.equal(s.run.nest.chambers.length, before + 1);
   assert.deepEqual(s.run.nest.bpPending.map((p) => p.type), ['deep_vault']);
-  assert.deepEqual(s.run.nest.bpNotes || [], [], 'nothing dropped');
+  // C175: the placed nursery is announced (blueprintPlaced); nothing is dropped
+  assert.deepEqual((s.run.nest.bpNotes || []).filter((n) => !n.ev), [], 'nothing dropped');
+  assert.ok((s.run.nest.bpNotes || []).some((n) => n.ev === 'blueprintPlaced' && n.chamberType === 'nursery'));
 });
 
 test('C138: a planned chamber the open nest does not reach gets an access tunnel first ("Waiting: digging access tunnel"), then queues', () => {

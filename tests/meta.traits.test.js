@@ -133,7 +133,7 @@ test('data tables: ORDER arrays match tables, ids repeat, prefixes, species gene
     }
   }
   assert.equal(TRAIT_ORDER.length, 23); // C158: + root_memory, deep_spring
-  assert.equal(FED_ORDER.length, 13);
+  assert.equal(FED_ORDER.length, 14); // C172: + architects_table
   assert.equal(GENOME_ORDER.length, 18);
   for (const sp of Object.values(SPECIES)) {
     assert.ok(SIGNATURES[sp.sig], sp.id + ' signature');

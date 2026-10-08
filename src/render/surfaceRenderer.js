@@ -61,7 +61,10 @@ const OBJECT_ICON = {
   fruit: 'fallen_fruit', ladybug: 'ladybug', molehill: 'molehill', antlion: 'antlion', lizard: 'lizard', termite_swarm: 'termite_swarm',
   golden_aphid: 'golden_aphid', rival_alate: 'rival_alate', phengaris: 'phengaris', myrmecophile: 'myrmecophile',
   wandering_queen: 'wandering_queen', army_column: 'army_column', footstep: 'footstep',
+  fossil_cache: 'fossil', lost_queen: 'wandering_queen',   // C188 expedition finds (the fossil is drawn here, drawFossil)
 };
+/** C188: expedition-find sources drawn with an existing icon (rich seed patch: a seed patch with a gold rim). */
+const ICON_ALIAS = { rich_seed_patch: 'seed_patch', beetle_carcass: 'prey_beetle' };
 
 /** Behaviour states (Above). */
 const ST = Object.freeze({ OUT: 0, BACK: 1, AWAY: 2, WANDER: 3, HOME: 4 });
@@ -236,7 +239,13 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     if (!s || !e) return;
     const src = (s.run.surface.sources || []).find((x) => x && x.uid === e.src);
     const p = src ? hexWorldPt(src.hex) : hexWorldPt(0);
-    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 10, `+${compactInt(Number(e.amount) || 0)}`, '#fff3c4');
+    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 10, `+${compactInt(Number(e.amount) || 0)} ${e.res || 'food'}`, '#fff3c4', e.res || 'food');
+  });
+  // C223: a clicked event object that pays out (a caught rival alate, a fossil cache) shows its gain like a crumb
+  sub('objectGain', (e) => {
+    if (!e || !(e.hex >= 0) || !(Number(e.amount) > 0)) return;
+    const p = hexWorldPt(e.hex);
+    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 12, `+${compactInt(Number(e.amount) || 0)} ${e.res || ''}`.trim(), '#fff3c4', e.res || null);
   });
   sub('hexRevealed', (e) => {
     if (!e || !(e.hex >= 0) || reduced) return;
@@ -905,7 +914,6 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     g.restore();
   }
 
-  /** C111: garden paths — continuous strips from each path hex centre to each linked neighbour, rounded ends. */
   function paintPaths(g, season, set) {
     if (!set.hexes.length) return;
     const [base, detail] = terrainColor(season, 'garden_path');
@@ -1570,6 +1578,64 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     return SURFACE.trail;
   }
 
+  /**
+   * C182: trails off their own route. A detour shows the trail's own (blocked) route as a faint dashed line and an
+   * amber marker with a bend arrow on each blocked hex; a paused trail (no way round) gets a red marker with a pause
+   * sign (its line is drawn dotted in drawTrails).
+   */
+  function drawDetours(ctx, trails, zoomK) {
+    for (const tr of trails) {
+      const det = tr && tr.detour;
+      if (!det || !Array.isArray(det.home) || det.home.length < 2) continue;
+      const paused = !!det.paused;
+      if (!paused) {
+        ctx.strokeStyle = 'rgba(255,236,190,0.42)';
+        ctx.lineWidth = Math.max(1, 1.6 * zoomK);
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        det.home.forEach((h, j) => {
+          const p = hexToScreen(h);
+          if (j) ctx.lineTo(p.x, p.y);
+          else ctx.moveTo(p.x, p.y);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const r = 6.5 * zoomK;
+      for (const h of Array.isArray(det.block) ? det.block : []) {
+        const p = hexToScreen(h);
+        if (!visiblePt(p, 20)) continue;
+        ctx.fillStyle = paused ? 'rgba(170,40,30,0.92)' : 'rgba(205,140,30,0.92)';
+        ctx.strokeStyle = 'rgba(20,14,8,0.75)';
+        ctx.lineWidth = 1.2;
+        const cy = p.y - SIZE * curView.zoom * 0.55;
+        ctx.beginPath();
+        ctx.arc(p.x, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#fff6e0';
+        ctx.fillStyle = '#fff6e0';
+        ctx.lineWidth = Math.max(1, r * 0.22);
+        ctx.beginPath();
+        if (paused) {
+          ctx.fillRect(p.x - r * 0.42, cy - r * 0.45, r * 0.26, r * 0.9);
+          ctx.fillRect(p.x + r * 0.16, cy - r * 0.45, r * 0.26, r * 0.9);
+        } else {
+          // a bend-around arrow
+          ctx.arc(p.x, cy + r * 0.15, r * 0.48, Math.PI, Math.PI * 1.95);
+          ctx.stroke();
+          const ax = p.x + r * 0.48;
+          const ay = cy + r * 0.05;
+          ctx.beginPath();
+          ctx.moveTo(ax - r * 0.3, ay - r * 0.12);
+          ctx.lineTo(ax + r * 0.02, ay + r * 0.3);
+          ctx.lineTo(ax + r * 0.3, ay - r * 0.16);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
   function drawTrails(ctx, s, d, polys) {
     const trails = s.run.surface.trails || [];
     const dts = (d && d.surface && d.surface.trails) || [];
@@ -1615,7 +1681,9 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       stroke();
       ctx.strokeStyle = rgba(col, alpha);
       ctx.lineWidth = width;
+      const paused = !!(tr.detour && tr.detour.paused);   // C182: blocked with no way round
       if (tr.job === 'lycaenid') ctx.setLineDash([5, 5]);
+      else if (paused) ctx.setLineDash([2, 6]);
       stroke();
       ctx.setLineDash([]);
       // rally: travelling dashes
@@ -1630,6 +1698,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.lineDashOffset = 0;
       }
     }
+    drawDetours(ctx, trails, zoomK);
     // ability pulses
     for (let k = pulses.length - 1; k >= 0; k--) {
       const p = pulses[k];
@@ -1704,14 +1773,32 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       let alpha = 1;
       if (src.ttl > 0 && src.ttl < 20) alpha = 0.55 + 0.45 * Math.abs(Math.sin(time * 5));
       ctx.globalAlpha = alpha;
-      if (amb.on) {
+      if (src.type === 'rich_seed_patch') {
+        // C188: a gold rim marks the scouts' rich find
+        ctx.strokeStyle = `rgba(255,214,90,${0.55 + 0.25 * Math.sin(time * 2.2 + src.uid)})`;
+        ctx.lineWidth = Math.max(1.5, size * 0.07);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (src.type === 'beetle_carcass') {
+        // C188: a beetle on its back (static), with the dead insect's fly
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(Math.PI * 0.85);
+        ctx.globalAlpha = alpha * 0.85;
+        atlas.drawIcon(ctx, 'prey_beetle', 0, 0, size * 1.05);
+        ctx.restore();
+        ctx.globalAlpha = alpha;
+        if (amb.on) drawAmbientExtras(ctx, 'dead_insect', p.x, p.y, size, { t: time, uid: src.uid, wind: amb.wind });
+      } else if (amb.on) {
         // C161: idle life (sway / crawl / inch, then a fly, termites …), visual only, deterministic phase per uid
         const wp = hexWorldPt(src.hex);
         const ao = { t: time, uid: src.uid, wind: amb.wind, wx: wp.x, wy: wp.y };
-        drawIconAmbient(ctx, atlas, src.type, p.x, p.y, size, ao);
-        drawAmbientExtras(ctx, src.type, p.x, p.y, size, ao);
+        drawIconAmbient(ctx, atlas, ICON_ALIAS[src.type] || src.type, p.x, p.y, size, ao);
+        drawAmbientExtras(ctx, ICON_ALIAS[src.type] || src.type, p.x, p.y, size, ao);
       } else {
-        atlas.drawIcon(ctx, src.type, p.x, p.y, size);
+        atlas.drawIcon(ctx, ICON_ALIAS[src.type] || src.type, p.x, p.y, size);
       }
       ctx.globalAlpha = 1;
       if (src.max > 0 && src.stock >= 0) {
@@ -1744,9 +1831,27 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
   }
 
+  /** C220: the drawn mound size eases toward the Mound's growth value (level + progress), so it rises smoothly. */
+  let moundDisp = -1;
+  let moundAt = 0;
+  function moundSize(s) {
+    const lvl = Number(s.run.surface.mound) || 0;
+    let want = lvl;
+    try {
+      const g = surfaceSys.moundGrowth(s);
+      if (g && Number.isFinite(g.shown)) want = Math.max(lvl, g.shown);
+    } catch { want = lvl; }
+    const t = nowMs();
+    const dt = moundAt > 0 ? Math.min(1, Math.max(0, (t - moundAt) / 1000)) : 1;
+    moundAt = t;
+    if (moundDisp < 0 || reduced || Math.abs(want - moundDisp) > 3) moundDisp = want;
+    else moundDisp += (want - moundDisp) * Math.min(1, dt * 1.5);
+    return moundDisp;
+  }
+
   function drawMound(ctx, s) {
     const surf = s.run.surface;
-    const level = surf.mound || 0;
+    const level = moundSize(s);
     const p = hexToScreen(0);
     const z = curView.zoom;
     const r = SIZE * z * (0.48 + Math.min(0.5, 0.09 * Math.log2(1 + level)));
@@ -1887,6 +1992,19 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.moveTo(p.x + r * 0.7, p.y - r * 1.1);
         ctx.lineTo(p.x + r * 0.7, p.y - r * 0.2);
         ctx.stroke();
+        // C225: the truce's time left beside the white flag ("Truce 4:12")
+        const secs = Math.max(0, Math.ceil(Number(rv.truce) || 0));
+        const tl = 'Truce ' + Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+        ctx.font = `600 ${Math.max(8, 9 * Math.sqrt(z))}px system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const fw = ctx.measureText(tl).width + 6;
+        const fx = p.x + r * 0.7 + Math.max(5, r * 0.45) + 3;
+        const fy = p.y - r * 1.1 + Math.max(4, r * 0.3) / 2;
+        ctx.fillStyle = 'rgba(15,10,5,0.8)';
+        ctx.fillRect(fx, fy - 6, fw, 12);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(tl, fx + 3, fy);
       }
     }
   }
@@ -2042,7 +2160,18 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         }
         continue;
       }
-      const bob = o.kind === 'golden_aphid' || o.kind === 'wandering_queen' ? Math.sin(time * 3) * 2 : 0;
+      if (o.kind === 'fossil_cache') {
+        drawFossil(ctx, p.x, p.y, size, o.uid);
+        continue;
+      }
+      if (o.kind === 'lost_queen') {
+        // C188: a soft gold halo marks the scouts' find
+        ctx.fillStyle = `rgba(255,226,140,${0.22 + 0.12 * Math.sin(time * 2.5 + o.uid)})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 0.62, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const bob = o.kind === 'golden_aphid' || o.kind === 'wandering_queen' || o.kind === 'lost_queen' ? Math.sin(time * 3) * 2 : 0;
       const osz = size * (o.kind === 'lizard' ? 1.3 : 1);
       if (amb.on) {
         // C161: molehill soil puffs, swarm alates, the rove beetle's antennae, the Phengaris caterpillar's inching
@@ -2062,6 +2191,38 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
           ctx.stroke();
         }
       }
+    }
+  }
+
+  /** C188: a fossil cache — a pale stone slab with an ammonite spiral, glinting. */
+  function drawFossil(ctx, x, y, size, uid) {
+    const r = size * 0.42;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(x + r * 0.12, y + r * 0.22, r * 1.05, r * 0.72, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#d9cbb0';
+    ctx.beginPath();
+    ctx.ellipse(x, y, r * 1.05, r * 0.75, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#8a7556';
+    ctx.lineWidth = Math.max(1, size * 0.05);
+    ctx.beginPath();
+    for (let k = 0; k <= 40; k++) {
+      const a = k * 0.42;
+      const rr = r * 0.08 + (r * 0.62 * k) / 40;
+      const px = x + Math.cos(a) * rr;
+      const py = y + Math.sin(a) * rr * 0.8;
+      if (k === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    const g = (time * 0.6 + hash01(uid | 0, 71)) % 1;
+    if (g < 0.25) {
+      ctx.fillStyle = `rgba(255,250,220,${0.9 * Math.sin((g / 0.25) * Math.PI)})`;
+      ctx.beginPath();
+      ctx.arc(x - r * 0.45, y - r * 0.3, Math.max(1.2, size * 0.06), 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -2519,6 +2680,17 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     ctx.setLineDash([]);
   }
 
+  /** C237: valid aphid-move hexes, memoised on the surface revision and the colony. */
+  const aphidMemo = { key: '', list: [] };
+  function aphidTargetsFor(s, d, src) {
+    const key = `${src}|${s.run.surface.rev}|${(s.run.surface.sources || []).length}`;
+    if (aphidMemo.key !== key) {
+      aphidMemo.key = key;
+      aphidMemo.list = safe(() => surfaceSys.aphidTargets(s, d, src), []) || [];
+    }
+    return aphidMemo.list;
+  }
+
   function drawToolPreviews(ctx, s, d) {
     const ui0 = uiOf(ui);
     const tool = ui0.tool;
@@ -2537,8 +2709,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.beginPath();
         hexPathOn(ctx, p.x, p.y, SIZE * curView.zoom * 0.95);
         ctx.fill();
-      } else if (tool.kind === 'flag' || tool.kind === 'moveAphids' || tool.kind === 'tournament') {
+      } else if (tool.kind === 'moveAphids') {
+        const ok = aphidTargetsFor(s, d, tool.src).includes(hh);   // C237
+        hexOutline(ctx, hh, ok ? SURFACE.claimOk : SURFACE.claimBad, 3);
+      } else if (tool.kind === 'flag' || tool.kind === 'tournament') {
         hexOutline(ctx, hh, tool.kind === 'flag' ? SURFACE.flag : '#ffffff', 2.5);
+      }
+    }
+    // C237: while moving an aphid colony, every hex it may move to is tinted green
+    if (tool && tool.kind === 'moveAphids') {
+      for (const hx of aphidTargetsFor(s, d, tool.src)) {
+        const p = hexToScreen(hx);
+        if (!visiblePt(p)) continue;
+        ctx.fillStyle = rgba(SURFACE.claimOk, 0.28);
+        ctx.beginPath();
+        hexPathOn(ctx, p.x, p.y, SIZE * curView.zoom * 0.95);
+        ctx.fill();
+        hexOutline(ctx, hx, SURFACE.claimOk, 1.5);
       }
     }
     if (tool && tool.kind === 'placeSatellite') drawSatelliteTool(ctx, s, d, hh);
@@ -2618,6 +2805,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     ctx.fillRect(6, H - 22, tw + 10, 16);
     ctx.fillStyle = '#f4ecd8';
     ctx.fillText(text, 11, H - 14);
+  }
+
+  /** C184: "Trails 7 / 11" (slots used / available) at the bottom left, above the scale label; amber when full. */
+  function drawTrailBadge(ctx, s, d, H) {
+    const used = (s.run.surface.trails || []).length;
+    const slots = d && d.surface && Number.isFinite(d.surface.slots) ? d.surface.slots : 0;
+    if (!(slots > 0) || used === 0) return;
+    const text = `Trails ${used} / ${slots}`;
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(text).width;
+    const y = H - 42;
+    ctx.fillStyle = 'rgba(15,20,10,0.6)';
+    ctx.fillRect(6, y, tw + 10, 16);
+    ctx.fillStyle = used >= slots ? '#ffcf6a' : '#f4ecd8';
+    ctx.fillText(text, 11, y + 8);
   }
 
   function publishSeamX() {
@@ -2778,6 +2982,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       drawCeremonySurface(ctx, { W, H, s, hexToScreen, unit: 11 * Math.pow(curView.zoom, 0.75), zoom: curView.zoom, flightW: w });
     }
     drawScaleLabel(ctx, s, H);
+    drawTrailBadge(ctx, s, d, H);
     publishSeamX();
   }
 

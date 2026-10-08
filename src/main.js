@@ -6,8 +6,12 @@
 // ARCH-R (§18 C78–C80): every save passes { hidden } (true while the loop is not advancing the game), so hidden-tab
 // time survives a reload; the loop drains a short-gap backlog under a per-frame budget (FRAME); only the tab that owns
 // the tab lock runs and saves the game, older tabs pause behind an overlay whose click reloads the latest save.
+// C239: index.html loads src/boot.js, which runs the pre-boot version check and then imports this module; boot() starts
+// the in-game update watch ("Update available" pill, saves through persist() before the refresh-and-reload).
 
 import { createGame } from './core/game.js';
+import { CURRENT_VERSION } from './data/changelog.js';
+import { startUpdateWatch } from './ui/updater.js';
 import { createTabLock } from './core/tablock.js';
 import { FRAME, TABS } from './data/balance.js';
 import { mountUI } from './ui/app.js';
@@ -281,6 +285,12 @@ function boot() {
     lock.release();
   });
 
+  // C239: quiet live-version check every 10 min and on tab show; the pill saves, refreshes every file and reloads
+  let updates = { check: async () => null, stop() {} };
+  try {
+    updates = startUpdateWatch({ current: CURRENT_VERSION, beforeReload: () => { persist(); } });
+  } catch (err) { console.warn('[update] watch unavailable', err); }
+
   runtime = {
     game,
     loopPaused,
@@ -298,6 +308,8 @@ function boot() {
     tabLock: lock,
     /** The renderers once loaded: { nest, surface, seam } (each may be null). */
     get renderers() { return { nest: r.nest, surface: r.surface, seam: r.seam }; },
+    /** Run the in-game update check now; resolves to the live version (or null). */
+    checkForUpdate: () => updates.check(),
   };
 }
 

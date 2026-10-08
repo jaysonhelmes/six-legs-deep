@@ -4,9 +4,10 @@
 
 import { GRID, CELL } from '../data/balance.js';
 import * as nestgeom from '../systems/nestgeom.js';
+import { COLS } from '../systems/nestgeom.js';
 import * as nestSys from '../systems/nest.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding (the active nest width)
 const ROWS = GRID.rows;
 const DRAG_PX = 5;
 const LONG_PRESS_MS = 550;
@@ -214,6 +215,22 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     return true;
   }
 
+  /** C173: the nest cells as the player knows them: unrevealed water pockets read as soil (no leak). */
+  function knownCells(s) {
+    const cells = cellsArr();
+    const water = (s && s.run && s.run.nest.features && s.run.nest.features.water) || [];
+    if (!water.some((w) => w && !w.revealed)) return cells;
+    const out = Array.from(cells);
+    for (const w of water) {
+      if (!w || w.revealed) continue;
+      for (let y = w.y; y < w.y + w.h; y++) for (let x = w.x; x < w.x + w.w; x++) {
+        const i = y * COLS + x;
+        if (x >= 0 && y >= 0 && x < COLS && y < ROWS && out[i] === CELL.WATER) out[i] = CELL.SOIL;
+      }
+    }
+    return out;
+  }
+
   function tunnelPreview(from, to) {
     const s = game && game.s;
     const d = game && game.d;
@@ -224,7 +241,8 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     let work = 0;
     let ok = true;
     try {
-      const r = nestgeom.routeTo(s, d, [to], { from });
+      // C173: an unrevealed pocket is soil to the player: the preview routes through it (the dig strikes it on confirm)
+      const r = nestgeom.routeTo(s, d, [to], { from, hidden: true });
       if (r && Array.isArray(r.cells)) {
         cells = r.cells.slice();
         work = Number(r.work) || 0;
@@ -232,8 +250,8 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     } catch {
       cells = null;
     }
-    if (!cells) cells = straightTunnel(cellsArr(), from, to);
-    const tc = cellsArr()[to];
+    if (!cells) cells = straightTunnel(knownCells(s), from, to);
+    const tc = knownCells(s)[to];
     if (tc === CELL.SOIL && !cells.includes(to)) cells.push(to);
     if (tc === CELL.STONE || tc === CELL.WATER) ok = false;
     if (!cells.length) ok = false;
@@ -499,6 +517,10 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
         break;
       case 'pupa':
         call(bridge, 'openChooser', 'pupa', {});
+        break;
+      // C216: the "house full" pip opens the Build tab (Galleries add housing)
+      case 'housePip':
+        call(bridge, 'openTab', 'build');
         break;
       case 'mold':
         act('scrapeMold', { uid: t.id }, cx, cy);

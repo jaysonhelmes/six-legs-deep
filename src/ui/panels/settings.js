@@ -13,6 +13,8 @@ import { adultsTotal } from '../../core/state.js';
 import { makeAct, sliderRow, note } from './common.js';
 import { versionLabel } from '../patchNotes.js';
 import { CURRENT_VERSION } from '../../data/changelog.js';
+import { SOUND_COPY } from '../text.js';
+import { getActiveSound, SOUND_CATEGORIES } from '../sound.js';
 
 const NOTATIONS = [['suffix', 'Suffixes (1.23M)'], ['scientific', 'Scientific (1.23e6)'], ['engineering', 'Engineering (1.23e6)']];
 const AUTOSAVE = [[15, 'Every 15 s'], [30, 'Every 30 s'], [60, 'Every minute'], [0, 'Off (still saves on hide)']];
@@ -23,7 +25,7 @@ const NAME_MAX = 40;
  */
 export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab: Colony, Build, Map, Adaptations, Research, Prestige, Achievements, Field Guide, Stats'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
   ['R', 'Rally the selected trail; relocate the selected chamber'],
-  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected)'],
+  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected); Q again puts the tool away'],
   ['F / right-click', 'While placing: pick the corner the new chamber starts in'], ['G', 'Pick the growth side (older chambers without a reserved space)'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
   ['+ / −', 'Zoom the clicked view in or out'], ['0 / Home', 'Nest view: frame the queen'],
@@ -131,6 +133,49 @@ function legacyCopy(el) {
 }
 
 /**
+ * C234: the Sound section: master switch, volume, one switch per category and a Test button. Reads and writes the
+ * shell's sound engine (`getEngine()`; null → the section says sound is unavailable).
+ * @param {() => Object|null} getEngine
+ * @returns {{ el: HTMLElement, update(): void }}
+ */
+export function soundControls(getEngine) {
+  const C = SOUND_COPY;
+  const eng = () => { try { return getEngine ? getEngine() : null; } catch { return null; } };
+  const put = (patch) => { const e = eng(); if (e) e.setSettings(patch); update(); };
+  const master = h('input', { type: 'checkbox', class: 'check', attrs: { 'aria-label': C.master } });
+  master.addEventListener('change', () => put({ on: !!master.checked }));
+  const volume = sliderRow(C.volume, { min: 0, max: 100, step: 5, tip: C.volumeTip }, (v) => put({ volume: Math.max(0, Math.min(1, v / 100)) }));
+  const cats = {};
+  const catRows = SOUND_CATEGORIES.map((k) => {
+    const input = h('input', { type: 'checkbox', class: 'check', attrs: { 'aria-label': C[k] } });
+    input.addEventListener('change', () => put({ [k]: !!input.checked }));
+    cats[k] = input;
+    return h('label', { class: 'toggle-row sound-cat', dataset: { tip: C[k + 'Tip'] } }, input, h('span', { text: C[k] }));
+  });
+  const testBtn = h('button', { type: 'button', class: 'btn btn-small', text: C.test, dataset: { tip: C.testTip },
+    on: { click: () => { const e = eng(); if (e) { e.unlock(); e.play('buy'); } } } });
+  const msg = note(C.note);
+  const body = h('div', { class: 'sound-body' }, volume.el, h('div', { class: 'sound-cats' }, catRows), h('div', { class: 'btn-row' }, testBtn));
+  const el = h('section', { class: 'sec sec-sound' }, h('h3', { class: 'sec-title', text: C.title }),
+    h('label', { class: 'toggle-row', dataset: { tip: C.masterTip } }, master, h('span', { text: C.master })), body, msg);
+  function update() {
+    const e = eng();
+    const st = e ? e.getSettings() : null;
+    setProp(master, 'disabled', !st);
+    setProp(master, 'checked', !!(st && st.on));
+    show(body, !!(st && st.on));
+    if (st) {
+      const pct = Math.round(st.volume * 100);
+      volume.set(pct, { text: pct + '%', fmt: (v) => Math.round(v) + '%' });
+      for (const k of SOUND_CATEGORIES) setProp(cats[k], 'checked', !!st[k]);
+    }
+    setText(msg, st ? C.note : C.unavailable);
+  }
+  update();
+  return { el, update };
+}
+
+/**
  * Settings panel.
  * @param {HTMLElement} root
  * @param {{ game: Object, ui: Object, bridge: Object, dialogs?: Object, appRoot?: HTMLElement }} ctx
@@ -216,13 +261,17 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
   const photoBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Photo mode', dataset: { tip: 'Hide the interface and save a picture of your colony.' },
     on: { click: () => enterPhoto() } });
 
+  // --- sound (C234: per-browser settings in ui/sound.js, not in the save) ---
+  const soundUi = soundControls(getActiveSound);
+
   el.append(
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Display' }),
       h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Number format' }), notation),
       mkToggle('reducedMotion', 'Reduced motion', 'Fewer particles and animations.'),
-      mkToggle('sound', 'Sound', 'Soft chimes for reveals.'),
       mkToggle('showScaleLabel', 'Show "1 ● = K ants" labels', 'How many ants each dot stands for.')),
-    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Gameplay' }), retreat.el,
+    // C187: the auto-retreat slider moved to the war party (Map → War and the war-party chooser)
+    soundUi.el,
+    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Gameplay' }), note('Auto-retreat is set with your war party: Map → War.'),
       mkToggle('harshNature', 'Harsh nature', 'Starvation can kill adults. Optional.'), harshWarn),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Names' }),
       h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Colony' }), colonyName),
@@ -323,6 +372,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
       setProp(colonyName, 'value', st.colonyName || '');
       setProp(queenName, 'value', st.queenName || '');
       renderCosmetics(s);
+      soundUi.update();
       const saved = num(s.meta.savedAt);
       const ago = Math.max(0, (Date.now() - saved) / 1000);
       setText(saveState, !game.storageOk ? 'Saving unavailable in this browser: use Export.'

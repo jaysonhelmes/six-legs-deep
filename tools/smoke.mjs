@@ -247,10 +247,7 @@ function buildPolicy() {
     const royal = s.run.nest.chambers.find((x) => x && x.uid === 1);
     if (royal && royal.status === 'active' && grow('royal_chamber')) return;
   }
-  if (rv.mound) {
-    const mc = q('moundCost', surface.moundCost, s);
-    if (mc && s.run.res.soil >= 2 * (mc.soil || 0) && canAfford(s, mc)) act('buyMound', {});
-  }
+  // C220: the Mound grows on its own (nothing to buy)
 }
 
 function researchPolicy() {

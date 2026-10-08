@@ -184,6 +184,96 @@ export function progressBar(cls = '') {
   };
 }
 
+/** C229: localStorage key of the folded panel sections ({ "colony:brood": true, … }; a per-browser convenience). */
+export const COLLAPSE_KEY = 'sld.collapsed';
+
+/** The browser's localStorage, or null when unavailable / blocked. */
+function browserStore() {
+  try {
+    const w = typeof window !== 'undefined' ? window : globalThis;
+    return w && w.localStorage ? w.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * C229: read the folded-section map (never throws; {} without storage or with a bad value).
+ * @param {Storage|null} [store]
+ * @returns {Object<string, boolean>}
+ */
+export function readCollapsed(store = browserStore()) {
+  try {
+    const raw = store ? store.getItem(COLLAPSE_KEY) : null;
+    const v = raw ? JSON.parse(raw) : null;
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * C229: remember one section's folded state (never throws; storage blocked → this session only).
+ * @param {string} id
+ * @param {boolean} folded
+ * @param {Storage|null} [store]
+ */
+export function writeCollapsed(id, folded, store = browserStore()) {
+  try {
+    if (!store) return;
+    const m = readCollapsed(store);
+    if (folded) m[id] = true; else delete m[id];
+    store.setItem(COLLAPSE_KEY, JSON.stringify(m));
+  } catch { /* storage blocked: this session only */ }
+}
+
+/**
+ * C229: make a panel section foldable by its heading. Clicking the heading (or Enter / Space on it) toggles the class
+ * `collapsed` on the section (CSS hides everything but the heading) and remembers it per browser under `id`.
+ * The heading gets a chevron, role="button", tabindex 0 and aria-expanded. Clicks on buttons / inputs inside the
+ * heading do not toggle. Returns { set(folded), folded() }.
+ * @param {HTMLElement} sec
+ * @param {HTMLElement} title the section's heading (a child of sec)
+ * @param {string} id storage id, e.g. 'colony:brood'
+ * @param {{ store?: Storage|null }} [opts]
+ */
+export function collapsible(sec, title, id, { store = browserStore() } = {}) {
+  let folded = !!readCollapsed(store)[id];
+  const chev = h('span', { class: 'sec-chev', attrs: { 'aria-hidden': 'true' } });
+  title.insertBefore(chev, title.firstChild || null);
+  title.classList.add('sec-toggle');
+  title.setAttribute('role', 'button');
+  title.setAttribute('tabindex', '0');
+  const apply = () => {
+    toggleClass(sec, 'collapsed', folded);
+    title.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    setText(chev, folded ? '▸' : '▾');
+  };
+  const set = (v) => {
+    folded = !!v;
+    apply();
+    writeCollapsed(id, folded, store);
+  };
+  const interactive = (t) => {
+    for (let n = t; n && n !== title; n = n.parentNode) {
+      const tag = n.tagName ? String(n.tagName).toUpperCase() : '';
+      if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'A' || tag === 'LABEL') return true;
+    }
+    return false;
+  };
+  title.addEventListener('click', (ev) => {
+    if (ev && interactive(ev.target)) return;
+    set(!folded);
+  });
+  title.addEventListener('keydown', (ev) => {
+    if (!ev || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+    if (typeof ev.preventDefault === 'function') ev.preventDefault();
+    set(!folded);
+  });
+  apply();
+  return { set, folded: () => folded };
+}
+
 /** Player text for a reason (re-exported for panels); type = the refused command, for command-specific copy. */
 export function why(reason, type = null) {
   return reasonText(reason, type);

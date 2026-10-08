@@ -24,12 +24,18 @@
 // C103: each hatched adult sheds MOLT.perHatch chitin (once caste_soldier or res_chitin is unlocked); d.rates.chitin.molts.
 // C104: soldier / supermajor eggs spend only chitin above run.colony.chitinReserve (skipped like a full berth at or
 //   below it); chitinNeed [q] tells trails.allocate when chitin trails get the auto-fill first.
+// C199: the reserve never exceeds the chitin cap (chitinReserveMax [q]: the last ladder step or d.stats.chitinCap,
+//   whichever is lower; setChitinReserve clamps to it and tick() lowers a stored reserve above it); moult chitin fills
+//   up to the cap only (no one-shot overflow) and is × chitinBoost (wallet.grant); chitinNeed wants chitin only up to
+//   the cap, since trails cannot fill past it.
 // C151: caste TARGET COUNTS replace the caste-share sliders. run.colony.casteGoals[c] = adults + brood of the caste the
 //   queen lays toward (largest deficit first, then minors); casteFill[c] ("Keep berths filled") makes the target the
 //   caste's berth cap (soldiers: Barracks berths, supermajors: War Hall berths, repletes: Repletion Hall berths). Fill
 //   switches on by itself the first step a soldier / supermajor cap exists in a run unless casteTouched[c] (the player
 //   set that caste, a carried preset did, or the save predates C151 with that cap already built). Old share saves
 //   (run.colony.casteTargets) convert on the first step: target = max(round(share × cap), current adults + brood).
+// C232: cancelRear empties (or shortens) the alate rearing queue for free (eggs are paid when laid); alateQueueCost [q]
+//   prices the next n queued alates for the Prestige → Flight buttons.
 
 import { CASTE_ORDER, CASTES } from '../data/castes.js';
 import { EGG, BROOD, NUTRITION, SLIDERS, MOLT } from '../data/economy.js';
@@ -289,6 +295,10 @@ export function killAdults(s, d, caste, n, cause, { job = null } = {}) {
   const k = Math.min(clampNum(n), before);
   if (!(k > 0)) return 0;
   col.adults[caste] = clampNum(before - k);
+  // C201: Carapace Workshops recycle chitin from fallen soldiers and supermajors (not from retirement, which never kills)
+  if ((caste === 'soldier' || caste === 'supermajor') && d && d.nest && d.nest.agg && d.nest.agg.chitinRecycle > 0) {
+    grant(s, d, 'chitin', k * d.nest.agg.chitinRecycle);
+  }
   if (caste === 'minor') {
     let rem = k;
     if (own(JOBS, job)) {
@@ -492,10 +502,53 @@ function extraMax(s, caste, form, have) {
   return Infinity;
 }
 
-/** C104: the chitin reserve (absolute chitin held back from soldier / supermajor eggs), clamped to the slider range. */
-export function chitinReserve(s) {
+/**
+ * [q] C232: what queueing n MORE alates will cost when they are laid, at today's egg price: food = n × the next alate
+ * egg's food; each extra (honeydew 5 × 1.15^k) continues after the alate eggs already laid this run AND those already
+ * queued (with Auto-rear on the queue is not followed, so only laid eggs count). Nothing is paid when queueing: the
+ * queen pays each egg as she lays it, so a cancelled queue costs nothing (cancelRear). null if no alate egg price.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} n
+ * @returns {import('../core/types.js').Cost|null}
+ */
+export function alateQueueCost(s, d, n) {
+  const k = Math.max(0, Math.floor(num(n)));
+  const base = eggCost(s, d, 'alate');
+  if (!base || !(k > 0)) return base && k === 0 ? { food: 0 } : null;
+  const col = s.run.colony;
+  const queued = s.meta && s.meta.automation && s.meta.automation.autoRear ? 0 : Math.max(0, Math.floor(num(col.rearRequested) + EPS));
+  const cost = { food: num(base.food) * k };
+  const extra = CASTES.alate.extra || {};
+  for (const r of Object.keys(extra)) {
+    const form = extra[r];
+    let v = 0;
+    if (typeof form === 'number') v = form * k;
+    else if (form && typeof form.growth === 'number') {
+      const first = num(form.base) * form.growth ** (num(col.eggs.alate) + queued);
+      v = form.growth === 1 ? first * k : first * (form.growth ** k - 1) / (form.growth - 1);
+    } else if (form && typeof form.perOwned === 'number') v = (num(form.base) + form.perOwned * num(col.alatesReared)) * k;
+    if (v > 0) cost[r] = v;
+  }
+  for (const r of Object.keys(cost)) if (!Number.isFinite(cost[r])) return null;
+  return cost;
+}
+
+/**
+ * [q] C199: the largest chitin reserve allowed: the last ladder step, or the chitin cap (d.stats.chitinCap) if lower.
+ * @param {import('../core/types.js').Derived} [d]
+ * @returns {number}
+ */
+export function chitinReserveMax(d) {
   const steps = SLIDERS.chitinReserveSteps;
-  return clampNum(num(s.run.colony.chitinReserve), 0, steps[steps.length - 1]);
+  const top = steps[steps.length - 1];
+  const cap = d && d.stats ? d.stats.chitinCap : undefined;
+  return typeof cap === 'number' && Number.isFinite(cap) && cap >= 0 ? Math.min(top, cap) : top;
+}
+
+/** C104: the chitin reserve (absolute chitin held back from soldier / supermajor eggs), clamped to the slider range (C199: and the cap, given d). */
+export function chitinReserve(s, d) {
+  return clampNum(num(s.run.colony.chitinReserve), 0, chitinReserveMax(d));
 }
 
 /** Stock of resource r an egg of the caste may spend: military castes only spend chitin above the reserve (C104). */
@@ -522,7 +575,7 @@ function eggsByExtras(s, caste) {
  * @returns {{ needed: boolean, reserve: number, next: number, wanted: boolean }}
  */
 export function chitinNeed(s, d) {
-  const reserve = chitinReserve(s);
+  const reserve = chitinReserve(s, d);
   const col = s.run.colony;
   let next = Infinity;
   let fallback = Infinity;
@@ -537,7 +590,8 @@ export function chitinNeed(s, d) {
   }
   const wanted = Number.isFinite(next);
   if (!wanted) next = Number.isFinite(fallback) ? fallback : 0;
-  const needed = allowed && (wanted || reserve > 0) && num(s.run.res.chitin) < reserve + next - EPS;
+  const cap = d && d.stats && typeof d.stats.chitinCap === 'number' && d.stats.chitinCap >= 0 ? d.stats.chitinCap : Infinity;
+  const needed = allowed && (wanted || reserve > 0) && num(s.run.res.chitin) < Math.min(cap, reserve + next) - EPS;
   return { needed, reserve, next, wanted };
 }
 
@@ -755,7 +809,7 @@ function develop(s, d, econDt, env) {
     }
     s.run.stats.hatched = clampNum(num(s.run.stats.hatched) + n);
     env.emit('hatched', { caste, n });
-    if (moltsOn(s)) molt += grant(s, d, 'chitin', n * MOLT.perHatch);
+    if (moltsOn(s)) molt += grant(s, d, 'chitin', n * MOLT.perHatch, { overflow: false });
   }
   return molt;
 }
@@ -803,6 +857,8 @@ export function tick(s, d, dt, env) {
   const econDt = step > 0 ? (env && env.econDt > 0 ? env.econDt : step) : 0;
   if (!(step > 0)) return;
   convertLegacyCasteTargets(s, d);   // C151: pre-C151 share saves, once
+  const resMax = chitinReserveMax(d);   // C199: a reserve above the chitin cap could never be met by income
+  if (num(s.run.colony.chitinReserve) > resMax) s.run.colony.chitinReserve = clampNum(resMax);
   autoFill(s, d);
   layEggs(s, d, econDt, env);
   moltRate(d, develop(s, d, econDt, env), econDt);
@@ -914,15 +970,14 @@ export const handlers = {
     },
   },
 
-  /** setChitinReserve { amount }: C104, chitin held back from soldier / supermajor eggs (0..last ladder step). */
+  /** setChitinReserve { amount }: C104, chitin held back from soldier / supermajor eggs (0..last ladder step; C199: clamped to the chitin cap). */
   setChitinReserve: {
     validate(s, d, cmd) {
       const steps = SLIDERS.chitinReserveSteps;
       return inRange(cmd.amount, 0, steps[steps.length - 1]) ? null : 'invalid';
     },
     apply(s, d, cmd) {
-      const steps = SLIDERS.chitinReserveSteps;
-      s.run.colony.chitinReserve = clampNum(cmd.amount, 0, steps[steps.length - 1]);
+      s.run.colony.chitinReserve = clampNum(cmd.amount, 0, chitinReserveMax(d));
     },
   },
 
@@ -949,6 +1004,23 @@ export const handlers = {
     },
     apply(s, d, cmd) {
       s.run.colony.rearRequested = clampNum(num(s.run.colony.rearRequested) + cmd.n);
+    },
+  },
+
+  /**
+   * cancelRear { n? }: C232 — remove up to n alates from the rearing queue (all of them when n is omitted). Free: a
+   * queued alate costs nothing until the queen lays its egg (layBatch pays then); laid alate eggs are not touched.
+   */
+  cancelRear: {
+    validate(s, d, cmd) {
+      if (cmd.n !== undefined && cmd.n !== null && (!Number.isInteger(cmd.n) || cmd.n < 1)) return 'invalid';
+      if (!(num(s.run.colony.rearRequested) > EPS)) return 'invalid:empty';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const col = s.run.colony;
+      const n = cmd.n === undefined || cmd.n === null ? Infinity : cmd.n;
+      col.rearRequested = n >= num(col.rearRequested) ? 0 : clampNum(num(col.rearRequested) - n);
     },
   },
 

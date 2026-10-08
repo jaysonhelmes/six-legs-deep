@@ -10,9 +10,9 @@
 import { SOFTCAPS, COST_MAX } from '../data/balance.js';
 import { CASTES, CASTE_ORDER } from '../data/castes.js';
 import { JOBS } from '../data/jobs.js';
-import { EGG, LAY, BROOD, UPKEEP, HUNGRY, NUTRITION, PHEROMONE, CAPS, CLICK, WINTER_R, ACH_FX } from '../data/economy.js';
+import { EGG, LAY, BROOD, UPKEEP, HUNGRY, NUTRITION, PHEROMONE, CAPS, CLICK, WINTER_R, ACH_FX, CHITIN } from '../data/economy.js';
 import { ADAPTATIONS } from '../data/adaptations.js';
-import { RESEARCH, REFINEMENT } from '../data/research.js';
+import { RESEARCH, REFINEMENT, ARCHIVE } from '../data/research.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { MOUND, TERRITORY } from '../data/surface.js';
 import { TRAITS } from '../data/bloodline.js';
@@ -210,6 +210,75 @@ function upkeepOf(s, d, winter) {
 }
 
 /**
+ * [q] C198: lay-rate factor of one Royal Chamber level: ×LAY.perRC per level up to LAY.highFrom (L8, the full-size room),
+ * ×LAY.perRCHigh per level above it. 1 at L1, 0 for L < 1. Also used by the Royal Chamber level preview.
+ * @param {number} level
+ * @returns {number}
+ */
+export function royalLayMult(level) {
+  const L = Math.floor(num(level));
+  if (L < 1) return 0;
+  return clampNum(LAY.perRC ** (Math.min(L, LAY.highFrom) - 1) * LAY.perRCHigh ** Math.max(0, L - LAY.highFrom));
+}
+
+/**
+ * [q] C198: queens' court factor for `queens` laying queens: 1 + LAY.courtPer × (queens − 1) (1 for 0 or 1 queen).
+ * @param {number} queens
+ * @returns {number}
+ */
+export function courtMult(queens) {
+  return 1 + LAY.courtPer * Math.max(0, Math.floor(num(queens)) - 1);
+}
+
+/** C200: Archive multiplier of a research branch: 1 + ARCHIVE.per × level (era.archive). */
+export function archiveMult(s, branch) {
+  return 1 + ARCHIVE.per * lvl(s && s.era ? s.era.archive : null, branch);
+}
+
+/**
+ * Lay rate (DESIGN §5.1, §12.4; C198): λ = Σ_queens (base + perRF·RF) × royalLayMult(RC) × court × M_lay (no colony
+ * scale). Fills st.layRate and st.layParts — the tooltip breakdown, in order: one { label, add, value } per laying queen
+ * (eggs/s of that queen before multipliers), then { label, mult, value } per multiplier that is not ×1.
+ */
+function layStack(s, d, st, pre, mods, A) {
+  const run = s.run;
+  const col = run.colony;
+  const agg = d.nest.agg;
+  const rf = run.hardship === 'claustral_founding' ? 0 : lvl(A, 'royal_feeding');
+  const parts = [];
+  const add = (label, value) => parts.push({ label, add: value, value });
+  const mul = (label, value) => {
+    if (value !== 1) parts.push({ label, mult: value, value });
+    return value;
+  };
+  let lay = 0;
+  let queens = 0;
+  if (Array.isArray(agg.royal)) {
+    for (const lv of agg.royal) {
+      const L = num(lv);
+      if (!(L > 0)) continue;
+      const q = (LAY.base + LAY.perRF * rf) * royalLayMult(L);
+      queens++;
+      lay += q;
+      add(queens === 1 ? 'Queen (Royal Chamber L' + L + ')' : 'Queen ' + queens + ' (Royal Chamber L' + L + ')', clampNum(q));
+    }
+  }
+  let m = mul("Queens' court (" + queens + ' queens)', courtMult(queens));
+  m *= mul('Royal Pheromones', resMult(s, 'royal_pheromones', 'lay'));
+  m *= mul('Spermathecal Reserve', resMult(s, 'spermathecal_reserve', 'lay'));
+  m *= mul("Queen's Feast", pw(fx(ADAPTATIONS, 'queens_feast', 'lay', 1), lvl(A, 'queens_feast')));
+  m *= mul('Brood refinement', refine(s, 'brood'));
+  m *= mul('Brood Archive', archiveMult(s, 'brood'));
+  m *= mul('Prestige (Lineage, Fertile Queen, Genome)', num(pre.lay, 1));
+  m *= mul('Season', num(mods.lay, 1));
+  m *= mul('Events', effectMult(s, 'lay'));
+  m *= mul('Achievements', achMult(s, 'lay'));
+  if (col.hungry) m *= mul('Hungry', 0);
+  st.layParts = parts;
+  st.layRate = clampNum(lay * m);
+}
+
+/**
  * Fill d.stats (ARCHITECTURE §5) from state and the upstream derived subtrees (d.meta, d.season, d.nest.agg,
  * d.surface.ownedCount, d.rates). Emits softcapHit {stat: 'dig'} the first time dig work softcaps in a run.
  * @param {import('../core/types.js').State} s
@@ -262,19 +331,8 @@ export function recompute(s, d, env) {
   st.pheromoneCap = clampNum(PHEROMONE.capBase + (hasResearch(s, 'pheromone_glands') ? fx(RESEARCH, 'pheromone_glands', 'cap', 0) : 0)
     + PHEROMONE.capPerMound * num(run.surface.mound));
 
-  // ---- lay rate (DESIGN §5.1, §12.4)
-  const rf = run.hardship === 'claustral_founding' ? 0 : lvl(A, 'royal_feeding');
-  const mLay = resMult(s, 'royal_pheromones', 'lay') * resMult(s, 'spermathecal_reserve', 'lay')
-    * pw(fx(ADAPTATIONS, 'queens_feast', 'lay', 1), lvl(A, 'queens_feast')) * num(pre.lay, 1) * num(mods.lay, 1)
-    * effectMult(s, 'lay') * refine(s, 'brood') * achMult(s, 'lay');
-  let lay = 0;
-  if (!col.hungry && Array.isArray(agg.royal)) {
-    for (const lv of agg.royal) {
-      const L = num(lv);
-      if (L > 0) lay += (LAY.base + LAY.perRF * rf) * LAY.perRC ** (L - 1);
-    }
-  }
-  st.layRate = clampNum(lay * mLay * cs);
+  // ---- lay rate (DESIGN §5.1, §12.4; C198: colony scale no longer multiplies it)
+  layStack(s, d, st, pre, mods, A);
 
   // ---- egg costs (DESIGN §5.2)
   if (!st.eggCost || typeof st.eggCost !== 'object') st.eggCost = {};
@@ -332,7 +390,7 @@ export function recompute(s, d, env) {
     + Math.min(TERRITORY.yieldMax, TERRITORY.yieldPerHex * ownedCount) + middenOut + satAdd + effectAdd(s, 'forage_add'));
   f.mRun = clampNum(resMult(s, 'trail_memory', 'forage') * resMult(s, 'recruitment_pheromones', 'forage')
     * pw(fx(ADAPTATIONS, 'potent_trails', 'forage', 1), lvl(A, 'potent_trails')) * nutrition * refine(s, 'foraging')
-    * edictMult(s, 'forage'));
+    * archiveMult(s, 'foraging') * edictMult(s, 'forage'));
   f.mTime = clampNum(st.seasonForage * effectMult(s, 'forage') * effectMult(s, 'surface_work') * hungry);
   f.mPrestige = clampNum(num(pre.food, 1));
   f.total = clampNum(f.aAdd * f.mRun * f.mTime * f.mPrestige * st.workerMult);
@@ -344,7 +402,7 @@ export function recompute(s, d, env) {
   const diggers = num(col.jobs.digger);
   const aDig = 1 + fx(ADAPTATIONS, 'digging_claws', 'digAdd', 0) * lvl(A, 'digging_claws') + middenOut + satAdd;
   const mRunDig = resMult(s, 'coordinated_digging', 'dig') * resMult(s, 'acid_excavation', 'dig') * refine(s, 'excavation')
-    * nutrition * edictMult(s, 'dig') * achMult(s, 'dig');
+    * archiveMult(s, 'excavation') * nutrition * edictMult(s, 'dig') * achMult(s, 'dig');
   const mTimeDig = num(mods.dig, 1) * hungry;
   const digRaw = diggers > 0 ? clampNum(diggers ** JOBS.digger.fx.exp * aDig * mRunDig * mTimeDig * num(pre.dig, 1) * st.workerMult) : 0;
   const dig = scChain(digRaw, SOFTCAPS.dig, st.scMult.dig);
@@ -356,16 +414,21 @@ export function recompute(s, d, env) {
   // ---- other channels (DESIGN §12.7)
   st.honeydew = clampNum(pw(fx(CHAMBERS, 'root_aphid_pen', 'herders', 1), num(agg.rootPenCount))
     * resMult(s, 'sugar_economy', 'honeydew') * pw(fx(ADAPTATIONS, 'sweet_tooth', 'honeydew', 1), lvl(A, 'sweet_tooth'))
-    * refine(s, 'husbandry') * nutrition * num(pre.honeydew, 1) * effectMult(s, 'honeydew') * effectMult(s, 'surface_work')
+    * refine(s, 'husbandry') * archiveMult(s, 'husbandry') * nutrition * num(pre.honeydew, 1) * effectMult(s, 'honeydew') * effectMult(s, 'surface_work')
     * hungry * st.workerMult * achMult(s, 'honeydew'));
   st.leaves = clampNum(nutrition * num(pre.leaves, 1) * effectMult(s, 'surface_work') * hungry * st.workerMult);
   const wet = Array.isArray(run.landingTags) && run.landingTags.includes('site_wet_hollow') ? fx(SITES, 'site_wet_hollow', 'fungus', 1) : 1;
-  st.fungus = clampNum(resMult(s, 'weeder_ants', 'fungus') * refine(s, 'husbandry') * achMult(s, 'fungus') * wet
+  st.fungus = clampNum(resMult(s, 'weeder_ants', 'fungus') * refine(s, 'husbandry') * archiveMult(s, 'husbandry') * achMult(s, 'fungus') * wet
     * num(pre.fungus, 1) * hungry);
-  st.chitin = clampNum(num(pre.chitin, 1) * hungry);
+  // C199: Carapace Workshops boost every chitin source (trails and Middens through st.chitin; moults and one-shot
+  // rewards in wallet.grant); Carapace Stores raise the cap, which grows with colony scale like the other stores.
+  st.chitinBoost = clampNum(1 + Math.max(0, num(agg.chitinBoost)));
+  st.chitin = clampNum(num(pre.chitin, 1) * hungry * st.chitinBoost);
+  st.chitinCap = clampNum((CHITIN.capBase + Math.max(0, num(agg.chitinCapBase))) * cs);
 
   // ---- insight (DESIGN §12.5; ventilation is already inside the chamber eff)
   const common = resMult(s, 'collective_memory', 'insight') * resMult(s, 'hive_mind', 'insight') * refine(s, 'communication')
+    * archiveMult(s, 'communication')
     * num(mods.insight, 1) * effectMult(s, 'insight') * num(pre.insight, 1) * achMult(s, 'insight') * hungry;
   st.insight.library = clampNum(common * resMult(s, 'chemical_lexicon', 'library'));
   st.insight.scouting = clampNum(common * resMult(s, 'antennation', 'insightHex'));
@@ -381,7 +444,7 @@ export function recompute(s, d, env) {
     * (1 + Math.min(fx(CHAMBERS, 'barracks', 'atkMax', 0), fx(CHAMBERS, 'barracks', 'atk', 0) * num(agg.barracksL)))
     * warrior * (lvl(G, 'venom_gland') > 0 ? fx(GENOME, 'venom_gland', 'atk', 1) : 1));
   st.hp = clampNum(pw(fx(ADAPTATIONS, 'thick_cuticle', 'hp', 1), lvl(A, 'thick_cuticle')) * warrior * achMult(s, 'hp'));
-  st.ap = clampNum(resMult(s, 'war_chemistry', 'ap') * refine(s, 'warfare') * edictMult(s, 'ap') * num(pre.ap, 1) * achMult(s, 'ap'));
+  st.ap = clampNum(resMult(s, 'war_chemistry', 'ap') * refine(s, 'warfare') * archiveMult(s, 'warfare') * edictMult(s, 'ap') * num(pre.ap, 1) * achMult(s, 'ap'));
 
   // ---- pheromone (DESIGN §12.9)
   st.pheromoneRegen = clampNum((PHEROMONE.regenBase + PHEROMONE.regenPerSqrtAdult * Math.sqrt(adultsTotal(s)))
