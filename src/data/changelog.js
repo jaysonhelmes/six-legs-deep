@@ -10,6 +10,14 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.12.2',
+    date: '2026-10-08',
+    title: 'Classic map tiles',
+    notes: [
+      "The surface map is back to the crisp tile look from v0.10: each hex keeps its own ground with clean edges, joined pools, flagstone paths and solid boulders. (The blended borders from v0.11 are gone.)",
+    ],
+  },
+  {
     version: '0.12.1',
     date: '2026-10-08',
     title: 'Smoother updates',

@@ -575,86 +575,24 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       }
     }
     // base fill, slightly enlarged to hide seams
-    const groundOf = (i) => under.get(i) || terrainId(ter[i]);
-    const fillCol = new Array(n);
     for (let i = 0; i < n; i++) {
       const [x, y] = hexToPixel(i, SIZE);
-      const id = groundOf(i);
+      const id = under.get(i) || terrainId(ter[i]);
       const [base, detail] = terrainColor(season, id);
       const nz = noise2(x / 70, y / 70, 3);
-      fillCol[i] = mix(base, detail, nz * 0.45 + (hash01(i, 5) - 0.5) * 0.08);
-      g.fillStyle = fillCol[i];
+      g.fillStyle = mix(base, detail, nz * 0.45 + (hash01(i, 5) - 0.5) * 0.08);
       g.beginPath();
       hexPathOn(g, x, y, SIZE * 1.03);
       g.fill();
     }
-    // C183: soft ground transitions where two grounds meet (under the details, then a lighter pass over them)
-    paintTransitions(g, n, groundOf, fillCol, 1);
     for (let i = 0; i < n; i++) {
       const [x, y] = hexToPixel(i, SIZE);
-      const id = groundOf(i);
+      const id = under.get(i) || terrainId(ter[i]);
       paintTerrainDetail(g, id, season, i, x, y);
     }
-    paintTransitions(g, n, groundOf, fillCol, 0.35);
     paintPaths(g, season, linkSet(ter, nMap, 'garden_path'));
     paintPools(g, season, linkSet(ter, nMap, 'puddle'), under);
     paintBoulders(g, season, { hexes: stones.hexes.filter((i) => boulder.has(i)), nb: stones.nb });
-  }
-
-  /**
-   * C183: feathered, noise-shaped boundaries between different grounds (grass / sand / leaf litter / roots, and the
-   * ground under puddles, paths and boulders). Along each edge shared by two different grounds, a few radial blobs
-   * push one side's colour across the edge by a noise-driven amount (so the boundary wanders instead of following the
-   * hex edge) and a soft wash of each colour fades into the other. `k` scales the opacity (the second, lighter pass runs
-   * over the ground details). Deterministic (geom.hash01 / value noise), cached with the terrain.
-   * @param {CanvasRenderingContext2D} g
-   * @param {number} n hexes to consider
-   * @param {(i: number) => string} groundOf ground id of a hex
-   * @param {string[]} fillCol base fill colour per hex
-   * @param {number} k opacity scale
-   */
-  function paintTransitions(g, n, groundOf, fillCol, k) {
-    if (typeof g.createRadialGradient !== 'function') return;
-    const blob = (x, y, r, col, a) => {
-      if (!(r > 0.5) || !(a > 0.01)) return;
-      const gr = g.createRadialGradient(x, y, 0, x, y, r);
-      gr.addColorStop(0, rgba(col, a));
-      gr.addColorStop(0.55, rgba(col, a * 0.6));
-      gr.addColorStop(1, rgba(col, 0));
-      g.fillStyle = gr;
-      g.beginPath();
-      g.arc(x, y, r, 0, Math.PI * 2);
-      g.fill();
-    };
-    for (let i = 0; i < n; i++) {
-      const gi = groundOf(i);
-      const [q, r] = hexQR(i);
-      const [x, y] = hexToPixel(i, SIZE);
-      for (const [dq, dr] of DIRS) {
-        const h = hexIndex(q + dq, r + dr);
-        if (h <= i || h >= n || groundOf(h) === gi) continue;
-        const [hx, hy] = hexToPixel(h, SIZE);
-        const L = Math.hypot(hx - x, hy - y) || 1;
-        const ux = (hx - x) / L;
-        const uy = (hy - y) / L;
-        const mx = (x + hx) / 2;
-        const my = (y + hy) / 2;
-        const S2 = 4;
-        for (let s2 = 0; s2 < S2; s2++) {
-          const t = ((s2 + 0.5) / S2 - 0.5) * SIZE * 0.98 + (hash01(i * 7 + h, s2 + 31) - 0.5) * SIZE * 0.12;
-          const ex = mx - uy * t;
-          const ey = my + ux * t;
-          // the boundary wanders: positive pushes this hex's ground into the neighbour, negative the other way
-          const off = (noise2(ex / 17, ey / 17, 13) - 0.5) * SIZE * 0.85 + (hash01(i * 13 + h, s2 + 37) - 0.5) * SIZE * 0.2;
-          const rad = SIZE * (0.2 + 0.22 * noise2(ex / 23, ey / 23, 17)) + Math.abs(off) * 0.55;
-          const into = off >= 0 ? fillCol[i] : fillCol[h];
-          blob(ex + ux * off * 0.55, ey + uy * off * 0.55, rad, into, 0.85 * k);
-          // soft wash both ways across the edge
-          blob(ex - ux * SIZE * 0.12, ey - uy * SIZE * 0.12, SIZE * 0.34, fillCol[h], 0.32 * k);
-          blob(ex + ux * SIZE * 0.12, ey + uy * SIZE * 0.12, SIZE * 0.34, fillCol[i], 0.32 * k);
-        }
-      }
-    }
   }
 
   /** C135: clip to the union of a set's hexes (corner radius SIZE: the fog / void hexes, 1.04 x SIZE, cover it). */
@@ -770,94 +708,46 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       }
       g.fill();
     }
-    // C183: mottled shading — darker and lighter weathering patches scattered over the mass (not per hex outline)
-    if (typeof g.createRadialGradient === 'function') {
-      for (const st of stations) {
-        for (let q = 0; q < 2; q++) {
-          const r = (k) => hash01(st.seed * 41 + q * 7 + k, k * 11 + 3);
-          const px = st.x + (r(1) - 0.5) * SIZE * 0.9;
-          const py = st.y + (r(2) - 0.5) * SIZE * 0.8;
-          const rad = SIZE * (0.22 + 0.26 * r(3));
-          const col = r(4) < 0.55 ? shade(base, -0.3) : mix(base, '#ffffff', 0.3);
-          const gr = g.createRadialGradient(px, py, 0, px, py, rad);
-          gr.addColorStop(0, rgba(col, 0.3 + 0.14 * r(5)));
-          gr.addColorStop(1, rgba(col, 0));
-          g.fillStyle = gr;
-          g.beginPath();
-          g.arc(px, py, rad, 0, Math.PI * 2);
-          g.fill();
-        }
-      }
-    }
-    // C183: organic fissures — noise-steered cracks that wander across the whole rock (they ignore the hex grid), taper
-    // toward their tips and sometimes branch; a lit lip above each (light from the upper left)
-    const cracks = boulderCracks(set);
+    // cracks: a jagged seam across every link (where two stones fused) and a hairline per hex
+    g.strokeStyle = 'rgba(38,38,44,0.5)';
+    g.lineWidth = 1.1;
     g.lineCap = 'round';
     g.lineJoin = 'round';
-    for (const pass of [0, 1]) {
-      g.save();
-      if (pass === 1) g.translate(-0.7, -0.8);
-      g.strokeStyle = pass === 0 ? 'rgba(32,30,36,0.58)' : 'rgba(255,255,255,0.13)';
-      for (const c of cracks) {
-        const m = c.pts.length;
-        for (let j = 1; j < m; j++) {
-          g.lineWidth = Math.max(0.35, c.w * (1 - (0.8 * (j - 1)) / Math.max(1, m - 1)) * (pass ? 0.7 : 1));
-          g.beginPath();
-          g.moveTo(c.pts[j - 1][0], c.pts[j - 1][1]);
-          g.lineTo(c.pts[j][0], c.pts[j][1]);
-          g.stroke();
-        }
+    g.beginPath();
+    for (const st of mids) {
+      const r = (q) => hash01(st.seed * 29 + q, q * 7 + 11);
+      const px = -Math.sin(st.ang);
+      const py = Math.cos(st.ang);
+      const L = SIZE * (0.3 + 0.15 * r(1));
+      g.moveTo(st.x - px * L, st.y - py * L);
+      for (let q = 1; q <= 3; q++) {
+        const f = -1 + (2 * q) / 3;
+        const j = q === 3 ? 0 : (r(q + 2) - 0.5) * SIZE * 0.18;
+        g.lineTo(st.x + px * L * f + Math.cos(st.ang) * j, st.y + py * L * f + Math.sin(st.ang) * j);
       }
-      g.restore();
     }
+    for (const i of set.hexes) {
+      const [x, y] = hexToPixel(i, SIZE);
+      const r = (q) => hash01(i * 31 + q, q * 13 + 5);
+      const a = r(1) * 6.28;
+      const L = SIZE * (0.18 + 0.14 * r(2));
+      const sx = x + (r(3) - 0.5) * SIZE * 0.5;
+      const sy = y + (r(4) - 0.5) * SIZE * 0.4;
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a) * L * 0.5 + (r(5) - 0.5) * 3, sy + Math.sin(a) * L * 0.5 + (r(6) - 0.5) * 3);
+      g.lineTo(sx + Math.cos(a) * L, sy + Math.sin(a) * L);
+    }
+    g.stroke();
+    // a lit lip just above each crack
+    g.strokeStyle = 'rgba(255,255,255,0.14)';
+    g.save();
+    g.translate(-0.8, -0.8);
+    g.stroke();
+    g.restore();
     g.restore();
     g.restore();
     g.lineCap = 'butt';
     g.lineJoin = 'miter';
-  }
-
-  /**
-   * C183: fissure polylines for a boulder: about one main crack per stone hex, started at a hashed point of a hashed
-   * hex and steered by value noise (so neighbouring cracks bend alike), 5–9 steps long, with a branch now and then.
-   * Deterministic from the hexes. Each crack: { pts: [[x, y]…], w } (w = start width).
-   */
-  function boulderCracks(set) {
-    const out = [];
-    const hexes = set.hexes;
-    if (!hexes.length) return out;
-    const nC = Math.max(1, hexes.length);
-    const seed0 = hexes[0];
-    const walk = (x, y, ang, steps, seed, w) => {
-      const pts = [[x, y]];
-      let a = ang;
-      let px = x;
-      let py = y;
-      for (let k = 0; k < steps; k++) {
-        a += (noise2(px / 11, py / 11, 19 + (seed % 7)) - 0.5) * 0.95;
-        const L = SIZE * (0.11 + 0.08 * hash01(seed * 5 + k, 83));
-        px += Math.cos(a) * L;
-        py += Math.sin(a) * L * 0.92;
-        pts.push([px, py]);
-      }
-      return { pts, w };
-    };
-    for (let c = 0; c < nC; c++) {
-      const r = (k) => hash01(seed0 * 131 + c * 17 + k, k * 13 + 7);
-      const i0 = hexes[c % hexes.length];   // one per stone hex, so the fissures spread over the whole mass
-      const [x, y] = hexToPixel(i0, SIZE);
-      const sx = x + (r(2) - 0.5) * SIZE * 0.8;
-      const sy = y + (r(3) - 0.5) * SIZE * 0.7;
-      const main = walk(sx, sy, r(4) * Math.PI * 2, 5 + Math.floor(r(5) * 5), seed0 + c * 3, 1.6 + 1.1 * r(6));
-      out.push(main);
-      if (r(7) < 0.55 && main.pts.length > 3) {
-        const at = 1 + Math.floor(r(8) * (main.pts.length - 2));
-        const [bx, by] = main.pts[at];
-        const [px, py] = main.pts[at - 1];
-        const dir = Math.atan2(by - py, bx - px) + (r(9) < 0.5 ? -1 : 1) * (0.6 + 0.5 * r(10));
-        out.push(walk(bx, by, dir, 2 + Math.floor(r(11) * 3), seed0 + c * 3 + 1, main.w * 0.6));
-      }
-    }
-    return out;
   }
 
   /**
@@ -1024,17 +914,6 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     g.restore();
   }
 
-  /**
-   * C111: garden paths — continuous strips through the linked path hexes, rounded ends. C183: the strip runs through
-   * the midpoints of the links and bends at each hex centre on a quadratic curve (tangent along the link at every
-   * midpoint), so turns and zig-zags read as smooth curves instead of polygon steps; junctions join every pair of links.
-   */
-  function pathMid(i, h) {
-    const [x, y] = hexToPixel(i, SIZE);
-    const [hx, hy] = hexToPixel(h, SIZE);
-    return [(x + hx) / 2, (y + hy) / 2];
-  }
-
   function paintPaths(g, season, set) {
     if (!set.hexes.length) return;
     const [base, detail] = terrainColor(season, 'garden_path');
@@ -1047,20 +926,11 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       g.beginPath();
       for (const i of set.hexes) {
         const [x, y] = hexToPixel(i, SIZE);
-        const links = set.nb.get(i).filter((h) => h >= 0);
-        if (links.length === 1) {
-          const [mx, my] = pathMid(i, links[0]);
+        for (const h of set.nb.get(i)) {
+          if (h < i) continue;
+          const [hx, hy] = hexToPixel(h, SIZE);
           g.moveTo(x, y);
-          g.lineTo(mx, my);
-          continue;
-        }
-        for (let a = 0; a < links.length; a++) {
-          for (let b = a + 1; b < links.length; b++) {
-            const [ax, ay] = pathMid(i, links[a]);
-            const [bx, by] = pathMid(i, links[b]);
-            g.moveTo(ax, ay);
-            g.quadraticCurveTo(x, y, bx, by);
-          }
+          g.lineTo(hx, hy);
         }
       }
       g.stroke();
@@ -1080,16 +950,10 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     // gravel speckle
     const stations = set.hexes.map((i) => {
       const [x, y] = hexToPixel(i, SIZE);
-      const links = set.nb.get(i).filter((h) => h >= 0);
+      const first = set.nb.get(i).find((h) => h >= 0);
       let ang = 0;
-      if (links.length === 2) {
-        // C183: on a bend, the stones sit on the curve's apex and follow its direction there
-        const [ax, ay] = pathMid(i, links[0]);
-        const [bx, by] = pathMid(i, links[1]);
-        return { x: 0.25 * ax + 0.5 * x + 0.25 * bx, y: 0.25 * ay + 0.5 * y + 0.25 * by, ang: Math.atan2(by - ay, bx - ax), seed: i };
-      }
-      if (links.length) {
-        const [hx, hy] = hexToPixel(links[0], SIZE);
+      if (first !== undefined) {
+        const [hx, hy] = hexToPixel(first, SIZE);
         ang = Math.atan2(hy - y, hx - x);
       }
       return { x, y, ang, seed: i };
