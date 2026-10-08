@@ -26,6 +26,10 @@ export const BATTLE = f({ dmgCoef: 0.2, step: 0.25, fortune: [0.9, 1.1], preview
  *   = rivalPer × soldiers × (1 + tierStep × (tier − 1)); escalation engages escalateEngage of defenders (no home bonus);
  *   a won hex costs the rival flipLoss of its soldiers; lose = withdraw ratio (1 / win); choiceSec = time to choose
  *   escalate/withdraw before the default (withdraw).
+ *   C226 (player feedback "tournaments are useless"): rivalPer 3 → 1.5 (a rival shows half as many ants, so minors can
+ *   reach the ratio), cdSec 180 → 90, and a win also pays `prize` — insight = max(insightMinPerTier × tier,
+ *   insightSec × √tier s of insight income), chitin = max(chitinMinPerTier × tier, chitinSec × √tier s of chitin
+ *   income) — and delays that rival's next raid by raidDelaySec (its raid clock; raids already under way are untouched).
  */
 export const ACTIONS = f({
   raid: { engage: 0.4, home: 1 },
@@ -33,8 +37,9 @@ export const ACTIONS = f({
   hunt: { engage: 1, home: 1 },
   termite: { ap: 28300, cdSec: 300 },
   bribe: { apMult: 2, truceSec: 300, cdSec: 600 },
-  tournament: { sec: 20, cdSec: 180, win: 1.5, size: { minor: 1, soldier: 3, supermajor: 10 }, rivalPer: 3, tierStep: 0.2,
-    escalateEngage: 0.25, flipLoss: 0.02, choiceSec: 30 },
+  tournament: { sec: 20, cdSec: 90, win: 1.5, size: { minor: 1, soldier: 3, supermajor: 10 }, rivalPer: 1.5, tierStep: 0.2,
+    escalateEngage: 0.25, flipLoss: 0.02, choiceSec: 30,
+    prize: { insightSec: 30, insightMinPerTier: 10, chitinSec: 20, chitinMinPerTier: 3 }, raidDelaySec: 180 },
 });
 
 /**

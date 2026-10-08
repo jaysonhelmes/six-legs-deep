@@ -5,6 +5,8 @@
 // viewed (remembered per browser); each branch button counts its available nodes. Owner: WP9.
 // C200: an "Archive" block under the refinement once the branch's Archive track is open (research.archiveOpen): its
 // level, the permanent bonus and the next level's cost; clicking buys a level (buyArchive).
+// C209: a search box filters nodes by name or effect text across every branch (searchResearch); while it has text the
+// branch view is replaced by one results column (nodes tagged with their branch); picking a branch clears it.
 // Contract: ARCHITECTURE §14.5 (Research row), §8.4; DESIGN §11. Queries: research.isAvailable / isOwned / cost /
 // refinementCost / branchComplete / archiveOpen / archiveCost / archiveLevel.
 
@@ -161,6 +163,48 @@ function innateRuns(s) {
   return traitLevel(s, 'ancestral_memory') > 0 ? anc : base;
 }
 
+/** Escape a string for a RegExp. */
+function reEscape(w) {
+  return w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 3 = a whole word, 2 = a word prefix, 1 = anywhere, 0 = absent (text and w lower case). */
+export function wordScore(text, w) {
+  if (!w || text.indexOf(w) < 0) return 0;
+  const e = reEscape(w);
+  if (new RegExp('(^|[^a-z0-9])' + e + '([^a-z0-9]|$)').test(text)) return 3;
+  return new RegExp('(^|[^a-z0-9])' + e).test(text) ? 2 : 1;
+}
+
+/**
+ * C209 (research search): research ids, from every branch, whose name, effect text or branch name contain every word
+ * of the query (case-insensitive). Name hits rank first (whole word > word prefix > anywhere), then effect-text hits;
+ * ties keep branch and tier order. An empty query gives [].
+ * @param {string} query
+ * @returns {string[]}
+ */
+export function searchResearch(query) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const all = branchIds().flatMap((b) => nodesOf(b));
+  const scored = [];
+  all.forEach((id, i) => {
+    const name = String(nameOf('research', id)).toLowerCase();
+    const desc = String(RESEARCH_TIPS[id] || '').toLowerCase();
+    const branch = String(nameOf('branch', RESEARCH[id] && RESEARCH[id].branch)).toLowerCase();
+    let score = 0;
+    for (const w of words) {
+      const sn = wordScore(name, w);
+      const sd = wordScore(desc, w);
+      const sb = branch.includes(w) ? 1 : 0;
+      if (!sn && !sd && !sb) return;
+      score += sn * 10 + sd * 2 + sb;
+    }
+    scored.push({ id, score, i });
+  });
+  return scored.sort((a, b) => b.score - a.score || a.i - b.i).map((x) => x.id);
+}
+
 /**
  * Research panel.
  * @param {HTMLElement} root
@@ -185,7 +229,10 @@ export function createPanel(root, { game, ui, bridge }) {
   };
   const mkFilter = (id, label) => {
     filterCount[id] = h('span', { class: 'seg-count' });
-    return h('button', { type: 'button', class: 'seg-btn', dataset: { f: id }, on: { click: () => selectBranch(id, true) } }, label, filterCount[id]);
+    return h('button', { type: 'button', class: 'seg-btn', dataset: { f: id }, on: { click: () => {
+      if (query) { query = ''; search.value = ''; }   // C209: picking a branch leaves the search
+      selectBranch(id, true);
+    } } }, label, filterCount[id]);
   };
   for (const b of branchFilters()) filterRow.appendChild(mkFilter(b, nameOf('branch', b)));
   const hideBox = h('input', { type: 'checkbox', class: 'check' });
@@ -197,13 +244,32 @@ export function createPanel(root, { game, ui, bridge }) {
   const grid = h('div', { class: 'tech-grid' });
   const gridWrap = h('div', { class: 'tech-scroll' }, grid);
   const empty = note('No research data loaded yet.');
+  // C209: search by name or effect across every branch (results replace the branch view while the box has text)
+  let query = '';
+  const search = h('input', { type: 'search', class: 'input research-search', placeholder: 'Search research (name or effect)', autocomplete: 'off',
+    spellcheck: false, attrs: { 'aria-label': 'Search research' } });
+  search.addEventListener('input', () => { query = String(search.value || '').trim(); });
+  const noHits = note('');
   el.append(h('div', { class: 'row-between research-head' }, h('span', null, h('i', { class: 'ico ico-insight' }), ' ', insightEl, ' insight'), rateEl),
-    filterRow, hideRow, gridWrap, empty);
+    search, filterRow, hideRow, gridWrap, noHits, empty);
 
   const cols = {};
   let lastLayout = '';
+  let searchCol = null;
+
+  /** C209: one result column holding matches from every branch (each node tagged with its branch). */
+  function buildSearchColumn() {
+    clear(grid);
+    for (const k of Object.keys(cols)) delete cols[k];
+    toggleClass(grid, 'single', true);
+    const list = h('div', { class: 'tech-col-list search-results' });
+    const head = h('span', { class: 'tech-col-main' });
+    grid.appendChild(h('div', { class: 'tech-col' }, h('h4', { class: 'tech-col-head' }, 'Search results ', head), list));
+    searchCol = { list, head };
+  }
 
   function buildColumns() {
+    searchCol = null;
     clear(grid);
     for (const k of Object.keys(cols)) delete cols[k];
     const branches = [filter];
@@ -238,7 +304,10 @@ export function createPanel(root, { game, ui, bridge }) {
     const helix = h('span', { class: 'helix', attrs: { 'aria-label': 'Innate' }, title: 'Innate: granted free every run' });
     const runs = h('span', { class: 'runs' });
     const pre = h('span', { class: 'tech-pre' });
-    const node = h('button', { type: 'button', class: 'tech-node', dataset: { id, tip: RESEARCH_TIPS[id] || '' } }, h('span', { class: 'tech-top' }, name, helix), desc, pre,
+    // C209: the branch, shown on search results (they mix branches)
+    const tag = h('span', { class: 'tech-branch-tag', text: nameOf('branch', RESEARCH[id] && RESEARCH[id].branch) });
+    tag.hidden = !searchCol;
+    const node = h('button', { type: 'button', class: 'tech-node', dataset: { id, tip: RESEARCH_TIPS[id] || '' } }, tag, h('span', { class: 'tech-top' }, name, helix), desc, pre,
       h('span', { class: 'tech-foot' }, costEl, runs));
     node.addEventListener('click', (ev) => {
       if (q(() => isOwned(game.s, id), false)) return;
@@ -307,11 +376,25 @@ export function createPanel(root, { game, ui, bridge }) {
         setText(filterCount[b], n > 0 ? ' ' + fmtCount(n) : '');
         filterCount[b].title = n > 0 ? fmtCount(n) + ' available' : '';
       }
-      const layout = filter;
+      const layout = query ? '?search' : filter;
       if (layout !== lastLayout) {
         lastLayout = layout;
-        buildColumns();
+        if (query) buildSearchColumn();
+        else buildColumns();
       }
+      toggleClass(filterRow, 'dim', !!query);
+      // C209: search results from every branch (owned ones included, marked Owned), best name matches first
+      if (searchCol) {
+        const hits = searchResearch(query);
+        setText(searchCol.head, fmtCount(hits.length) + ' match' + (hits.length === 1 ? '' : 'es'));
+        syncList(searchCol.list, hits, (id) => id, createNode, (node, id) => updateNode(node, id, s));
+        setText(noHits, hits.length ? '' : 'No research matches “' + query + '”.');
+        show(noHits, !hits.length);
+        if (hideBox.checked !== hideOwned) hideBox.checked = hideOwned;
+        setText(hiddenTotal, '');
+        return;
+      }
+      show(noHits, false);
       let hiddenSum = 0;
       for (const b of Object.keys(cols)) {
         const c = cols[b];

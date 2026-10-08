@@ -239,7 +239,13 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     if (!s || !e) return;
     const src = (s.run.surface.sources || []).find((x) => x && x.uid === e.src);
     const p = src ? hexWorldPt(src.hex) : hexWorldPt(0);
-    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 10, `+${compactInt(Number(e.amount) || 0)}`, '#fff3c4');
+    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 10, `+${compactInt(Number(e.amount) || 0)} ${e.res || 'food'}`, '#fff3c4', e.res || 'food');
+  });
+  // C223: a clicked event object that pays out (a caught rival alate, a fossil cache) shows its gain like a crumb
+  sub('objectGain', (e) => {
+    if (!e || !(e.hex >= 0) || !(Number(e.amount) > 0)) return;
+    const p = hexWorldPt(e.hex);
+    fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 12, `+${compactInt(Number(e.amount) || 0)} ${e.res || ''}`.trim(), '#fff3c4', e.res || null);
   });
   sub('hexRevealed', (e) => {
     if (!e || !(e.hex >= 0) || reduced) return;
@@ -1961,9 +1967,27 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
   }
 
+  /** C220: the drawn mound size eases toward the Mound's growth value (level + progress), so it rises smoothly. */
+  let moundDisp = -1;
+  let moundAt = 0;
+  function moundSize(s) {
+    const lvl = Number(s.run.surface.mound) || 0;
+    let want = lvl;
+    try {
+      const g = surfaceSys.moundGrowth(s);
+      if (g && Number.isFinite(g.shown)) want = Math.max(lvl, g.shown);
+    } catch { want = lvl; }
+    const t = nowMs();
+    const dt = moundAt > 0 ? Math.min(1, Math.max(0, (t - moundAt) / 1000)) : 1;
+    moundAt = t;
+    if (moundDisp < 0 || reduced || Math.abs(want - moundDisp) > 3) moundDisp = want;
+    else moundDisp += (want - moundDisp) * Math.min(1, dt * 1.5);
+    return moundDisp;
+  }
+
   function drawMound(ctx, s) {
     const surf = s.run.surface;
-    const level = surf.mound || 0;
+    const level = moundSize(s);
     const p = hexToScreen(0);
     const z = curView.zoom;
     const r = SIZE * z * (0.48 + Math.min(0.5, 0.09 * Math.log2(1 + level)));
@@ -2104,6 +2128,19 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.moveTo(p.x + r * 0.7, p.y - r * 1.1);
         ctx.lineTo(p.x + r * 0.7, p.y - r * 0.2);
         ctx.stroke();
+        // C225: the truce's time left beside the white flag ("Truce 4:12")
+        const secs = Math.max(0, Math.ceil(Number(rv.truce) || 0));
+        const tl = 'Truce ' + Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+        ctx.font = `600 ${Math.max(8, 9 * Math.sqrt(z))}px system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const fw = ctx.measureText(tl).width + 6;
+        const fx = p.x + r * 0.7 + Math.max(5, r * 0.45) + 3;
+        const fy = p.y - r * 1.1 + Math.max(4, r * 0.3) / 2;
+        ctx.fillStyle = 'rgba(15,10,5,0.8)';
+        ctx.fillRect(fx, fy - 6, fw, 12);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(tl, fx + 3, fy);
       }
     }
   }
@@ -2779,6 +2816,17 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     ctx.setLineDash([]);
   }
 
+  /** C237: valid aphid-move hexes, memoised on the surface revision and the colony. */
+  const aphidMemo = { key: '', list: [] };
+  function aphidTargetsFor(s, d, src) {
+    const key = `${src}|${s.run.surface.rev}|${(s.run.surface.sources || []).length}`;
+    if (aphidMemo.key !== key) {
+      aphidMemo.key = key;
+      aphidMemo.list = safe(() => surfaceSys.aphidTargets(s, d, src), []) || [];
+    }
+    return aphidMemo.list;
+  }
+
   function drawToolPreviews(ctx, s, d) {
     const ui0 = uiOf(ui);
     const tool = ui0.tool;
@@ -2797,8 +2845,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         ctx.beginPath();
         hexPathOn(ctx, p.x, p.y, SIZE * curView.zoom * 0.95);
         ctx.fill();
-      } else if (tool.kind === 'flag' || tool.kind === 'moveAphids' || tool.kind === 'tournament') {
+      } else if (tool.kind === 'moveAphids') {
+        const ok = aphidTargetsFor(s, d, tool.src).includes(hh);   // C237
+        hexOutline(ctx, hh, ok ? SURFACE.claimOk : SURFACE.claimBad, 3);
+      } else if (tool.kind === 'flag' || tool.kind === 'tournament') {
         hexOutline(ctx, hh, tool.kind === 'flag' ? SURFACE.flag : '#ffffff', 2.5);
+      }
+    }
+    // C237: while moving an aphid colony, every hex it may move to is tinted green
+    if (tool && tool.kind === 'moveAphids') {
+      for (const hx of aphidTargetsFor(s, d, tool.src)) {
+        const p = hexToScreen(hx);
+        if (!visiblePt(p)) continue;
+        ctx.fillStyle = rgba(SURFACE.claimOk, 0.28);
+        ctx.beginPath();
+        hexPathOn(ctx, p.x, p.y, SIZE * curView.zoom * 0.95);
+        ctx.fill();
+        hexOutline(ctx, hx, SURFACE.claimOk, 1.5);
       }
     }
     if (tool && tool.kind === 'placeSatellite') drawSatelliteTool(ctx, s, d, hh);

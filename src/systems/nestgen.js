@@ -9,9 +9,10 @@ import { CHAMBERS } from '../data/chambers.js';
 import { FLIGHT } from '../data/prestige.js';
 import { makeHolder, randInt, weighted } from '../core/rng.js';
 import { defaultNestCells } from '../core/state.js';
-import { idx, inBounds, footprint } from './nestgeom.js';
+import { idx, inBounds, footprint, useCols, COLS } from './nestgeom.js';
+import { validCols } from '../data/balance.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding; generateNest makes the new run's width the active one first.
 const ROWS = GRID.rows;
 
 // Occupancy codes of the generator's scratch grid.
@@ -31,15 +32,17 @@ const CACHE = 5;
  * the Royal Chambers and each other. royalCount ≥ 2 pre-digs extra Royal Chambers at rows 20–21 beside the first one,
  * linked by tunnel. Deterministic per (seed, options); uses makeHolder((seed ^ 0x9E3779B9) >>> 0).
  * @param {number} seed uint32 run seed
- * @param {{ tags?: string[], rootCols?: number[], royalCount?: number }} [opts]
+ * @param {{ tags?: string[], rootCols?: number[], royalCount?: number, cols?: number }} [opts] cols: the nest width (C215; 40)
  * @returns {Object} State['run']['nest']
  */
-export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } = {}) {
+export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1, cols: nestCols = GRID.baseCols } = {}) {
+  // C215: a run may start wider than 40 columns (nest.runStartCols); everything below is laid out in that width
+  const width = useCols(validCols(nestCols) ? nestCols : GRID.baseCols);
   const h = makeHolder((((seed >>> 0) ^ 0x9E3779B9) >>> 0));
   const tagList = Array.isArray(tags) ? tags : [];
   const stony = tagList.includes('site_stony_ground');
   const wet = tagList.includes('site_wet_hollow');
-  const cells = defaultNestCells();
+  const cells = defaultNestCells(width);
   const occ = new Uint8Array(COLS * ROWS);
   const royalDef = CHAMBERS.royal_chamber;
   const r0 = GRID.royal;
@@ -53,6 +56,7 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
 
   // Extra pre-dug Royal Chambers (fire ants: royalCount 2), alternating sides, joined by a tunnel along the bottom row.
   const extra = Math.max(0, Math.floor(Number(royalCount) || 1) - 1);
+  const court = []; // C214: the passage cells joining the queens' chambers (tagged in dugBy)
   if (extra > 0) {
     const w = royalDef.w0;
     const hh = royalDef.h0;
@@ -66,14 +70,14 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
       for (let tries = 0; tries < 2 && !placed; tries++) {
         if (side === 0 && left - gap - w >= 0) {
           const x = left - gap - w;
-          for (let c = x + w; c < left; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; }
+          for (let c = x + w; c < left; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; court.push(idx(c, row)); }
           digRect(cells, occ, x, r0.y, w, hh);
           chambers.push(royalAt(nextUid++, chambers.length, x, r0.y, w, hh));
           left = x;
           placed = true;
         } else if (side === 1 && right + gap + w <= COLS - 1) {
           const x = right + gap + 1;
-          for (let c = right + 1; c < x; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; }
+          for (let c = right + 1; c < x; c++) { cells[idx(c, row)] = CELL.TUNNEL; occ[idx(c, row)] = RESERVED; court.push(idx(c, row)); }
           digRect(cells, occ, x, r0.y, w, hh);
           chambers.push(royalAt(nextUid++, chambers.length, x, r0.y, w, hh));
           right = x + w - 1;
@@ -106,8 +110,10 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
 
   // Root lines.
   const cols = [];
+  // C215: rootCols come in the base 40-wide frame (hex.colForHex); a wider nest shifts them by its extra columns per side
+  const side = (width - GRID.baseCols) / 2;
   for (const c of Array.isArray(rootCols) ? rootCols : []) {
-    let col = Math.round(Number(c));
+    let col = Math.round(Number(c)) + side;
     if (!Number.isFinite(col)) continue;
     col = Math.max(1, Math.min(COLS - 2, col));
     if (col === GRID.mainCol) col = cols.includes(col + 1) ? col - 1 : col + 1;
@@ -228,6 +234,8 @@ export function generateNest(seed, { tags = [], rootCols = [], royalCount = 1 } 
     bpPending: [],
     bpTunnels: [],
     bpNotes: [],
+    dugBy: court.length ? [{ w: 'court', t: 'royal_chamber', c: court }] : [],
+    ...(width !== GRID.baseCols ? { cols: width } : {}),
   };
 }
 

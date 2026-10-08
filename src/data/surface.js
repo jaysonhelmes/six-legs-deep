@@ -97,8 +97,12 @@ export const TERRITORY = deepFreeze({ claimBase: 10, claimGrowth: 1.06, autoBase
   ownedSource: 1.25, creepSec: 180, landGrabAch: 0.9 });
 
 /**
- * Mound (DESIGN §8.7). Level L costs base × growth^(L−1) soil; levels above freeMax need mound_building.
- * homeAP → WP5, winterForage/winterMax → WP2, frostPerLevels/frostMax → WP6, shieldLevel → WP6, unlockSoil → WP6 unlocks.
+ * Mound (DESIGN §8.7). C220: the Mound grows on its own with the colony (no soil purchase): its growth value is
+ * Σ w × log10(1 + x / div) over `grow` — x = the run's peak adults (maxAdults), the summed levels of active chambers,
+ * and cells dug this run — and its level is floor(value), never lower than the level it already has; levels above
+ * freeMax need mound_building. homeAP → WP5, winterForage/winterMax → WP2, frostPerLevels/frostMax → WP6,
+ * shieldLevel → WP6, unlockSoil → WP6 unlocks (the Mound starts growing once unlocked).
  */
-export const MOUND = deepFreeze({ base: 300, growth: 1.9, freeMax: 5, homeAP: 0.05, winterForage: 0.03, winterMax: 0.3,
-  frostPerLevels: 3, frostMax: 6, shieldLevel: 5, unlockSoil: 300 });
+export const MOUND = deepFreeze({ freeMax: 5, homeAP: 0.05, winterForage: 0.03, winterMax: 0.3,
+  frostPerLevels: 3, frostMax: 6, shieldLevel: 5, unlockSoil: 300,
+  grow: { adults: { w: 4, div: 100 }, chambers: { w: 2.5, div: 20 }, dug: { w: 1, div: 200 } } });

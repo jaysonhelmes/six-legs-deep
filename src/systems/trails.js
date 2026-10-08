@@ -291,6 +291,33 @@ export function detourInfo(s, t) {
   return { mode: det.paused ? 'paused' : 'detour', block, why: mole ? 'molehill' : 'puddle' };
 }
 
+/**
+ * [q] C236: most escorts a trail can usefully hold: a Lycaenid milking trail needs exactly
+ * SOURCES.lycaenid_caterpillar.minEscorts (5) and more add nothing; any other trail has no limit (Infinity).
+ * @param {{ job?: string }|null} trail
+ * @returns {number}
+ */
+export function escortMax(trail) {
+  if (!trail || trail.job !== 'lycaenid') return Infinity;
+  const def = SOURCES.lycaenid_caterpillar;
+  return Math.max(0, num(def && def.minEscorts, 5));
+}
+
+/**
+ * [q] C221: route cost from the nearest trail origin (entrance) to every hex, on the terrain as it is now (live: spring
+ * puddles and molehills block); Infinity where no trail can reach. Event sources that ask for a trail (fallen fruit,
+ * picnic, termite swarm) spawn only where this is finite.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {Float64Array}
+ */
+export function reachDist(s, d) {
+  const arr = costArray(s, d, true);
+  const objs = s.run.events && Array.isArray(s.run.events.objects) ? s.run.events.objects : [];
+  for (const o of objs) if (o && o.kind === 'molehill' && isHex(o.hex)) arr[o.hex] = null;
+  return dijkstra(arr, trailOrigins(s, d)).dist;
+}
+
 /** Single-pass multi-source Dijkstra over a cost array; root = the start hex each hex is reached from. */
 function dijkstra(arr, starts) {
   const dist = new Float64Array(HEX_COUNT).fill(Infinity);
@@ -555,7 +582,7 @@ function addLedger(d, res, label, v) {
 function clampEscorts(s, d, T) {
   let sum = 0;
   for (const t of T) {
-    t.escorts = Math.max(0, Math.floor(num(t.escorts)));
+    t.escorts = Math.min(escortMax(t), Math.max(0, Math.floor(num(t.escorts))));   // C236: Lycaenid trails hold ≤ 5
     sum += t.escorts;
   }
   const soldiers = Math.max(0, num(s.run.colony.adults.soldier));
@@ -1313,6 +1340,8 @@ export const handlers = {
       const t = trailByUid(s, cmd.uid);
       if (!t) return Number.isInteger(cmd.uid) ? 'notFound' : 'invalid';
       if (!Number.isInteger(cmd.n) || cmd.n < 0) return 'invalid';
+      // C236: a Lycaenid trail needs exactly minEscorts escorts; more add nothing, so more are refused
+      if (cmd.n > escortMax(t) && cmd.n > Math.max(0, num(t.escorts))) return 'max';
       const gar = Math.max(0, num(d.combat && d.combat.garrison ? d.combat.garrison.soldier : 0));
       if (cmd.n > Math.floor(gar + Math.max(0, num(t.escorts)))) return 'invalid:count';
       return null;

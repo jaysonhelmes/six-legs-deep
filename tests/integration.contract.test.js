@@ -103,13 +103,13 @@ const DATA = {
 /** §8 handler keys per system module (= the §9 catalogue minus the core handlers). */
 const HANDLERS = {
   'systems/economy.js': ['clickForage'],
-  'systems/population.js': ['setCasteTargets', 'setCasteFill', 'setEggReserve', 'setChitinReserve', 'setFungalBrood', 'rearAlate', 'groomBrood', 'clickQueen', 'retireAdults'],
+  'systems/population.js': ['setCasteTargets', 'setCasteFill', 'setEggReserve', 'setChitinReserve', 'setFungalBrood', 'rearAlate', 'cancelRear', 'groomBrood', 'clickQueen', 'retireAdults'],
   'systems/jobs.js': ['shiftJob', 'setJobs', 'setJobTargets', 'setAutoJobs', 'setThresholdJobs', 'saveJobPreset', 'applyJobPreset'],
   'systems/adaptations.js': ['buyAdaptation'],
   'systems/nest.js': ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill', 'reorderQueue',
     'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint', 'cancelPlanned', 'backfillUnneeded', 'drainPocket',
     'relocatePocket', 'growRoot', 'editBlueprint'],
-  'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'buyMound', 'moveAphids'],
+  'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'moveAphids'],   // C220: buyMound removed (the Mound grows on its own)
   'systems/trails.js': ['drawTrail', 'rerouteTrail', 'deleteTrail', 'assignWorkers', 'assignEscorts', 'mark', 'rally', 'frenzy', 'massRecruit'],
   'systems/rivals.js': ['launchParty', 'recallParty', 'reinforce', 'battleAction', 'bribe', 'tournament', 'tournamentChoice'],
   'systems/raids.js': ['dispatchGuard'],

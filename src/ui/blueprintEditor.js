@@ -11,17 +11,18 @@
 import { h, setText, setProp, toggleClass } from './dom.js';
 import { nameOf, reasonText } from './text.js';
 import { arr, num, fedLevel } from './reveal.js';
-import { GRID, CELL } from '../data/balance.js';
+import { GRID, CELL, validCols } from '../data/balance.js';
 import { CHAMBERS, CHAMBER_ORDER } from '../data/chambers.js';
 import { LAYERS, LAYER_ORDER } from '../data/strata.js';
 import { UNLOCKS } from '../data/unlocks.js';
 import { defaultNestCells, royalRes } from '../core/state.js';
 import * as G from '../systems/nestgeom.js';
-import { validatePlacement } from '../systems/nest.js';
+import { COLS, NCELLS as N } from '../systems/nestgeom.js';
+import { validatePlacement, blueprintForCols, nestCols } from '../systems/nest.js';
 
-const COLS = GRID.cols;
+// C215: COLS / N are nestgeom's live bindings: the editor works in the current run's nest width (openBlueprintEditor
+// moves a layout saved at another width into it, nest.blueprintForCols, and saves it with that width).
 const ROWS = GRID.rows;
-const N = COLS * ROWS;
 /** Refusals the editor does not hold against a spot: they depend on a run (costs, queue, its water) or are solved by
  * the blueprint pass itself (access tunnels, C138). */
 const WAIVED = new Set(['cantAfford', 'queueFull', 'blocked:route', 'locked']);
@@ -50,6 +51,7 @@ export function docFrom(bp) {
     }),
     tunnels: arr(b.tunnels).filter((i) => Number.isInteger(i) && i >= 0 && i < N),
     royal: b.royal && Number.isInteger(b.royal.x) ? { x: b.royal.x, y: b.royal.y, ...(b.royal.res ? { res: { ...b.royal.res } } : {}) } : null,
+    ...(validCols(b.cols) && b.cols !== GRID.baseCols ? { cols: b.cols } : {}),
   };
 }
 
@@ -79,7 +81,7 @@ function royalRoomOf(doc) {
  * @returns {{ s: Object, d: Object }}
  */
 export function createSandbox(s, doc, { skip = null } = {}) {
-  const cells = defaultNestCells();
+  const cells = defaultNestCells(COLS);
   const r0 = GRID.royal;
   const chambers = [];
   let uid = 1;
@@ -279,7 +281,8 @@ export function openBlueprintEditor(ctx, slot) {
   if (fedLevel(s0, 'architects_table') <= 0) return null;
   const saved = arr(s0.era && s0.era.blueprints)[slot];
   if (!saved) return null;
-  let doc = docFrom(saved);
+  G.syncCols(s0); // C215: the run's width; a layout saved at another width is moved into it (centred)
+  let doc = docFrom(blueprintForCols(saved, nestCols(s0)));
   let dirty = false;
   const st = { tool: 'place', type: firstType(s0), anchor: null, hover: -1, pick: null, grab: { dx: 0, dy: 0 }, soil: true, painting: null, msg: '' };
 

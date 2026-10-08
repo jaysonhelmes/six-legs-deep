@@ -4,9 +4,9 @@
 // blueprints, and the cross-calls queueShaft / applyBlueprint / autoLevelStep / moleTunnel. Owner: WP3.
 // Contract: ARCHITECTURE §8.2 (nest.js), §4 (s.run.nest, era.blueprints), §5 (d.nest), §9, §10; DESIGN §7, §17.3.
 
-import { GRID, CELL, CLAMP_MAX } from '../data/balance.js';
-import { MICRO, DIG, GEOM, ADVISOR, BLUEPRINT } from '../data/strata.js';
-import { CHAMBERS, CHAMBER_RULES, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
+import { GRID, CELL, CLAMP_MAX, validCols } from '../data/balance.js';
+import { MICRO, DIG, GEOM, ADVISOR, BLUEPRINT, AUTO_TUNNEL } from '../data/strata.js';
+import { CHAMBERS, CHAMBER_RULES, ADJACENCY, ADJACENCY_ORDER, CHAMBER_CODES, HISTORY_CHAMBERS_MAX } from '../data/chambers.js';
 import { CACHES, MOLE, DRAINAGE, ROOT_CULT, DEEP_SPRING, ROOT_MEMORY } from '../data/soilFeatures.js';
 import { FROST } from '../data/seasons.js';
 import { MOUND } from '../data/surface.js';
@@ -19,12 +19,12 @@ import { costOrNull } from '../core/math.js';
 import { clickAvailable, consumeClick } from '../core/state.js';
 import { randInt } from '../core/rng.js';
 import * as G from './nestgeom.js';
+import { COLS, NCELLS as N } from './nestgeom.js';
 import { addEntrance, nuptialHex } from './surface.js';
 import { spawnBeetle } from './golden.js';
 
-const COLS = GRID.cols;
+// C215: COLS / N are nestgeom's live bindings (the active nest width, synced from s.run.nest by ensureGeom / getGeom)
 const ROWS = GRID.rows;
-const N = COLS * ROWS;
 const DUG_KINDS = new Set(['chamber', 'grow', 'relocate']);
 const DIRS = new Set(['left', 'right', 'up', 'down']);
 const NAME_MAX = 40;
@@ -277,6 +277,7 @@ function rebuild(s, d) {
 
 /** Rebuild d.nest geometry if it does not match s.run.nest. */
 function ensureGeom(s, d) {
+  G.syncCols(s); // C215
   if (!G.geomFresh(s, d) || !Array.isArray(d.nest.chambers) || d.nest.chambers.length !== s.run.nest.chambers.length) {
     rebuild(s, d);
   }
@@ -1751,6 +1752,78 @@ function renumberK(s, type) {
   for (let k = 0; k < list.length; k++) list[k].k = k;
 }
 
+/**
+ * C214: remember who dug a tunnel the player did not draw (s.run.nest.dugBy: [{ w, t, c }], newest last, capped by
+ * AUTO_TUNNEL) — why: 'mole' (Mole Tunnel event), 'route' (a chamber's auto-routed access tunnel), 'access' (a planned
+ * blueprint chamber's access tunnel), 'blueprint' (the saved layout's tunnels), 'shaft' (a Nuptial Chamber's exit shaft
+ * or a satellite shaft), 'cache' (dug to a buried find). Optionally announces it as tunnelAuto { reason, chamberType,
+ * cells } (env now, or queued with the blueprint notes when there is no env: a run-start pass).
+ */
+function tagTunnel(s, why, type, cells, announce = null) {
+  const list = Array.isArray(cells) ? cells.filter((c) => isCell(c)) : [];
+  if (!list.length) return;
+  const nest = s.run.nest;
+  if (!Array.isArray(nest.dugBy)) nest.dugBy = [];
+  const e = { w: why, c: list.slice(0, AUTO_TUNNEL.maxCells) };
+  if (type) e.t = type;
+  nest.dugBy.push(e);
+  let total = 0;
+  for (const x of nest.dugBy) total += x && Array.isArray(x.c) ? x.c.length : 0;
+  while (nest.dugBy.length > AUTO_TUNNEL.maxEntries || (total > AUTO_TUNNEL.maxCells && nest.dugBy.length > 1)) {
+    const old = nest.dugBy.shift();
+    total -= old && Array.isArray(old.c) ? old.c.length : 0;
+  }
+  if (!announce) return;
+  const payload = { reason: why, chamberType: type || null, cells: list.slice(0, 64), n: list.length };
+  if (announce.env && typeof announce.env.emit === 'function') { announce.env.emit('tunnelAuto', payload); return; }
+  // queued: one line per reason and chamber type per pass (a blueprint queues its tunnels in many small groups)
+  const same = Array.isArray(nest.bpNotes) ? nest.bpNotes.find((x) => x && x.ev === 'tunnelAuto' && x.reason === why && x.chamberType === payload.chamberType) : null;
+  if (same) {
+    same.n = (Number(same.n) || 0) + list.length;
+    if (Array.isArray(same.cells) && same.cells.length < 64) same.cells.push(...list.slice(0, 64 - same.cells.length));
+  } else bpEvent(s, 'tunnelAuto', payload);
+}
+
+/**
+ * [q] C214: who dug tunnel cell i, when it was not the player's own drawn tunnel: { why, type } (see tagTunnel), the
+ * newest record holding the cell; null for cells with no record.
+ * @param {import('../core/types.js').State} s
+ * @param {number} i
+ * @returns {{ why: string, type: string|null } | null}
+ */
+export function dugBy(s, i) {
+  const list = s && s.run && s.run.nest && Array.isArray(s.run.nest.dugBy) ? s.run.nest.dugBy : [];
+  for (let k = list.length - 1; k >= 0; k--) {
+    const e = list[k];
+    if (e && Array.isArray(e.c) && e.c.includes(i)) return { why: String(e.w), type: typeof e.t === 'string' ? e.t : null };
+  }
+  return null;
+}
+
+/**
+ * [q] C219: the chambers of a nest packed for a Colony History record (s.meta.strata[].ch): "code x.y.L" per chamber
+ * (CHAMBER_CODES letter, then base-36 numbers; "code x.y.L.w.h" when its size is not its level's footprint, e.g. one
+ * still growing), comma-separated, chambers with a level ≥ 1 only, the largest first up to HISTORY_CHAMBERS_MAX
+ * (about 9 characters each). '' for none. ui/history.js decodes it (decodeChambers).
+ * @param {Array<Object>} chambers s.run.nest.chambers
+ * @returns {string}
+ */
+export function strataChambers(chambers) {
+  const list = [];
+  for (const ch of Array.isArray(chambers) ? chambers : []) {
+    if (!ch || !CHAMBER_CODES[ch.type] || !(num(ch.level) >= 1)) continue;
+    if (![ch.x, ch.y, ch.w, ch.h].every((v) => isInt(v) && v >= 0 && v < 1296)) continue;
+    list.push(ch);
+  }
+  list.sort((a, b) => b.w * b.h - a.w * a.h || a.uid - b.uid);
+  return list.slice(0, HISTORY_CHAMBERS_MAX).map((ch) => {
+    const L = Math.min(Math.floor(num(ch.level)), 46655);
+    const fp = G.footprint(ch.type, L);
+    const v = fp.w === ch.w && fp.h === ch.h ? [ch.x, ch.y, L] : [ch.x, ch.y, L, ch.w, ch.h];
+    return CHAMBER_CODES[ch.type] + v.map((n) => n.toString(36)).join('.');
+  }).join(',');
+}
+
 /** Execute a successful placement plan: pay, add the chamber and its job(s). Returns the chamber uid. */
 function executePlacement(s, d, type, P, env, blueprint = false) {
   const nest = s.run.nest;
@@ -1767,6 +1840,9 @@ function executePlacement(s, d, type, P, env, blueprint = false) {
   const job = { uid: nest.nextUid++, kind: 'chamber', chamber: uid, cells: [...(P.routeCells || []), ...P.footSoil], cur: 0, prog: 0,
     paidFood: P.cost && P.cost.food > 0 ? P.cost.food : 0, blueprint: !!blueprint };
   nest.queue.push(job);
+  // C214: the auto-routed access tunnel to it (announced in the event log for blueprint chambers)
+  if (P.routeCells && P.routeCells.length) tagTunnel(s, blueprint ? 'access' : 'route', type, P.routeCells, blueprint ? { env } : null);
+  if (P.shaft) tagTunnel(s, 'shaft', type, P.shaft.cells, blueprint ? { env } : null);
   if (P.shaft) {
     nest.shafts.push({ kind: 'nuptial', col: P.shaft.col, open: false, ref: -1 });
     nest.queue.push({ uid: nest.nextUid++, kind: 'shaft', chamber: uid, cells: P.shaft.cells.slice(), cur: 0, prog: 0, paidFood: 0,
@@ -1800,6 +1876,7 @@ function executeRelocation(s, d, P, env) {
   const job = { uid: nest.nextUid++, kind: 'relocate', chamber: ch.uid, cells: [...(P.routeCells || []), ...P.footSoil], cur: 0,
     prog: 0, paidFood: 0, blueprint: false };
   nest.queue.push(job);
+  if (P.routeCells && P.routeCells.length) tagTunnel(s, 'route', ch.type, P.routeCells); // C214
   s.meta.counters.relocations++;
   s.run.stats.relocations++;
   nest.rev++;
@@ -2258,7 +2335,13 @@ function placementMods(s, d, type, P, relUid) {
   } else if (blocksRoyalGrowth(s, P.res || r, relUid, { d, cells: P.shaft ? shaftCells(r, P.shaft.col) : null })) {
     mods.push({ key: 'royalRoom', value: true });
   }
-  if (!def.frostImmune && G.exposedTo(r, hardFrostRow(s, d))) mods.push({ key: 'frostExposed', value: CHAMBER_RULES.frostMult });
+  // C213: frost exposure in cells (majority rule, DESIGN §17.3): exposed, or straddling the line but safe
+  if (!def.frostImmune) {
+    const fr = hardFrostRow(s, d);
+    const fc = G.frostCells(r, fr);
+    if (fc.exposed) mods.push({ key: 'frostExposed', value: CHAMBER_RULES.frostMult, above: fc.above, total: fc.total, row: fr });
+    else if (fc.straddles) mods.push({ key: 'frostSafe', value: true, above: fc.above, total: fc.total, row: fr });
+  }
   if (r.y <= DIG.floodRows[1] && r.y + r.h - 1 >= DIG.floodRows[0]) mods.push({ key: 'floodZone', value: true });
   if (type === 'granary' || type === 'nursery') {
     const e = estPath(geo, geo.entDist, P);
@@ -2435,6 +2518,29 @@ export function levelInfo(s, d, uid) {
     blocked: P.grows && P.blocked, max: P.max, royalRoom: P.grows && !P.max && P.royalRoom,
     // C137: grows into its reservation (no side to pick); blockWhy = the cell reason holding that growth back
     reserved: !!P.reserved, blockWhy: P.grows && P.blocked ? P.blockWhy : null, res: R ? { x: R.x, y: R.y, w: R.w, h: R.h } : null };
+}
+
+/**
+ * [q] C213: a chamber against the frost line (DESIGN §17.3, the majority rule of nestgeom.exposedTo in cells): the live
+ * frost row (d.season.frostRow, 0 outside winter) and this year's hard-winter row, with { above, total, exposed } for
+ * each. immune = the type ignores frost (Royal Chamber, Gate, Thermal Chimney). null for an unknown uid.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} uid
+ * @returns {null | { immune: boolean, now: { row: number, above: number, total: number, exposed: boolean },
+ *   hard: { row: number, above: number, total: number, exposed: boolean, straddles: boolean } }}
+ */
+export function chamberFrost(s, d, uid) {
+  const f = findChamber(s, uid);
+  if (!f) return null;
+  const def = CHAMBERS[f.ch.type];
+  const immune = !!(def && def.frostImmune);
+  const rowNow = num(d && d.season && d.season.frostRow);
+  const rowHard = hardFrostRow(s, d);
+  const n = G.frostCells(f.ch, rowNow);
+  const hc = G.frostCells(f.ch, rowHard);
+  return { immune, now: { row: rowNow, above: n.above, total: n.total, exposed: !immune && n.exposed },
+    hard: { row: rowHard, above: hc.above, total: hc.total, exposed: !immune && hc.exposed, straddles: hc.straddles } };
 }
 
 /**
@@ -2920,7 +3026,9 @@ export function cellInfo(s, d, i) {
   const rj = geo._resv ? geo._resv[i] : -1;
   const rch = rj >= 0 && geo.chamberAt[i] < 0 ? s.run.nest.chambers[rj] : null;
   return { layer: G.layerOf(y), code: s.run.nest.cells[i], work: G.cellWork(s, i, 'tunnel'), cache, water, root: geo._root[i] === 1, rootOwn,
-    reserved: rch ? rch.type : null };
+    reserved: rch ? rch.type : null,
+    // C214: who dug it (open tunnel or a cell still queued), when it was not a tunnel the player drew
+    dugBy: s.run.nest.cells[i] === CELL.TUNNEL || (geo._queued && geo._queued[i]) ? dugBy(s, i) : null };
 }
 
 /**
@@ -2974,6 +3082,7 @@ export function queueShaft(s, d, col, kind, ref) {
   nest.shafts.push({ kind: typeof kind === 'string' && kind ? kind : 'satellite', col, open: false, ref: isInt(ref) ? ref : -1 });
   const job = { uid: nest.nextUid++, kind: 'shaft', chamber: 0, cells: list, cur: 0, prog: 0, paidFood: 0, blueprint: false };
   nest.queue.push(job);
+  tagTunnel(s, 'shaft', null, list); // C214: a satellite (or other) entrance shaft
   nest.rev++;
   rebuild(s, d);
   return job.uid;
@@ -3172,6 +3281,15 @@ function bpNearby(s, d, sp, taken) {
     }
     if (P.reason) continue;
     if (blocksRoyalGrowth(s, P.res || P.rect, 0, { d, cells: P.shaft ? shaftCells(P.rect, P.shaft.col) : null })) continue;
+    // C218: a move only goes where the chamber can be built and grown now: its whole reserved room (or footprint) in
+    // layers that can be dug today (no closed layer such as Bedrock before Acid Excavation, no revealed water, no
+    // stone without Acid Excavation), and a tunnel can reach it now (or it already touches the open nest). Otherwise
+    // the next spot is tried, and with none the planned chamber waits.
+    const room = P.res || P.rect;
+    if (resObstacles(s, geo, room, null) > 0) continue;
+    const reach = (i) => geo.open[i] && geo.entDist[i] >= 0 && !geo._backfill[i];
+    const touches = rc.some(reach) || G.perimeter(P.rect).some(reach);
+    if (!touches && !G.routeTo(s, d, rc)) continue;
     return { x: c.x, y: c.y, res: P.res ? { ...P.res } : null };
   }
   return null;
@@ -3404,6 +3522,7 @@ function bpPass(s, d, specList, tunnelList) {
   const flush = () => {
     if (!group.length) return;
     nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: group, cur: 0, prog: 0, paidFood: 0, blueprint: true });
+    tagTunnel(s, 'blueprint', null, group, { env: null }); // C214
     nest.rev++;
     jobs++;
     group = [];
@@ -3491,6 +3610,7 @@ function bpPass(s, d, specList, tunnelList) {
     }
     const uid = nest.nextUid++;
     nest.queue.push({ uid, kind: 'tunnel', chamber: 0, cells: r.cells.slice(), cur: 0, prog: 0, paidFood: 0, blueprint: true, bpAccess: true });
+    tagTunnel(s, 'access', sp.type, r.cells, { env: null }); // C214: the access tunnel for a planned chamber
     nest.rev++;
     jobs++;
     geo = ensureGeom(s, d);
@@ -3537,7 +3657,8 @@ export function applyBlueprint(s, d, { now = false } = {}) {
   const era = s.era;
   const bi = era.activeBlueprint;
   if (!isInt(bi) || bi < 0 || !Array.isArray(era.blueprints) || !era.blueprints[bi]) return 0;
-  const bp = era.blueprints[bi];
+  ensureGeom(s, d); // C215: the active width is this nest's
+  const bp = blueprintForCols(era.blueprints[bi], COLS); // C215: moved into this nest's width (centred)
   const nest = s.run.nest;
   // C119: the Royal Chamber first (blueprint chambers may sit where the default one is), then the Water Wells.
   if (!now && bp.royal && typeof bp.royal === 'object') placeRoyal(s, d, bp.royal);
@@ -3802,6 +3923,7 @@ function placeRoyal(s, d, spot) {
   delete ch.noRes;
   const keepOpen = nest.chambers.some((c) => c.uid !== 1 && c.type === 'royal_chamber');
   for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) nest.cells[c] = keepOpen ? CELL.TUNNEL : CELL.SOIL;
+  if (keepOpen) tagTunnel(s, 'royalOld', 'royal_chamber', G.rectCells(ch.x, ch.y, ch.w, ch.h)); // C214
   ch.x = spot.x;
   ch.y = spot.y;
   const rc = G.rectCells(ch.x, ch.y, ch.w, ch.h);
@@ -3817,6 +3939,7 @@ function placeRoyal(s, d, spot) {
     else {
       route = r.cells;
       for (const c of route) nest.cells[c] = CELL.TUNNEL;
+      tagTunnel(s, 'blueprint', 'royal_chamber', route, { env: null }); // C214: the route to the moved Royal Chamber
       nest.rev++;
       rebuild(s, d);
     }
@@ -4149,6 +4272,8 @@ export function moleTunnel(s, d, env) {
     nest.rev++;
     rebuild(s, d);
   }
+  // C214: the event's tunnel is tagged (tooltip "Dug by a mole") and announced in the event log
+  if (out.length) tagTunnel(s, 'mole', null, out, { env: env || {} });
   // Hint the nearest unfound cache (Chebyshev distance to the tunnel; to the main shaft top if no tunnel was dug).
   const ref = out.length ? out : [G.idx(GRID.mainCol, 0)];
   const visible = new Set(computeHints(s, d.nest));
@@ -4456,22 +4581,100 @@ function snapshotBlueprint(s, d, name) {
   const tunnels = [];
   for (let i = 0; i < N; i++) if (nest.cells[i] === CELL.TUNNEL && geo.chamberAt[i] < 0 && geo._shaft[i] !== 1) tunnels.push(i);
   const r = nest.chambers.find((ch) => ch.uid === 1 && ch.type === 'royal_chamber');
-  if (!r) return { name, chambers, tunnels };
+  // C215: a layout saved from a wider nest keeps its frame width (40-wide layouts carry no field, as before)
+  const wide = COLS !== GRID.baseCols ? { cols: COLS } : {};
+  if (!r) return { name, chambers, tunnels, ...wide };
   const ra = r.res ? G.anchorOf(r, r.res) : null;
-  if (!ra) return { name, chambers, tunnels, royal: { x: r.x, y: r.y } };
+  if (!ra) return { name, chambers, tunnels, royal: { x: r.x, y: r.y }, ...wide };
   const room = G.anchorRect(r.res, ra, CHAMBERS.royal_chamber.w0, CHAMBERS.royal_chamber.h0);
-  return { name, chambers, tunnels, royal: { x: room.x, y: room.y, res: { ...r.res } } };
+  return { name, chambers, tunnels, royal: { x: room.x, y: room.y, res: { ...r.res } }, ...wide };
 }
 
 // ------------------------------------------------------------------------------------------------------------------
 // Command handlers (ARCHITECTURE §9)
 // ------------------------------------------------------------------------------------------------------------------
 
-/** C180: a plain integer rectangle inside the grid, or null. */
-function cleanRect(r) {
+/** C180: a plain integer rectangle inside a grid W columns wide (C215; default the active width), or null. */
+function cleanRect(r, W = COLS) {
   if (!r || typeof r !== 'object' || !isInt(r.x) || !isInt(r.y) || !isInt(r.w) || !isInt(r.h)) return null;
-  if (r.w < 1 || r.h < 1 || r.x < 0 || r.y < 0 || r.x + r.w > COLS || r.y + r.h > ROWS) return null;
+  if (r.w < 1 || r.h < 1 || r.x < 0 || r.y < 0 || r.x + r.w > W || r.y + r.h > ROWS) return null;
   return { x: r.x, y: r.y, w: r.w, h: r.h };
+}
+
+/**
+ * [q] C215: the width of the current run's nest (40 unless the run started wider).
+ * @param {import('../core/types.js').State} s
+ * @returns {number}
+ */
+export function nestCols(s) {
+  return G.colsOfNest(s && s.run && s.run.nest);
+}
+
+/**
+ * [q] C215: the nest width a run starting now gets: the base 40 plus GRID.colsPerSide (4) columns on each side per
+ * Satellite Nest level owned (Federation), up to GRID.maxCols (64: three levels). Decided once, at run start (WP7
+ * startRun, then nestgen), so stored cell indices never move during a run.
+ * @param {import('../core/types.js').State} s
+ * @returns {number}
+ */
+export function runStartCols(s) {
+  const L = Math.max(0, Math.floor(G.fedLevel(s, 'satellite_nest')));
+  const w = GRID.baseCols + 2 * GRID.colsPerSide * L;
+  return Math.min(GRID.maxCols, Math.max(GRID.baseCols, w - (w % 2)));
+}
+
+/** C215: a blueprint's frame width (its cols field, else 40: layouts saved before wide nests). */
+function bpCols(bp) {
+  return bp && validCols(bp.cols) ? bp.cols : GRID.baseCols;
+}
+
+/**
+ * [q] C215: a blueprint moved into a nest W columns wide: everything shifts by half the width difference (both nests
+ * are centred on the main shaft); chambers, reservations and tunnel cells that fall outside are left out (a Royal
+ * Chamber spot that does not fit is dropped: the run keeps its own). Returns a new object with cols W (no field for
+ * 40); the same blueprint when it is already W wide.
+ * @param {Object} bp
+ * @param {number} W
+ * @returns {Object}
+ */
+export function blueprintForCols(bp, W) {
+  if (!bp || typeof bp !== 'object') return bp;
+  const from = bpCols(bp);
+  const to = validCols(W) ? W : GRID.baseCols;
+  if (from === to) return bp;
+  const dx = (to - from) / 2;
+  const mv = (r) => (r && isInt(r.x) ? { ...r, x: r.x + dx } : r);
+  const fits = (r) => !!cleanRect(r, to);
+  const chambers = [];
+  for (const c of Array.isArray(bp.chambers) ? bp.chambers : []) {
+    if (!c || !CHAMBERS[c.type] || !isInt(c.x) || !isInt(c.y)) continue;
+    const fp = G.footprint(c.type, 1);
+    const o = { ...c, x: c.x + dx };
+    if (!fits({ x: o.x, y: o.y, w: fp.w, h: fp.h })) continue;
+    if (c.res) {
+      o.res = mv(c.res);
+      if (!fits(o.res)) delete o.res;
+    }
+    chambers.push(o);
+  }
+  const tunnels = [];
+  for (const i of Array.isArray(bp.tunnels) ? bp.tunnels : []) {
+    if (!isInt(i) || i < 0 || i >= from * ROWS) continue;
+    const x = (i % from) + dx;
+    const y = Math.floor(i / from);
+    if (x >= 0 && x < to) tunnels.push(y * to + x);
+  }
+  const out = { ...bp, chambers, tunnels };
+  if (to === GRID.baseCols) delete out.cols;
+  else out.cols = to;
+  if (bp.royal && isInt(bp.royal.x)) {
+    const def = CHAMBERS.royal_chamber;
+    const r = { ...bp.royal, x: bp.royal.x + dx };
+    if (r.res) r.res = mv(r.res);
+    if (fits({ x: r.x, y: r.y, w: def.w0, h: def.h0 }) && (!r.res || fits(r.res))) out.royal = r;
+    else delete out.royal;
+  }
+  return out;
 }
 
 /**
@@ -4484,18 +4687,22 @@ function cleanRect(r) {
 export function sanitizeBlueprint(bp) {
   if (!bp || typeof bp !== 'object') return null;
   if (!Array.isArray(bp.chambers) || bp.chambers.length > 400) return null;
-  if (bp.tunnels !== undefined && (!Array.isArray(bp.tunnels) || bp.tunnels.length > N)) return null;
+  // C215: a blueprint is checked in its own frame (cols, default 40), not the active nest's
+  if (bp.cols !== undefined && bp.cols !== null && !validCols(bp.cols)) return null;
+  const W = bpCols(bp);
+  const NW = W * ROWS;
+  if (bp.tunnels !== undefined && (!Array.isArray(bp.tunnels) || bp.tunnels.length > NW)) return null;
   const name = typeof bp.name === 'string' && bp.name.trim() ? bp.name.trim().slice(0, NAME_MAX) : 'Layout';
   const chambers = [];
   for (const c of bp.chambers) {
     if (!c || typeof c !== 'object' || !CHAMBERS[c.type] || !isInt(c.x) || !isInt(c.y)) return null;
     const fp = G.footprint(c.type, 1);
-    const room = cleanRect({ x: c.x, y: c.y, w: fp.w, h: fp.h });
+    const room = cleanRect({ x: c.x, y: c.y, w: fp.w, h: fp.h }, W);
     if (!room) return null;
     const o = { type: c.type, x: c.x, y: c.y, w: fp.w, h: fp.h, level: isInt(c.level) && c.level >= 1 ? Math.min(c.level, 1e9) : 1 };
-    if (isInt(c.w) && isInt(c.h) && c.w >= fp.w && c.h >= fp.h && c.x + c.w <= COLS && c.y + c.h <= ROWS) { o.w = c.w; o.h = c.h; }
+    if (isInt(c.w) && isInt(c.h) && c.w >= fp.w && c.h >= fp.h && c.x + c.w <= W && c.y + c.h <= ROWS) { o.w = c.w; o.h = c.h; }
     if (c.res !== undefined && c.res !== null) {
-      const R = cleanRect(c.res);
+      const R = cleanRect(c.res, W);
       if (!R || !G.anchorOf(room, R)) return null;
       o.res = R;
     }
@@ -4504,19 +4711,20 @@ export function sanitizeBlueprint(bp) {
   const seen = new Set();
   const tunnels = [];
   for (const i of bp.tunnels || []) {
-    if (!isCell(i)) return null;
+    if (!isInt(i) || i < 0 || i >= NW) return null;
     if (!seen.has(i)) { seen.add(i); tunnels.push(i); }
   }
   tunnels.sort((a, b) => a - b);
   const out = { name, chambers, tunnels };
+  if (W !== GRID.baseCols) out.cols = W;
   if (bp.royal !== undefined && bp.royal !== null) {
     const def = CHAMBERS.royal_chamber;
     const r = bp.royal;
-    const room = r && cleanRect({ x: r.x, y: r.y, w: def.w0, h: def.h0 });
+    const room = r && cleanRect({ x: r.x, y: r.y, w: def.w0, h: def.h0 }, W);
     if (!room) return null;
     out.royal = { x: room.x, y: room.y };
     if (r.res !== undefined && r.res !== null) {
-      const R = cleanRect(r.res);
+      const R = cleanRect(r.res, W);
       if (!R || !G.anchorOf(room, R)) return null;
       out.royal.res = R;
     }
@@ -4644,6 +4852,7 @@ export const handlers = {
       if (strikeWater(s, d, P.cells, env || {})) return; // C173
       const nest = s.run.nest;
       nest.queue.push({ uid: nest.nextUid++, kind: 'tunnel', chamber: 0, cells: P.cells, cur: 0, prog: 0, paidFood: 0, blueprint: false });
+      tagTunnel(s, 'cache', null, P.cells); // C214
       nest.rev++;
       rebuild(s, d);
     },

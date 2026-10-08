@@ -2,6 +2,8 @@
 // target counts (C151: stepper, Max, "Keep berths filled", chitin reserve) and "Retire to workers", job chips with +/− (and drag between chips), automation modes, ratio targets (a target slider per chip; +/− and drags edit targets in auto mode, C94) and
 // presets (Adaptations have their own tab since C143, panels/adaptations.js; alate rearing lives on the Prestige tab's Flight view, C116). Owner: WP9. Contract: ARCHITECTURE §14.5 (Colony row), §8.1, §9.
 // Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, stats.eggCost.
+// Feedback pass 7: sections fold by their heading (C229), "Per click" job step shown on the +/− buttons (C230), the
+// nurse cap row (C231) and caste / army upkeep lines (C233).
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
@@ -13,7 +15,7 @@ import { eggCost } from '../../systems/stats.js';
 import { JOB_ORDER, JOBS, TARGET_UI } from '../../data/jobs.js';
 import { CASTES } from '../../data/castes.js';
 import { SLIDERS } from '../../data/economy.js';
-import { makeAct, sliderRow, note, progressBar } from './common.js';
+import { makeAct, sliderRow, note, progressBar, collapsible } from './common.js';
 
 /** Job ids when data/jobs.js is still empty. */
 export const JOB_FALLBACK = Object.freeze(['forager', 'digger', 'nurse', 'scout', 'herder', 'leafcutter', 'gardener']);
@@ -25,6 +27,86 @@ export { ADAPT_FALLBACK, ADAPT_UNLOCK_FALLBACK, adaptBulk } from './adaptations.
 /** Caste unlock keys (slider castes). */
 const CASTE_KEYS = Object.freeze({ soldier: 'caste_soldier', supermajor: 'caste_supermajor', replete: 'caste_replete' });
 const STEPS = [1, 10, 100, 'max'];
+
+/**
+ * C230: the job step that applies with `minors` minor workers: the chosen numeric step while the colony has at least
+ * that many minors, else the largest step that fits (×1 at least); 'max' always applies.
+ * @param {number|'max'} chosen
+ * @param {number} minors
+ * @returns {number|'max'}
+ */
+export function effectiveStep(chosen, minors) {
+  if (chosen === 'max') return 'max';
+  const room = Math.max(1, Math.floor(num(minors) + 1e-9));
+  let best = 1;
+  for (const v of STEPS) if (v !== 'max' && v <= room && v <= num(chosen, 1)) best = v;
+  return best;
+}
+
+/**
+ * C230: label of a job +/− button for a step: "+10", "−1", "+Max".
+ * @param {'+'|'−'} sign
+ * @param {number|'max'} step
+ * @returns {string}
+ */
+export function stepLabel(sign, step) {
+  return sign + (step === 'max' ? 'Max' : fmtCount(step));
+}
+
+/** C233: '0.25 food/s'. */
+export function foodRate(v) {
+  return fmtRate(v).replace(/\/s$/, '') + ' food/s';
+}
+
+/**
+ * C233: food upkeep of one target caste: { each, total } food/s (DESIGN §5.7, before the winter reductions).
+ * @param {string} c caste
+ * @param {number} have adults of that caste
+ * @returns {{ each: number, total: number }}
+ */
+export function casteUpkeep(c, have) {
+  const each = num(CASTES[c] && CASTES[c].upkeep);
+  return { each, total: each * Math.max(0, num(have)) };
+}
+
+/**
+ * C233: the upkeep line of a caste target row: "Upkeep 0.25 food/s each · 3.0 food/s for 12".
+ * @param {string} c
+ * @param {number} have
+ * @returns {string}
+ */
+export function casteUpkeepLine(c, have) {
+  const u = casteUpkeep(c, have);
+  const n = Math.floor(num(have) + 1e-9);
+  return 'Upkeep ' + foodRate(u.each) + ' each · ' + foodRate(u.total) + ' for ' + fmtCount(n);
+}
+
+/**
+ * C233: food/s the army (soldiers + supermajors) eats, and that share of all upkeep — the cost of keeping berths full.
+ * @param {Object} adults run.colony.adults
+ * @returns {{ total: number, share: number }}
+ */
+export function armyUpkeep(adults) {
+  const a = obj(adults);
+  const total = casteUpkeep('soldier', a.soldier).total + casteUpkeep('supermajor', a.supermajor).total;
+  let all = 0;
+  for (const c of ['minor', 'soldier', 'supermajor', 'replete']) all += casteUpkeep(c, a[c]).total;
+  return { total, share: all > 0 ? total / all : 0 };
+}
+
+/**
+ * C231: the nurse row's cap tooltip.
+ * @param {number} cap jobs.jobCap(s, d, 'nurse')
+ * @param {number} slots d.stats.broodSlots
+ * @param {number} have nurses now
+ * @returns {string}
+ */
+export function nurseCapTip(cap, slots, have) {
+  const per = num(JOBS.nurse && JOBS.nurse.fx && JOBS.nurse.fx.maxPerSlot, 4);
+  return 'Up to ' + fmtCount(cap) + ' nurses help: ' + per + ' per brood slot (' + fmtCount(slots) + ' slots), and the queen counts as one. '
+    + 'More nurses would not speed brood, so no more can be assigned. More brood slots (Nurseries) raise the cap.'
+    + (num(have) > cap + 1e-9 ? ' ' + fmtCount(num(have) - cap) + ' extra nurses do nothing now: move them to another job.' : '');
+}
 /** Slider limit (DESIGN §5.1 egg reserve ≤ 90 % of the food cap). */
 const RESERVE_MAX = num(SLIDERS && SLIDERS.eggReserveMax, 0.9);
 /** C151 caste target counts: upper bound and the stepper's step sizes. */
@@ -198,7 +280,8 @@ export function createPanel(root, { game, ui, bridge }) {
   const fungalBox = h('input', { type: 'checkbox', class: 'check' });
   fungalBox.addEventListener('change', (ev) => act('setFungalBrood', { on: !!fungalBox.checked }, ev, fungalBox));
   const fungalRow = h('label', { class: 'toggle-row', dataset: { tip: 'Brood ×0.75 time; costs fungus per egg.' } }, fungalBox, h('span', { text: 'Fungal Brood' }));
-  const broodSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Brood' }), pipe, frozenBadge,
+  const broodTitle = h('h3', { class: 'sec-title', text: 'Brood' });
+  const broodSec = h('section', { class: 'sec sec-brood' }, broodTitle, pipe, frozenBadge,
     slotBar.el, houseBar.el,
     h('dl', { class: 'kv' }, h('dt', { text: 'Lay rate' }), layEl, h('dt', { text: 'Next egg' }), h('dd', null, eggCostEl)),
     naniticEl, reserve.el, fungalRow);
@@ -253,17 +336,37 @@ export function createPanel(root, { game, ui, bridge }) {
     retireBox.appendChild(row);
   }
   const retireTitle = h('h4', { class: 'sub-title', text: 'Retire to workers' });
-  const casteSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Castes' }), casteCounts, berthsEl,
+  // C233: what the army eats, so a target below the cap has a visible payoff (less food upkeep, chitin kept)
+  const armyUpkeepEl = h('p', { class: 'note army-upkeep',
+    dataset: { tip: 'Every soldier and supermajor eats food every second (soldier ' + fmtRate(casteUpkeep('soldier', 1).each) + ', supermajor '
+      + fmtRate(casteUpkeep('supermajor', 1).each) + ', a worker ' + fmtRate(casteUpkeep('minor', 1).each) + '), and each egg costs chitin. '
+      + 'A target below the cap keeps that food and chitin for the economy; Keep berths filled trades them for defence.' } });
+  const casteTitle = h('h3', { class: 'sec-title', text: 'Castes' });
+  const casteSec = h('section', { class: 'sec sec-castes' }, casteTitle, casteCounts, berthsEl, armyUpkeepEl,
     h('p', { class: 'note', text: 'Larval diet decides caste. The queen raises each caste up to its target, then lays workers.' }), casteSliderBox,
     retireTitle, retireBox);
 
   // --- jobs ---
   const idleEl = h('span', { class: 'sec-meta' });
-  const stepRow = h('div', { class: 'seg seg-small', role: 'radiogroup', 'aria-label': 'Step' });
+  // C230: "Per click 1 · 10 · 100 · Max" — the +/− buttons show the step ("+10"); a step larger than the workforce
+  // falls back to the largest that fits (effectiveStep), and a new run (Flight) starts at 1 again.
+  const stepRow = h('div', { class: 'seg seg-small', role: 'radiogroup', attrs: { 'aria-label': 'Workers moved per click' } });
   for (const sv of STEPS) {
     stepRow.appendChild(h('button', { type: 'button', class: 'seg-btn' + (sv === 1 ? ' selected' : ''), dataset: { step: String(sv) },
-      text: sv === 'max' ? 'Max' : '×' + sv,
-      on: { click: () => { step = sv; for (const b of Array.from(stepRow.children)) toggleClass(b, 'selected', b.dataset.step === String(sv)); } } }));
+      text: sv === 'max' ? 'Max' : String(sv),
+      attrs: { 'aria-label': sv === 'max' ? 'Move every available worker per click' : 'Move ' + sv + ' per click' },
+      on: { click: () => { step = sv; markStep(); } } }));
+  }
+  const stepWrap = h('div', { class: 'job-step',
+    dataset: { tip: 'How many workers one click on + or − moves. Max moves every idle worker (or every worker of that job). '
+      + 'Steps bigger than your workforce are greyed out; a new run starts at 1.' } },
+  h('span', { class: 'job-step-label', text: 'Per click' }), stepRow);
+  let lastRun = null;
+  /** The step that applies now (C230). */
+  const curStep = () => effectiveStep(step, num(obj(game.s && game.s.run && game.s.run.colony && game.s.run.colony.adults).minor));
+  function markStep() {
+    const eff = String(curStep());
+    for (const b of Array.from(stepRow.childNodes)) toggleClass(b, 'selected', b.dataset.step === eff);
   }
   const autoBox = h('input', { type: 'checkbox', class: 'check' });
   autoBox.addEventListener('change', (ev) => {
@@ -290,10 +393,14 @@ export function createPanel(root, { game, ui, bridge }) {
     presetBtns.push({ save, apply });
     presetRow.append(h('span', { class: 'preset' }, apply, save));
   }
-  const jobsSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title' }, 'Jobs ', idleEl), stepRow, h('div', { class: 'toggles' }, autoRow, thrRow), jobList, targetNote, presetRow);
+  const jobsTitle = h('h3', { class: 'sec-title' }, 'Jobs ', idleEl);
+  const jobsSec = h('section', { class: 'sec sec-jobs' }, jobsTitle, stepWrap, h('div', { class: 'toggles' }, autoRow, thrRow), jobList, targetNote, presetRow);
 
   const empty = note('Your first worker is on the way. The queen tends her first egg.');
   el.append(empty, broodSec, casteSec, jobsSec);   // Adaptations: own tab (C143); alate rearing: Prestige → Flight (C116)
+  // C229: each section folds by its heading, remembered per browser
+  const folds = { brood: collapsible(broodSec, broodTitle, 'colony:brood'), castes: collapsible(casteSec, casteTitle, 'colony:castes'),
+    jobs: collapsible(jobsSec, jobsTitle, 'colony:jobs') };
 
   /** C151: casteStatus of the live game (null if not available). */
   function goalStatus(c) {
@@ -349,8 +456,13 @@ export function createPanel(root, { game, ui, bridge }) {
         ' ' + nameOf('caste', c) + ' target'), status),
       h('div', { class: 'btn-row caste-goal-ctrl' }, minus, input, plus, max, fillRow),
       h('p', { class: 'note caste-goal-cost' }, 'Per egg ', cost, ' ', reason));
+    // C233: the food this caste eats every second, so a lower target has a visible payoff
+    const upkeep = h('p', { class: 'note caste-goal-upkeep',
+      dataset: { tip: 'Food eaten every second by each ' + lc + ' and by all of them (less in winter with Overwintering, Hibernacula and repletes). '
+        + 'A lower target means less upkeep' + (c === 'replete' ? '.' : ' and more chitin left for Adaptations and the Gate.') } });
+    el.appendChild(upkeep);
     el.style.margin = '6px 0';
-    return { el, status, input, minus, plus, max, fillBox, fillRow, cost, reason };
+    return { el, status, input, minus, plus, max, fillBox, fillRow, cost, reason, upkeep };
   }
 
   /** C151: refresh one caste target row. */
@@ -368,11 +480,23 @@ export function createPanel(root, { game, ui, bridge }) {
     const cost = q(() => eggCost(s, d, c), null);
     setCost(r.cost, cost, s);
     setText(r.reason, casteGoalReason(s, c, st, cost, reserve));
+    setText(r.upkeep, casteUpkeepLine(c, num(obj(s.run.colony.adults)[c])));
   }
 
   function amountFor(available) {
-    if (step === 'max') return Math.max(0, Math.floor(available));
-    return Math.max(0, Math.min(step, Math.floor(available)));
+    const st = curStep();
+    if (st === 'max') return Math.max(0, Math.floor(available));
+    return Math.max(0, Math.min(st, Math.floor(available)));
+  }
+
+  /** C230: where a + click takes workers from, and how many it moves (clamped to the room under the job's cap). */
+  function plusMove(id, s, d) {
+    const idle = q(() => idleMinors(s), 0);
+    const jobs = obj(s.run.colony.jobs);
+    const from = idle >= 1 || id === 'forager' ? 'idle' : 'forager';
+    const avail = from === 'idle' ? idle : num(jobs.forager);
+    const room = Math.max(0, Math.floor(q(() => jobCap(s, d, id), Infinity) - num(jobs[id]) + 1e-9));
+    return { from, k: Math.min(amountFor(avail), room), room };
   }
 
   // --- ratio targets (auto mode, C94) ---
@@ -417,23 +541,19 @@ export function createPanel(root, { game, ui, bridge }) {
     const n = h('span', { class: 'job-num' });
     const cap = h('span', { class: 'job-cap' });
     const target = h('span', { class: 'job-target' });
-    const minus = h('button', { type: 'button', class: 'btn btn-icon', text: '−', attrs: { 'aria-label': 'Fewer ' + nameOf('job', id) + 's' },
+    const minus = h('button', { type: 'button', class: 'btn btn-icon btn-step', text: '−', attrs: { 'aria-label': 'Fewer ' + nameOf('job', id) + 's' },
       on: { click: (ev) => {
         if (autoMode()) { setTarget(id, num(baseTargets()[id]) - TARGET_STEP, ev, minus); return; }
         const cur = num(obj(game.s.run.colony.jobs)[id]);
         const k = amountFor(cur);
         if (k > 0) act('shiftJob', { from: id, to: 'idle', n: k }, ev, minus);
       } } });
-    const plus = h('button', { type: 'button', class: 'btn btn-icon', text: '+', attrs: { 'aria-label': 'More ' + nameOf('job', id) + 's' },
+    const plus = h('button', { type: 'button', class: 'btn btn-icon btn-step', text: '+', attrs: { 'aria-label': 'More ' + nameOf('job', id) + 's' },
       on: { click: (ev) => {
         if (autoMode()) { setTarget(id, num(baseTargets()[id]) + TARGET_STEP, ev, plus); return; }
-        const s = game.s;
-        const idle = q(() => idleMinors(s), 0);
-        const jobs = obj(s.run.colony.jobs);
-        const from = idle >= 1 || id === 'forager' ? 'idle' : 'forager';
-        const avail = from === 'idle' ? idle : num(jobs.forager);
-        const k = amountFor(avail);
-        act('shiftJob', { from, to: id, n: Math.max(1, k) }, ev, plus);
+        const m = plusMove(id, game.s, game.d);
+        // a full job (room 0) still sends 1 so the refusal ("max") explains it
+        act('shiftJob', { from: m.from, to: id, n: Math.max(1, m.k) }, ev, plus);
       } } });
     const tSl = sliderRow('Target', { min: 0, max: 100, step: 1, tip: 'Share of workers this job should get. Raising it past a 100% total lowers the others.' },
       (v) => setTarget(id, v / 100, null, tSl.input));
@@ -482,7 +602,12 @@ export function createPanel(root, { game, ui, bridge }) {
     const c = obj(s.run.colony);
     setText(r.n, fmtCount(num(obj(c.jobs)[id])));
     const capV = q(() => jobCap(s, d, id), Infinity);
+    const have = num(obj(c.jobs)[id]);
     setText(r.cap, Number.isFinite(capV) ? '/ ' + fmtCount(capV) : '');
+    toggleClass(r.cap, 'over', Number.isFinite(capV) && have > capV + 1e-9);
+    // C231: the nurse cap explains itself (4 per brood slot, the queen counting as one)
+    const capTip = id === 'nurse' && Number.isFinite(capV) ? nurseCapTip(capV, num(d && d.stats && d.stats.broodSlots, 3), have) : '';
+    if (r.cap.title !== capTip) r.cap.title = capTip;
     const auto = !!(c.autoJobs || c.thresholdJobs);
     const tgt = num(obj(c.jobTargets)[id]);
     show(r.tSl.el, auto);
@@ -494,15 +619,37 @@ export function createPanel(root, { game, ui, bridge }) {
       const pct = (v) => fmtPct(v / 100, { signed: false });
       r.tSl.set(Math.round(tgt * 100), { text: fmtPct(tgt, { signed: false }), fmt: pct });
     }
-    const verb = auto ? ' target by ' + Math.round(TARGET_STEP * 100) + '%' : '';
-    r.minus.title = auto ? 'Lower the ' + nameOf('job', id).toLowerCase() + verb : '';
-    r.plus.title = auto ? 'Raise the ' + nameOf('job', id).toLowerCase() + verb : '';
+    const stepPct = Math.round(TARGET_STEP * 100);
+    const verb = ' target by ' + stepPct + '%';
+    const jn = nameOf('job', id).toLowerCase();
+    let minusTip;
+    let plusTip;
+    if (auto) {
+      setText(r.minus, '−' + stepPct + '%');
+      setText(r.plus, '+' + stepPct + '%');
+      minusTip = 'Lower the ' + jn + verb;
+      plusTip = 'Raise the ' + jn + verb;
+    } else {
+      // C230: the buttons show the step; the tooltip says exactly what one click moves now
+      const st = curStep();
+      setText(r.minus, stepLabel('−', st));
+      setText(r.plus, stepLabel('+', st));
+      const km = amountFor(have);
+      minusTip = km > 0 ? 'Move ' + fmtCount(km) + ' ' + jn + (km === 1 ? '' : 's') + ' to idle' : 'No ' + jn + 's to move';
+      const m = plusMove(id, s, d);
+      const src = (m.from === 'idle' ? 'idle worker' : 'forager') + (m.k === 1 ? '' : 's');
+      if (m.room <= 0) plusTip = id === 'nurse' ? 'Nurse cap reached: more nurses would not speed brood.' : 'This job is full.';
+      else plusTip = m.k > 0 ? 'Move ' + fmtCount(m.k) + ' ' + src + ' to ' + nameOf('job', id) : 'No ' + (m.from === 'idle' ? 'idle workers' : 'foragers') + ' to move';
+    }
+    if (r.minus.title !== minusTip) r.minus.title = minusTip;
+    if (r.plus.title !== plusTip) r.plus.title = plusTip;
     r.minus.setAttribute('aria-label', auto ? 'Lower ' + nameOf('job', id) + ' target' : 'Fewer ' + nameOf('job', id) + 's');
     r.plus.setAttribute('aria-label', auto ? 'Raise ' + nameOf('job', id) + ' target' : 'More ' + nameOf('job', id) + 's');
     toggleClass(chip, 'glow', ui.getUI().glow === 'job:' + id);
   }
 
   return {
+    folds,
     update(s, d) {
       if (!s || !s.run) return;
       const c = obj(s.run.colony);
@@ -557,6 +704,13 @@ export function createPanel(root, { game, ui, bridge }) {
           show(casteEls[k].chip, k === 'minor' || num(adults[k]) > 0 || isShown(s, casteKey(k)));
         }
         setText(berthsEl, berthLines(s, st, adults).join(' · '));
+        const army = armyUpkeep(adults);
+        const armyVis = num(adults.soldier) + num(adults.supermajor) > 0 || isShown(s, casteKey('soldier'));
+        show(armyUpkeepEl, armyVis);
+        if (armyVis) {
+          setText(armyUpkeepEl, 'Army upkeep ' + foodRate(army.total) + ' (' + fmtPct(army.share, { signed: false }) + ' of all upkeep). '
+            + 'Targets below the cap save this food and the chitin for their eggs.');
+        }
         const resv = q(() => chitinReserve(s), num(c.chitinReserve));
         let anyGoal = false;
         for (const k of Object.keys(casteGoalRows)) {
@@ -595,8 +749,15 @@ export function createPanel(root, { game, ui, bridge }) {
       const ids = jobIds().filter((id) => isShown(s, jobKey(id)) || num(obj(c.jobs)[id]) > 0);
       const auto = !!(c.autoJobs || c.thresholdJobs);
       const eff = auto ? q(() => effectiveTargets(s), null) : null;
+      show(stepWrap, !auto); // the 1 / 10 / 100 / Max steps move workers, which auto mode does not do
+      // C230: a new run (Flight, Hardship, landing) starts at a step of 1; steps above the workforce are greyed out
+      const runNo = num(s.meta && s.meta.counters && s.meta.counters.runs);
+      if (lastRun !== null && runNo !== lastRun) step = 1;
+      lastRun = runNo;
+      const minorsNow = Math.max(1, Math.floor(num(adults.minor) + 1e-9));
+      for (const b of Array.from(stepRow.childNodes)) setProp(b, 'disabled', b.dataset.step !== 'max' && Number(b.dataset.step) > minorsNow && b.dataset.step !== '1');
+      markStep();
       syncList(jobList, ids, (id) => id, createJobChip, (chip, id) => updateJobChip(chip, id, s, d, eff));
-      show(stepRow, !auto); // the ×1 / ×10 / Max steps move workers, which auto mode does not do
       let tSum = 0;
       for (const id of jobIds()) tSum += num(obj(c.jobTargets)[id]);
       show(targetNote, auto);

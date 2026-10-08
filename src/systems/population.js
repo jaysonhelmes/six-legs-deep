@@ -34,6 +34,8 @@
 //   switches on by itself the first step a soldier / supermajor cap exists in a run unless casteTouched[c] (the player
 //   set that caste, a carried preset did, or the save predates C151 with that cap already built). Old share saves
 //   (run.colony.casteTargets) convert on the first step: target = max(round(share × cap), current adults + brood).
+// C232: cancelRear empties (or shortens) the alate rearing queue for free (eggs are paid when laid); alateQueueCost [q]
+//   prices the next n queued alates for the Prestige → Flight buttons.
 
 import { CASTE_ORDER, CASTES } from '../data/castes.js';
 import { EGG, BROOD, NUTRITION, SLIDERS, MOLT } from '../data/economy.js';
@@ -498,6 +500,38 @@ function extraMax(s, caste, form, have) {
     return Math.floor(Math.log(1 + have * (form.growth - 1) / first) / Math.log(form.growth) + EPS);
   }
   return Infinity;
+}
+
+/**
+ * [q] C232: what queueing n MORE alates will cost when they are laid, at today's egg price: food = n × the next alate
+ * egg's food; each extra (honeydew 5 × 1.15^k) continues after the alate eggs already laid this run AND those already
+ * queued (with Auto-rear on the queue is not followed, so only laid eggs count). Nothing is paid when queueing: the
+ * queen pays each egg as she lays it, so a cancelled queue costs nothing (cancelRear). null if no alate egg price.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} n
+ * @returns {import('../core/types.js').Cost|null}
+ */
+export function alateQueueCost(s, d, n) {
+  const k = Math.max(0, Math.floor(num(n)));
+  const base = eggCost(s, d, 'alate');
+  if (!base || !(k > 0)) return base && k === 0 ? { food: 0 } : null;
+  const col = s.run.colony;
+  const queued = s.meta && s.meta.automation && s.meta.automation.autoRear ? 0 : Math.max(0, Math.floor(num(col.rearRequested) + EPS));
+  const cost = { food: num(base.food) * k };
+  const extra = CASTES.alate.extra || {};
+  for (const r of Object.keys(extra)) {
+    const form = extra[r];
+    let v = 0;
+    if (typeof form === 'number') v = form * k;
+    else if (form && typeof form.growth === 'number') {
+      const first = num(form.base) * form.growth ** (num(col.eggs.alate) + queued);
+      v = form.growth === 1 ? first * k : first * (form.growth ** k - 1) / (form.growth - 1);
+    } else if (form && typeof form.perOwned === 'number') v = (num(form.base) + form.perOwned * num(col.alatesReared)) * k;
+    if (v > 0) cost[r] = v;
+  }
+  for (const r of Object.keys(cost)) if (!Number.isFinite(cost[r])) return null;
+  return cost;
 }
 
 /**
@@ -970,6 +1004,23 @@ export const handlers = {
     },
     apply(s, d, cmd) {
       s.run.colony.rearRequested = clampNum(num(s.run.colony.rearRequested) + cmd.n);
+    },
+  },
+
+  /**
+   * cancelRear { n? }: C232 — remove up to n alates from the rearing queue (all of them when n is omitted). Free: a
+   * queued alate costs nothing until the queen lays its egg (layBatch pays then); laid alate eggs are not touched.
+   */
+  cancelRear: {
+    validate(s, d, cmd) {
+      if (cmd.n !== undefined && cmd.n !== null && (!Number.isInteger(cmd.n) || cmd.n < 1)) return 'invalid';
+      if (!(num(s.run.colony.rearRequested) > EPS)) return 'invalid:empty';
+      return null;
+    },
+    apply(s, d, cmd) {
+      const col = s.run.colony;
+      const n = cmd.n === undefined || cmd.n === null ? Infinity : cmd.n;
+      col.rearRequested = n >= num(col.rearRequested) ? 0 : clampNum(num(col.rearRequested) - n);
     },
   },
 

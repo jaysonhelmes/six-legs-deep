@@ -16,6 +16,8 @@ import {
   GENOME_TIPS, HARDSHIP_TIPS, EDICT_TIPS, SPECIES_TIPS, SEASON_NAMES, EVENT_COPY, CHOICE_TIPS, CHOICE_LABELS, BOTTLENECK_NAMES,
   BOTTLENECK_TIPS, TAB_NAMES, SUBTAB_NAMES, ADAPT_TIPS, TERRAIN_NOTES, terrainCostText,
   autoFlightPeakText, AUTO_LANDING_TEXT, AUTO_SUPER_TEXT, BLUEPRINT_UNLOCK_LINES, blueprintSaveHint,
+  trailHelpLines, TRAIL_LEGEND, TRAIL_LINE_NOTE, territoryBenefitLines, BONUS_STACK_TIP, flightDayText, honeydewCapText, WAR_KIND_EXPLAIN,
+  frostExposedText,
 } from './text.js';
 import { chamberKey, maxInstances, queueLimit } from './panels/build.js';
 import { SHORTCUTS } from './panels/settings.js';
@@ -26,7 +28,7 @@ import { jobCap, idleMinors } from '../systems/jobs.js';
 import { isAvailable as researchAvailable, isOwned as researchOwned, refinementCost, archiveOpen, archiveCost, archiveLevel } from '../systems/research.js';
 import { cost as adaptCost, isAvailable as adaptAvailable } from '../systems/adaptations.js';
 import { traitCost, fedCost, genomeCost } from '../systems/traits.js';
-import { moundCost, claimCost } from '../systems/surface.js';
+import { moundGrowth, claimCost, dNavFor } from '../systems/surface.js';
 import { projectAlates, projectKinship, projectGenes, kinshipBreakdown } from '../systems/prestige.js';
 import { effectMult } from '../core/effects.js';
 import { CASTES } from '../data/castes.js';
@@ -303,6 +305,30 @@ const DEF_START = [
       return { title: 'The core loop', kw: 'how to play tutorial loop bottleneck', blocks, links, tabs: isShown(s, 'panel_colony') ? [tabBtn('colony')] : [] };
     },
   },
+  {
+    // C210: "+X%" vs "×Y" bonuses (stats.js: additive groups such as forage aAdd, then the multipliers)
+    id: 'start:bonuses', section: 'start', gate: () => true,
+    sig: (s) => ['strong_mandibles', 'potent_trails'].map((id) => Number(isShown(s, ADAPTATIONS[id].unlock))).join('') + Number(isShown(s, 'hex_claim')),
+    build: (s) => {
+      const named = (id) => isShown(s, ADAPTATIONS[id].unlock);
+      const plus = [named('strong_mandibles') ? nameOf('adaptation', 'strong_mandibles') + ' (+10% a level)' : '', isShown(s, 'hex_claim') ? 'territory (+0.5% a hex)' : '']
+        .filter(Boolean);
+      return {
+        title: 'How bonuses stack: +% and ×', kw: 'percent multiplier additive multiplicative stack bonus plus times how bonuses combine',
+        blocks: [
+          { p: BONUS_STACK_TIP },
+          { list: [
+            'Example: two +% bonuses of +30% and +50% on the same output make +80%, so ×1.8 (not 1.3 × 1.5 = 1.95).',
+            'A ×1.12 bonus then multiplies the whole: 1.8 × 1.12 ≈ ×2.02.',
+            'Relative strength: one more +10% added to a group already at +80% raises output by only 10 ÷ 180 ≈ 5.6%; a ×1.12 always raises it by 12%. '
+              + '+% bonuses are strongest early and weaken as their group fills; × bonuses keep their full value.',
+            plus.length ? 'Forager output’s +% group: ' + plus.join(', ') + '. ' + (named('potent_trails') ? nameOf('adaptation', 'potent_trails') + ' (×1.12 a level) multiplies it.' : '') : '',
+          ].filter(Boolean) },
+          { note: 'Upgrade descriptions say which kind they are: “+X%” adds within its group, “×Y” multiplies everything.' },
+        ],
+      };
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -355,7 +381,7 @@ const RESOURCES = [
       ['Lycaenid caterpillars', (s) => hasResearch(s, 'lycaenid_clients')]],
     to: [["Queen's Feast and Sweet Tooth", (s) => isShown(s, 'adapt_honeydew')], ['replete eggs', (s) => casteShown(s, 'replete')],
       ['alate rearing', (s) => isShown(s, 'alate_rearing')], ['bribes', (s) => isShown(s, 'panel_rivals')]],
-    rules: () => ['Cap: ' + CAPS.honeydewBase + ' + ' + pct(CAPS.honeydewFrac).replace('+', '') + ' of the food cap.'],
+    rules: () => [honeydewCapText()],   // C210: not stored in Granaries; they raise the cap through the food cap
     tab: 'colony', links: [['job:herder', 'Herder']] },
   { res: 'leaves', key: 'res_fungus', cap: 'leafCap',
     from: ['Leafcutters on leaf-plant trails'], to: ['Gardeners, who turn them into fungus'],
@@ -652,6 +678,8 @@ function chamberEffect(s, id) {
     case 'barracks':
       out.push('+' + fx.berths + ' berths per level for soldiers' + (casteShown(s, 'supermajor') ? ' (supermajors live in the War Hall)' : '') + '.');
       out.push('Their ATK ' + pct(fx.atk) + ' per level (at most ' + pct(fx.atkMax) + ' combined).');
+      out.push('Within ' + GEOM.barracksPath + ' path cells of an entrance (the walk through your tunnels to the nearest entrance shaft): the garrison deploys at once and gets '
+        + pct(fx.homeAP - 1) + ' home AP, its Army Power when it defends the nest. The inspect panel shows the distance.');
       break;
     case 'war_hall':
       out.push('+' + fx.berths + ' supermajor berths per level. A supermajor egg needs a free War Hall berth.');
@@ -860,9 +888,9 @@ const DEF_NEST = [
   },
   {
     id: 'nest:frost', section: 'chambers', gate: (s) => isShown(s, 'frost_line') || isShown(s, 'climate_overlay'),
-    sig: (s) => [hasResearch(s, 'thermoregulation'), chamberShown(s, 'hibernaculum'), CHAMBER_ORDER.filter((c) => CHAMBERS[c].frostImmune && chamberShown(s, c)).length].map(Number).join(''),
+    sig: (s) => [hasResearch(s, 'thermoregulation'), hasResearch(s, 'thermal_brood_shuttling'), chamberShown(s, 'hibernaculum'), CHAMBER_ORDER.filter((c) => CHAMBERS[c].frostImmune && chamberShown(s, c)).length].map(Number).join(''),
     build: (s) => ({
-      title: 'Frost', kw: 'frost winter freeze cold line exposed',
+      title: 'Frost', kw: 'frost winter freeze cold line exposed thermal brood shuttling snap',
       blocks: [
         { kv: [['Frost line now', live((s2, d2) => (num(d2.season.frostRow) > 0 ? 'row ' + fmtCount(num(d2.season.frostRow)) : 'none'))],
           ['This winter reaches', live((s2, d2) => (num(d2.season.frostMax) > 0 ? 'row ' + fmtCount(num(d2.season.frostMax)) : '—'))]] },
@@ -871,7 +899,12 @@ const DEF_NEST = [
           'It reaches row ' + FROST.maxRow + ' (row ' + FROST.maxRowMild + ' in the first, mild winter); each ' + MOUND.frostPerLevels + ' Mound levels lift it a row (up to '
             + MOUND.frostMax + '), never above row ' + FROST.minRow + '.',
           ['Thermoregulation lifts it ' + RESEARCH.thermoregulation.fx.frost + ' rows.', (s2) => hasResearch(s2, 'thermoregulation')],
-          'A chamber is exposed while more than half its cells are above the line: its effect drops to ×' + CHAMBER_RULES.frostMult + ' and brood in it freezes.',
+          'A chamber is frost-exposed while more than half of its rows are above the line (a chamber the line cuts through counts by where most of it is): its effect drops to ×'
+            + CHAMBER_RULES.frostMult + ' and brood in it freezes. The Build tab ghost and the inspect panel say when a chamber is exposed.',
+          // C211: what Thermal Brood Shuttling does (population.broodAllocation, seasons snapRow, nest nurseryMicro)
+          ['Thermal Brood Shuttling: brood fills the nurseries that are not frost-exposed first (the best ones first) and only the overflow goes to exposed ones; '
+            + 'frost snaps no longer reach your brood; topsoil nurseries lose their summer overheat penalty. Without it brood is spread over every nursery by size. '
+            + 'It matters in winter and during frost snaps when some nurseries sit above the line: the Frost badge counts the brood still freezing.', (s2) => hasResearch(s2, 'thermal_brood_shuttling')],
           'After the first winter, frozen brood dies slowly while you are online. Offline, frost only freezes.',
           'Immune: ' + CHAMBER_ORDER.filter((c) => CHAMBERS[c].frostImmune && chamberShown(s, c)).map((c) => nameOf('chamber', c)).join(', ') + '.',
           ['The Hibernaculum shelters brood from frost.', (s2) => chamberShown(s2, 'hibernaculum')],
@@ -1000,27 +1033,36 @@ const DEF_SURFACE = [
   },
   {
     id: 'surface:trails', section: 'surface', gate: () => true,
-    sig: (s) => [isShown(s, 'trail_slots'), isShown(s, 'mound'), hasResearch(s, 'trunk_trails'), casteShown(s, 'soldier')].map(Number).join(''),
+    sig: (s) => [isShown(s, 'trail_slots'), isShown(s, 'mound'), hasResearch(s, 'trunk_trails'), casteShown(s, 'soldier'), isShown(s, 'panel_research'),
+      jobShown(s, 'herder'), jobShown(s, 'leafcutter'), hasResearch(s, 'lycaenid_clients'), hasResearch(s, 'persistent_trails'), hasResearch(s, 'aphid_shepherding')].map(Number).join('')
+      + ':' + q(() => dNavFor(s), 0),
     build: (s) => ({
-      title: 'Trails', kw: 'trail forage slot strength saturation route entrance distance',
+      title: 'Trails', kw: 'trail forage slot strength saturation route entrance distance travel time navigation pheromone colour color legend priority pinned',
       blocks: [
         { kv: [['Trail slots', live((s2, d2) => fmtCount(num(d2.surface.slotsUsed)) + ' / ' + fmtCount(num(d2.surface.slots)) + ' used')],
           ['Food from trails', live((s2, d2) => fmtRate(num(d2.ledger && d2.ledger.food ? d2.ledger.food['food.trails'] : 0)))]] },
         { list: gated(s, [
           'Drag from an entrance to a source to draw a trail; it routes itself around stone. Right-click a source for “Draw trail from nearest entrance”.',
           'One trail per destination: to put more ants on a source, add workers to its trail.',
-          'Unassigned foragers fill the best trail that is not yet saturated.',
-          'Richness: a trail of length d pays ×(1 + ' + TRAIL.slope + ' × (d − 1)), but every hex also costs travel time (navigation ' + TRAIL.dNavBase + ' at first).',
-          'Saturation: past a source’s capacity (which grows with colony size) extra workers add less and less.',
-          'Strength: traffic lays pheromone. More ants make a stronger trail (up to ' + TRAIL.sMax + '), and strength adds up to ×' + (1 + TRAIL.sMax / TRAIL.sScale) + ' yield. Unused, it halves every ' + TRAIL.tHalf + ' s.',
+          // C208: what trails do, distance efficiency, travel time, strength, capacity and how workers are shared
+          ...trailHelpLines({ dNav: q(() => dNavFor(s), TRAIL.dNavBase), research: isShown(s, 'panel_research'),
+            sMax: hasResearch(s, 'persistent_trails') ? num(RESEARCH.persistent_trails.fx.sMax, TRAIL.sMax) : TRAIL.sMax,
+            jobs: jobShown(s, 'herder') || jobShown(s, 'leafcutter'), soldiers: casteShown(s, 'soldier') }),
           'Shallow food storage shortens every trail from the main entrance.',
           'Slots: ' + SLOTS.base + ' to begin with, more from research' + (isShown(s, 'mound') ? ', Mound levels ' + SLOTS.moundLevels.join(', ') : '') + ' and extra entrances.',
           'Every trail starts at an entrance: the main one, or an outpost, satellite or nuptial exit once you have them.',
           // C182
           'A molehill or a flooded spring puddle on a trail’s route makes the trail detour round it, free; it returns to its own route when the way clears. With no way round it pauses (no workers, no yield) until then.',
+          // C210: Aphid Shepherding's move (surface.moveAphids: an owned hex holding a flower patch or leaf plant, no other aphids)
+          ['Aphid Shepherding: move an aphid colony onto one of your hexes that holds a flower patch or leaf plant (right-click the aphid colony on the map → Move aphid colony…, then click the hex). Its trails re-route on their own.', (s2) => hasResearch(s2, 'aphid_shepherding')],
           ['Trunk Trails: where trails share hexes, each earns up to +' + Math.round(100 * (RESEARCH.trunk_trails ? RESEARCH.trunk_trails.fx.overlap || 0 : 0)) + '% (by the share of its hexes that another trail also uses).', (s2) => hasResearch(s2, 'trunk_trails')],
           ['Rival land on a trail costs ' + upct(TRAIL.rivalHexPenalty) + ' yield per hex unless escorted (1 soldier per ' + TRAIL.escortPer + ' workers).', (s2) => isShown(s2, 'panel_rivals') && casteShown(s2, 'soldier')],
         ]) },
+        // C208: trail colours on the Above map
+        { h: 'Trail colours' },
+        { table: { head: ['Colour', 'Trail'], rows: TRAIL_LEGEND.filter((x) => x.id === 'forager' || (x.id === 'lycaenid' ? hasResearch(s, 'lycaenid_clients') : jobShown(s, x.id)))
+          .map((x) => [x.label, x.text]) } },
+        { note: TRAIL_LINE_NOTE },
       ],
       links: [{ entry: 'job:forager', label: 'Forager' }].concat(isShown(s, 'res_pheromone') ? [{ entry: 'surface:abilities', label: 'Pheromone abilities' }] : []),
       tabs: isShown(s, 'panel_map') ? [tabBtn('map')] : [],
@@ -1047,9 +1089,10 @@ const DEF_SURFACE = [
   },
   {
     id: 'surface:territory', section: 'surface', gate: (s) => isShown(s, 'hex_claim') || isShown(s, 'panel_rivals'),
-    sig: (s) => [isShown(s, 'hex_claim'), isShown(s, 'mound'), isShown(s, 'panel_war'), hasResearch(s, 'trunk_trails')].map(Number).join(''),
+    sig: (s) => [isShown(s, 'hex_claim'), isShown(s, 'mound'), isShown(s, 'panel_war'), hasResearch(s, 'trunk_trails'), isShown(s, 'raid_warnings'),
+      isShown(s, 'panel_prestige'), isShown(s, 'panel_rivals')].map(Number).join(''),
     build: (s) => ({
-      title: 'Territory and claims', kw: 'territory hex claim owned border conquest',
+      title: 'Territory and claims', kw: 'territory hex claim owned border conquest benefit yield land',
       blocks: [
         { kv: [['Owned hexes', live((s2, d2) => fmtCount(num(d2.surface.ownedCount)))], ['Peak this run', live((s2) => fmtCount(num(s2.run.tPeak)))],
           isShown(s, 'hex_claim') ? ['Next claim', live((s2) => costText(q(() => claimCost(s2), null)))] : null].filter(Boolean) },
@@ -1059,10 +1102,10 @@ const DEF_SURFACE = [
             (s2) => isShown(s2, 'hex_claim')],
           ['Conquering a rival gives you all of its land.', (s2) => isShown(s2, 'panel_war')],
           ['Trunk Trails: every hex of your trails is yours, from any entrance, but only while the trail exists (hatched, dashed border). Claim a trail-held hex to keep it.', (s2) => hasResearch(s2, 'trunk_trails')],
-          'Every owned hex adds ' + pct(TERRITORY.yieldPerHex) + ' to surface yields (at most ' + pct(TERRITORY.yieldMax) + '). Sources on owned hexes yield ×' + TERRITORY.ownedSource + '.',
-          ['Trails entirely inside your land cannot be raided.', (s2) => isShown(s2, 'raid_warnings')],
-          ['Your peak territory this run raises the alates of the next Flight.', (s2) => isShown(s2, 'panel_prestige')],
         ]) },
+        // C209: what owning land gives (the same lines as the Map tab's "What territory gives")
+        { h: 'What territory gives' },
+        { list: territoryBenefitLines({ raids: isShown(s, 'raid_warnings'), flight: isShown(s, 'panel_prestige'), rivals: isShown(s, 'panel_rivals') }) },
       ],
       links: isShown(s, 'res_pheromone') ? [{ entry: 'res:pheromone', label: 'Pheromone' }] : [], tabs: isShown(s, 'panel_map') ? [tabBtn('map')] : [],
     }),
@@ -1094,9 +1137,9 @@ const DEF_SURFACE = [
     build: (s) => ({
       title: 'The Mound', kw: 'mound soil level home',
       blocks: [
-        { kv: [['Level', live((s2) => fmtCount(num(s2.run.surface.mound)))], ['Next level', live((s2) => costText(q(() => moundCost(s2), null)))]] },
+        { kv: [['Level', live((s2) => fmtCount(num(s2.run.surface.mound)))], ['Next level', live((s2) => { const g = q(() => moundGrowth(s2), null); return g ? Math.round(num(g.prog) * 100) + '% of the way' : '—'; })]] },
         { list: gated(s, [
-          'Costs ' + MOUND.base + ' × ' + MOUND.growth + '^(level − 1) soil.' + (hasResearch(s, 'mound_building') ? '' : ' Levels past ' + MOUND.freeMax + ' need Mound Building.'),
+          'Grows by itself as the colony grows: more ants (your peak this run), bigger chambers and more digging each add to it, with diminishing returns.' + (hasResearch(s, 'mound_building') ? '' : ' Levels past ' + MOUND.freeMax + ' need Mound Building.'),
           ['Home defence ' + pct(MOUND.homeAP) + ' AP per level.', (s2) => isShown(s2, 'panel_rivals')],
           'Winter forage penalty ' + pct(-MOUND.winterForage) + ' per level (at most ' + pct(-MOUND.winterMax) + ').',
           'Every ' + MOUND.frostPerLevels + ' levels lift the frost line a row.',
@@ -1141,7 +1184,8 @@ const DEF_COMBAT = [
             'Each side rolls a fortune of ×' + 0.9 + '–×' + 1.1 + ' at the start of a battle; the preview shows your odds.',
             'The winner keeps √(1 − (loser AP / winner AP)²) of its army.',
             ['Defending at home: AP ' + pct(MOUND.homeAP) + ' per Mound level.', (s2) => isShown(s2, 'mound')],
-            ['Barracks within ' + GEOM.barracksPath + ' path cells of an entrance: instant deploy and ' + pct(CHAMBERS.barracks.fx.homeAP - 1) + ' home AP.', (s2) => chamberShown(s2, 'barracks')],
+            ['Barracks within ' + GEOM.barracksPath + ' path cells of an entrance (the walk through your tunnels to the nearest entrance shaft; its inspect panel shows it): instant deploy and '
+            + pct(CHAMBERS.barracks.fx.homeAP - 1) + ' home AP (your Army Power when defending the nest).', (s2) => chamberShown(s2, 'barracks')],
           ]) },
         ],
         links: ['soldier', 'supermajor'].filter((c) => casteShown(s, c)).map((c) => ({ entry: 'caste:' + c, label: CASTES[c].name })),
@@ -1153,11 +1197,13 @@ const DEF_COMBAT = [
     id: 'war:actions', section: 'combat', gate: (s) => isShown(s, 'panel_war'),
     sig: (s) => [isShown(s, 'res_honeydew'), isShown(s, 'res_pheromone'), hasResearch(s, 'field_triage'), hasResearch(s, 'siege_tactics'), hasResearch(s, 'phalanx')].map(Number).join(''),
     build: (s) => ({
-      title: 'War parties and battles', kw: 'raid assault hunt conquest war party bribe retreat tactics',
+      title: 'War parties and battles', kw: 'raid assault hunt conquest war party bribe retreat tactics loot glints sparkles difference',
       blocks: [
+        // C207: raid vs assault in full (the same text as under the war-party form's action buttons)
+        { h: 'Raid or assault?' },
+        { list: [WAR_KIND_EXPLAIN.raid, WAR_KIND_EXPLAIN.assault] },
         { list: gated(s, [
-          'Raid: fights ' + upct(ACTIONS.raid.engage) + ' of the defenders with no home bonus. Win food (' + REWARDS.raidFoodSec + ' s × √tier of income) and chitin.',
-          'Assault: fights every defender with home bonus ×' + ACTIONS.assault.home + '. Winning conquers the nest: its land, insight, food, captured workers, an outpost and a harvester stash.',
+          'An assault also leaves a harvester stash on the conquered land.',
           'Hunt: send a party at prey on the map for food and chitin.',
           'Parties march a hex every ' + 2 + ' s. Drag from an entrance onto a target, or use the war panel.',
           ['Bribe: pay ' + ACTIONS.bribe.apMult + ' × their AP in honeydew for a ' + fmtTime(ACTIONS.bribe.truceSec) + ' truce.', (s2) => isShown(s2, 'res_honeydew')],
@@ -1165,6 +1211,7 @@ const DEF_COMBAT = [
             + '): ' + upct(TACTICAL.mobilize.frac) + ' of idle and forager minors join a home fight.', (s2) => isShown(s2, 'res_pheromone')],
           'Retreat (also automatic at the Auto-retreat threshold set with your war party in Map → War) costs ' + upct(TACTICAL.retreat.loss) + ' of the survivors.',
           'Conquering a rival calls off its raids still on their way.',
+          'After a battle the fallen fade into pale glints that drift back to your nest: that is the battle’s chitin coming home. The "won" toast and the event log name the loot carried home.',
           ['Siege Tactics halve the rival home bonus.', (s2) => hasResearch(s2, 'siege_tactics')],
           ['Field Triage: some fallen soldiers return after a battle if enough nurses work.', (s2) => hasResearch(s2, 'field_triage')],
         ]) },
@@ -1404,7 +1451,7 @@ export function flightFactorRows(s, d) {
       value: fmtCount(t.tPeak) + ' hexes', mult: fmtMult(t.terr) },
     { id: 'reared', label: 'Reared alates', how: '+' + pctPer + '% each, additive (' + t.rearedMax + ' reared = +' + Math.round(FLIGHT.rearedPer * t.rearedMax * 100) + '%)',
       value: fmtCount(t.reared) + ' / ' + fmtCount(t.rearedMax), mult: fmtMult(t.rear) },
-    { id: 'weather', label: 'Flight weather', how: 'summer ×' + summerW + ', Flight Day ×' + dayW + ' (the better one counts)',
+    { id: 'weather', label: 'Flight weather', how: 'summer ×' + summerW + ', Flight Day ×' + dayW + ' (a rare ' + Math.round(num(EVENTS.ev_flight_day && EVENTS.ev_flight_day.num && EVENTS.ev_flight_day.num.sec, 180) / 60) + '-minute summer event; the better one counts)',
       value: t.eventW > 1 ? 'Flight Day' : t.seasonW > 1 ? 'Summer' : 'Calm', mult: fmtMult(t.W) },
   ];
   if (isShown(s, 'tab_bloodline')) {
@@ -1438,7 +1485,7 @@ const DEF_PRESTIGE = [
         live((s2, d2) => { const x = flightFactorRows(s2, d2).find((y) => y.id === r.id); return x ? x.value + ' → ' + x.mult : ''; })]);
       box.push(['Projected alates', T((t) => fmtCount(t.projected) + (t.softcapped ? ' (past the softcap)' : ''))]);
       return {
-        title: 'Nuptial Flight', kw: 'flight prestige alates reset nuptial requirements',
+        title: 'Nuptial Flight', kw: 'flight prestige alates reset nuptial requirements weather flight day flying ant day',
         blocks: [
           { p: 'Your winged princesses leave to found a new colony. You start over on a new map and keep the alates they earn, which buy lasting Bloodline traits.' },
           { h: 'Requirements' },
@@ -1452,6 +1499,7 @@ const DEF_PRESTIGE = [
           { p: 'alates = ' + FLIGHT.base + ' × √(food this run / ' + fmt(FLIGHT.div) + ') × (1 + peak territory / ' + FLIGHT.tPeakDiv + ') × (1 + ' + FLIGHT.rearedPer
             + ' × reared alates) × weather × lasting multipliers' + (chamberShown(s, 'deep_vault') ? ' × Deep Vault' : '') + ', rounded down. Summer gives better flight weather.' },
           { box: { title: 'Your current values', kv: box } },
+          { note: flightDayText() },   // C210: what Flight Day is
           { h: 'Resets and keeps' },
           { kv: [['Resets', FLIGHT_RESETS.join('; ') + '.'], ['Keeps', FLIGHT_KEEPS.join('; ') + '.']] },
           traitLevel(s, 'brood_bank') > 0 ? { note: 'Brood Bank keeps a share of your adults through the Flight.' } : null,
@@ -1742,4 +1790,141 @@ export function matchesQuery(text, query) {
   if (!words.length) return true;
   const t = String(text || '').toLowerCase();
   return words.every((w) => t.includes(w));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// C210: search ranking and highlighting
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Lower-case query words. */
+export function queryWords(query) {
+  return String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/** Escape a string for a RegExp. */
+function reEsc(w) {
+  return w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Match quality of one word in a lower-case text: 3 whole word, 2 word prefix, 1 anywhere, 0 absent. */
+export function matchQuality(text, w) {
+  if (!w || !text || text.indexOf(w) < 0) return 0;
+  const e = reEsc(w);
+  if (new RegExp('(^|[^\\p{L}\\p{N}])' + e + '($|[^\\p{L}\\p{N}])', 'u').test(text)) return 3;
+  return new RegExp('(^|[^\\p{L}\\p{N}])' + e, 'u').test(text) ? 2 : 1;
+}
+
+/** Field weights of the ranking: an entry title outranks headings and keywords, which outrank body text. */
+export const SEARCH_WEIGHTS = Object.freeze({ title: 100, heading: 30, body: 10 });
+
+/** Title, heading-like text (keywords, sub-headings, table heads, box titles, key labels) and body text of an entry. */
+export function entryFields(entry, s, d) {
+  const heading = [entry.kw || ''];
+  const body = [];
+  for (const b of arr(entry.blocks)) {
+    if (!b) continue;
+    if (b.p) body.push(textOf(b.p, s, d));
+    if (b.note) body.push(b.note);
+    if (b.h) heading.push(b.h);
+    for (const t of arr(b.list)) body.push(textOf(t, s, d));
+    for (const [k, v] of arr(b.kv)) { heading.push(k); body.push(textOf(v, s, d)); }
+    if (b.table) { heading.push(...arr(b.table.head)); for (const r of arr(b.table.rows)) for (const c of r) body.push(textOf(c, s, d)); }
+    if (b.box) { heading.push(b.box.title); for (const [k, v] of arr(b.box.kv)) { heading.push(k); body.push(textOf(v, s, d)); } }
+  }
+  return { title: String(entry.title || '').toLowerCase(), heading: heading.join(' \n ').toLowerCase(), body: body.join(' \n ').toLowerCase() };
+}
+
+/**
+ * Whether an entry is about something the player has right now (a built chamber, a job with workers, adults of a
+ * caste, a source on the map, a living rival, a stocked resource, research owned in the branch): those rank higher.
+ * @param {Object} s
+ * @param {string} id entry id
+ * @returns {boolean}
+ */
+export function entryActive(s, id) {
+  if (!s || !s.run || typeof id !== 'string') return false;
+  const [kind, x] = id.split(':');
+  const R = s.run;
+  switch (kind) {
+    case 'chamber': return arr(R.nest && R.nest.chambers).some((c) => c && c.type === x);
+    case 'job': return num(obj(R.colony && R.colony.jobs)[x]) > 0;
+    case 'caste': return x === 'queen' || num(obj(R.colony && R.colony.adults)[x]) > 0;
+    case 'source': return arr(R.surface && R.surface.sources).some((c) => c && c.type === x && arr(R.surface.revealed)[c.hex] === 1);
+    case 'rival': return arr(R.rivals && R.rivals.list).some((r) => r && r.type === x && r.alive && r.sighted);
+    case 'res': return num(obj(R.res)[x]) > 0;
+    case 'research': return Object.keys(obj(R.research)).some((r) => R.research[r] && RESEARCH[r] && RESEARCH[r].branch === x);
+    default: return false;
+  }
+}
+
+/** Score multiplier for an active entry (entryActive). */
+export const ACTIVE_BOOST = 1.25;
+
+/**
+ * Relevance of an entry for a query (0 = it does not match every word). Per word: the best of title / heading / body
+ * weight × match quality (whole word 3 > prefix 2 > substring 1); the whole query in the title adds a bonus (exactly
+ * the title: more); active entries (entryActive) × ACTIVE_BOOST.
+ * @param {Object} entry built entry
+ * @param {Object} s
+ * @param {Object} d
+ * @param {string} query
+ * @param {{ active?: boolean }} [o]
+ * @returns {number}
+ */
+export function scoreEntry(entry, s, d, query, o = {}) {
+  const words = queryWords(query);
+  if (!entry || !words.length) return 0;
+  const f = entryFields(entry, s, d);
+  let score = 0;
+  for (const w of words) {
+    const best = Math.max(SEARCH_WEIGHTS.title * matchQuality(f.title, w), SEARCH_WEIGHTS.heading * matchQuality(f.heading, w),
+      SEARCH_WEIGHTS.body * matchQuality(f.body, w));
+    if (!best) return 0;
+    score += best;
+  }
+  const phrase = words.join(' ');
+  if (f.title === phrase) score += 1000;
+  else if (words.length > 1 && f.title.includes(phrase)) score += 200;
+  return o.active ? score * ACTIVE_BOOST : score;
+}
+
+/**
+ * Entries ranked by scoreEntry, best first (ties keep their Manual order); non-matching ones dropped.
+ * @param {Object[]} entries built entries in Manual order
+ * @param {Object} s
+ * @param {Object} d
+ * @param {string} query
+ * @returns {Array<{ entry: Object, score: number }>}
+ */
+export function rankEntries(entries, s, d, query) {
+  const out = [];
+  arr(entries).forEach((e, i) => {
+    if (!e) return;
+    const score = scoreEntry(e, s, d, query, { active: entryActive(s, e.id) });
+    if (score > 0) out.push({ entry: e, score, i });
+  });
+  return out.sort((a, b) => b.score - a.score || a.i - b.i).map(({ entry, score }) => ({ entry, score }));
+}
+
+/**
+ * Split a text into plain and matched pieces for highlighting ([{ t, hit }]); case-insensitive, longest words first.
+ * @param {string} text
+ * @param {string[]} words lower-case query words
+ * @returns {Array<{ t: string, hit: boolean }>}
+ */
+export function highlightParts(text, words) {
+  const str = String(text ?? '');
+  const ws = arr(words).filter(Boolean).slice().sort((a, b) => b.length - a.length);
+  if (!ws.length || !str) return [{ t: str, hit: false }];
+  const re = new RegExp('(' + ws.map(reEsc).join('|') + ')', 'gi');
+  const out = [];
+  let last = 0;
+  for (let m = re.exec(str); m; m = re.exec(str)) {
+    if (m.index > last) out.push({ t: str.slice(last, m.index), hit: false });
+    out.push({ t: m[0], hit: true });
+    last = m.index + m[0].length;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  if (last < str.length) out.push({ t: str.slice(last), hit: false });
+  return out;
 }

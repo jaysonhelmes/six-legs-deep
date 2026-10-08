@@ -445,26 +445,54 @@ function trackSource(s, id, occ, srcUid, objUid) {
     drop: 0, trailed: false });
 }
 
+/**
+ * C221: spawn an event source the player is asked to draw a trail to (fallen fruit, picnic, termite swarm) only on a
+ * revealed hex a trail can reach (trails.reachDist), off rival land when possible: first in the event's ring band,
+ * then anywhere from ring 2 out. Returns the new source uid, or 0 (the event then does not happen).
+ */
+function spawnTrailTarget(s, d, type, def, extra = {}) {
+  let reach = null;
+  try {
+    reach = trails.reachDist(s, d);
+  } catch {
+    reach = null;
+  }
+  if (!reach) return 0;
+  const base = { revealed: true, reach, ...extra };
+  const tries = [
+    { rMin: def.num.rMin, rMax: def.num.rMax, noRival: true },
+    { rMin: def.num.rMin, rMax: def.num.rMax },
+    { rMin: 2, rMax: 99, noRival: true },
+    { rMin: 2, rMax: 99 },
+  ];
+  for (const t of tries) {
+    const uid = num(surface.spawnSource(s, d, type, -1, { ...base, ...t }));
+    if (uid > 0) return uid;
+  }
+  return 0;
+}
+
 /** Spawn behaviour of every event: (s, d, def, occ, env) → true when the event happened. */
 const SPAWN = {
   ev_fallen_fruit(s, d, def, occ) {
-    const uid = num(surface.spawnSource(s, d, 'fallen_fruit', -1, { rMin: def.num.rMin, rMax: def.num.rMax }));
+    const uid = spawnTrailTarget(s, d, 'fallen_fruit', def);
     const src = uid > 0 ? findSrc(s, uid) : null;
-    if (src) {
-      const obj = addObj(s, 'fruit', src.hex, -1, -1, { occ, src: uid });
-      trackSource(s, def.id, occ, uid, obj);
-    }
+    if (!src) return false;   // C221: nowhere a trail can reach: skip the event
+    const obj = addObj(s, 'fruit', src.hex, -1, -1, { occ, src: uid });
+    trackSource(s, def.id, occ, uid, obj);
     return true;
   },
   ev_picnic_spill(s, d, def, occ) {
-    const uid = num(surface.spawnSource(s, d, 'picnic_spill', -1, { rMin: def.num.rMin, rMax: def.num.rMax }));
-    if (uid > 0 && findSrc(s, uid)) trackSource(s, def.id, occ, uid, 0);
+    const uid = spawnTrailTarget(s, d, 'picnic_spill', def);
+    if (!(uid > 0 && findSrc(s, uid))) return false;
+    trackSource(s, def.id, occ, uid, 0);
     return true;
   },
   ev_termite_swarm(s, d, def, occ) {
-    const uid = num(surface.spawnSource(s, d, 'termite_swarm', -1, { rMin: def.num.rMin, rMax: def.num.rMax, ttl: def.num.sec }));
+    const uid = spawnTrailTarget(s, d, 'termite_swarm', def, { ttl: def.num.sec });
     const src = uid > 0 ? findSrc(s, uid) : null;
-    if (src) addObj(s, 'termite_swarm', src.hex, -1, def.num.sec, { occ, src: uid });
+    if (!src) return false;
+    addObj(s, 'termite_swarm', src.hex, -1, def.num.sec, { occ, src: uid });
     return true;
   },
   ev_seed_mast_year(s, d, def) {
@@ -968,6 +996,7 @@ function claimFind(s, d, o, env) {
   if (o.kind === 'fossil_cache') {
     const got = grant(s, d, 'insight', incomeSeconds(d, 'insight', f.insightSec, f.insightMin));
     env.emit('findClaimed', { kind: o.kind, res: 'insight', amount: got, text: 'Fossil cache: +' + fmtOutcomeNum(got) + ' insight.' });
+    env.emit('objectGain', { kind: o.kind, hex: o.hex, res: 'insight', amount: num(got) });   // C223
   } else {
     addEffect(s, { id: 'find_lost_queen', stat: 'lay', mult: f.layMult, t: f.laySec });
     env.emit('findClaimed', { kind: o.kind, res: null, amount: 0,
@@ -1366,7 +1395,9 @@ export const handlers = {
       removeObjs(s, (x) => x.uid === o.uid);
       const occ = num(o.data && o.data.occ);
       if (o.kind === 'rival_alate') {
-        grantFoodSec(s, d, EVENTS.ev_rival_mating_flight.num.foodSec, 0);
+        const got = grantFoodSec(s, d, EVENTS.ev_rival_mating_flight.num.foodSec, 0);
+        // C223: the map shows "+X food" over the caught alate, like a hand-foraged crumb
+        env.emit('objectGain', { kind: o.kind, hex: o.hex, res: 'food', amount: num(got) });
       } else if (o.kind === 'golden_aphid') {
         const n = EVENTS.ev_golden_aphid.num;
         addEffect(s, { id: 'ev_golden_aphid', stat: 'honeydew', mult: n.mult, t: n.buffSec });

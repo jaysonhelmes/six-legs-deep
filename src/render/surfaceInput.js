@@ -378,7 +378,10 @@ export function attachSurfaceInput(canvas, renderer, { game, ui, bridge } = {}) 
         }
         case 'moveAphids': {
           const res = act('moveAphids', { src: tool.src, hex }, cx, cy);
-          if (res.ok) setUI(ui, { tool: null });
+          if (res.ok) {
+            setUI(ui, { tool: null });
+            call(bridge, 'toast', 'Aphid colony moved: its trail now leads to the new hex.', 'good');   // C237
+          }
           return;
         }
         case 'tournament': {

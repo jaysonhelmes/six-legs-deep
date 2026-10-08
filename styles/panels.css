@@ -1366,3 +1366,106 @@ p.planned-wait { margin: 2px 0 4px; }
 .flow-out .flow-bar-fill { background: var(--danger); opacity: 0.75; }
 .flow-out .flow-val { color: var(--text-2); }
 .flow-none { color: var(--text-3); }
+
+/* C234: Settings → Sound */
+.sec-sound .sound-body { display: grid; gap: 4px; padding-left: 4px; }
+.sec-sound .sound-cats { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.sec-sound .sound-cats .toggle-row { padding: 3px 0; }
+.sec-sound .btn-row { margin-top: 4px; }
+
+/* C229 foldable panel sections: click the heading to fold / unfold (remembered per browser) */
+.sec-title.sec-toggle { cursor: pointer; user-select: none; border-radius: var(--r-sm); }
+.sec-title.sec-toggle:hover .sec-chev, .sec-title.sec-toggle:focus-visible .sec-chev { color: var(--text); }
+.sec-title.sec-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sec-chev { display: inline-block; width: 0.9em; font-size: var(--fs-sm); color: var(--text-3); }
+.sec.collapsed { padding-bottom: 4px; }
+.sec.collapsed > .sec-title { margin-bottom: 0; }
+.sec.collapsed > :not(.sec-title) { display: none !important; }
+/* C230 job step: "Per click 1 · 10 · 100 · Max"; the +/- buttons show the step */
+.job-step { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.job-step-label { font-size: var(--fs-xs); color: var(--text-3); }
+.job-step .seg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.job-btns .btn-step { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* C231 nurse cap: count above the useful maximum */
+.job-cap.over { color: var(--danger); font-weight: 650; }
+/* C233 caste upkeep; C232 alate queue cost and the Flight Day line */
+.caste-goal-upkeep, .army-upkeep { font-variant-numeric: tabular-nums; }
+.rear-queue-cost { margin-top: 4px; }
+.ff-extra { display: block; margin-top: 2px; font-style: italic; }/* C212 Build list: cost with icons on the Level button, ▲ affordable mark, Hide maxed toggle */
+.btn-cheapest .cheap-cost { display: inline-flex; gap: 6px; margin-left: 5px; }
+.btn-cheapest .cheap-cost .cost-part { gap: 2px; }
+.chamber-row .btn-cheapest { max-width: none; }
+.up-mark { color: var(--good); font-size: 10px; margin-left: 4px; }
+.hide-maxed { margin: 2px 0 4px; }
+
+/* C207–C211: explanations (war action note, Map help boxes, trail legend, research search, Manual search marks) */
+.war-kind-note { color: var(--text-2); background: var(--bg-2); border-left: 3px solid var(--line); padding: 4px 8px; border-radius: var(--r-sm); }
+.help-box { margin: 6px 0; border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 2px 8px; background: var(--bg-2); }
+.help-box > summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); padding: 3px 0; }
+.help-list { margin: 2px 0 6px; padding-left: 18px; color: var(--text-2); font-size: var(--fs-sm); }
+.help-list li { margin: 3px 0; }
+.trail-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin: 4px 0 6px; font-size: var(--fs-sm); }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+.legend-swatch { display: inline-block; width: 18px; height: 4px; border-radius: 2px; }
+.legend-note { flex-basis: 100%; margin: 2px 0 0; }
+.research-search { width: 100%; margin: 4px 0; }
+.tech-branch-tag[hidden] { display: none; }
+.tech-branch-tag { display: block; font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.tech-col-list.search-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+.manual mark, .manual-hit { background: rgba(255, 210, 63, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
+.manual-hit-sec { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 2px; }
+
+/* C202 (new-player pacing): the labelled first-load nest inset and the one-line feature callout */
+.inset-label { display: none; }
+#app[data-inset='true'] .inset-label {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  background: rgba(20, 14, 8, 0.82);
+  border-bottom: 1px solid rgba(242, 199, 108, 0.3);
+  color: #f6ead2;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.inset-label-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inset-expand { flex: none; }
+#app:is([data-layout='narrow'], [data-layout='medium']) .inset-label-sub { display: none; }
+.callout {
+  position: absolute;
+  z-index: 6;
+  top: 52px;
+  left: 16px;
+  right: 16px;
+  margin: 0 auto;
+  width: fit-content;
+  max-width: min(560px, calc(100% - 32px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: rgba(20, 14, 8, 0.92);
+  border: 1px solid rgba(242, 199, 108, 0.45);
+  color: #f6ead2;
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  box-shadow: var(--shadow-soft);
+  animation: reveal-in 0.4s ease-out both;
+}
+.callout[hidden] { display: none; }
+.callout-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px rgba(242, 199, 108, 0.25); }
+.callout-text { min-width: 0; }
+.callout-ok { flex: none; }
+#app[data-layout='narrow'] .callout { top: 78px; max-width: calc(100% - 2 * var(--gutter)); }
+
+/* C219 Colony History: chamber colour legend */
+.history-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 8px; font-size: var(--fs-sm); color: var(--text-2); }
+.history-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.history-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(0,0,0,0.5); }

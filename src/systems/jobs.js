@@ -95,7 +95,27 @@ export function idleMinors(s) {
 }
 
 /**
- * [q] Most workers the job can hold: gardener → d.stats.gardenerSlots; herder → Σ caps of the aphid colonies on herder
+ * [q] C231: most nurses that still speed brood up. Brood time divides by 1 + min(maxPerSlot, (nurses + 1) / slots)
+ * (stats.nurseTerm; the queen is the "+ 1"), so past maxPerSlot × slots − 1 nurses an extra nurse changes nothing:
+ * ceil(maxPerSlot × slots − 1), never below Field Triage's nurse threshold once it is researched (its only other use).
+ * Infinity when d has no brood-slot stat.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {number}
+ */
+export function nurseCap(s, d) {
+  const slots = d && d.stats ? num(d.stats.broodSlots, NaN) : NaN;
+  if (!Number.isFinite(slots)) return Infinity;
+  let cap = Math.max(0, Math.ceil(JOBS.nurse.fx.maxPerSlot * Math.max(0, slots) - 1 - 1e-6));
+  if (s && s.run && s.run.research && s.run.research.field_triage && own(RESEARCH, 'field_triage') && RESEARCH.field_triage.fx) {
+    cap = Math.max(cap, num(RESEARCH.field_triage.fx.nurses));
+  }
+  return cap;
+}
+
+/**
+ * [q] Most workers the job can hold: gardener → d.stats.gardenerSlots; nurse → nurseCap (C231: 4 per brood slot, the
+ * queen counting as one); herder → Σ caps of the aphid colonies on herder
  * trails (capPerLevel × level, ×herderCap with aphid_shepherding); other jobs Infinity; a locked or unknown job 0.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
@@ -104,7 +124,9 @@ export function idleMinors(s) {
  */
 export function jobCap(s, d, job) {
   if (!jobUnlocked(s, job)) return 0;
+  if (job === 'leafcutter' && !leavesUsable(d)) return 0;   // C238: no leaf storage yet → no leafcutters
   if (job === 'gardener') return clampNum(num(d && d.stats ? d.stats.gardenerSlots : 0));
+  if (job === 'nurse') return nurseCap(s, d);
   if (job === 'herder') {
     const sh = s.run.research.aphid_shepherding && own(RESEARCH, 'aphid_shepherding') && RESEARCH.aphid_shepherding.fx
       ? num(RESEARCH.aphid_shepherding.fx.herderCap, 1) : 1;
@@ -119,6 +141,26 @@ export function jobCap(s, d, job) {
     return clampNum(cap);
   }
   return Infinity;
+}
+
+/**
+ * [q] C238: leaves have a use once a Fungus Garden stores them (d.stats.leafCap > 0). Before that, leafcutting is
+ * researched but every leaf carried home would be thrown away, so the leafcutter job holds no one (jobCap 0; assigning
+ * one is refused with 'requirements:garden'), and leafcutters already at work return to foraging.
+ * @param {import('../core/types.js').Derived} d
+ * @returns {boolean}
+ */
+export function leavesUsable(d) {
+  return num(d && d.stats ? d.stats.leafCap : 0) > 0;
+}
+
+/** C238: leafcutters with nowhere to put their leaves (no Fungus Garden) go back to foraging. */
+function releaseLeafcutters(s, d) {
+  const col = s.run.colony;
+  const n = num(col.jobs.leafcutter);
+  if (!(n > 0) || leavesUsable(d)) return;
+  col.jobs.leafcutter = 0;
+  col.jobs.forager = clampNum(num(col.jobs.forager) + n);
 }
 
 /**
@@ -226,7 +268,7 @@ export function effectiveTargets(s) {
   return out;
 }
 
-/** Most nurses that still speed brood up: JOBS.nurse.fx.maxPerSlot per brood slot (Infinity without the stat). */
+/** Nurses at which brood speed stops rising: JOBS.nurse.fx.maxPerSlot per brood slot, the queen included (Infinity without the stat). */
 function usefulNurses(d) {
   const slots = d && d.stats ? num(d.stats.broodSlots, NaN) : NaN;
   return Number.isFinite(slots) ? JOBS.nurse.fx.maxPerSlot * Math.max(0, slots) : Infinity;
@@ -235,12 +277,11 @@ function usefulNurses(d) {
 /**
  * Set jobs = effective targets × available minors (available = minors − militia). The pool is min(1, Σ targets) ×
  * available; a job's share above its cap (herder, gardener) and the share of a locked job go to foragers (C94), so
- * they are worked instead of left idle. The bottleneck bias never adds nurses past the useful maximum (4 per slot).
+ * they are worked instead of left idle. Nurses never pass the useful maximum (jobCap → nurseCap, C231).
  */
 function assignByTargets(s, d) {
   const col = s.run.colony;
   const tg = effectiveTargets(s);
-  const base = cleanTargets(col.jobTargets);
   const avail = clampNum(num(col.adults.minor) - num(col.militia));
   let tSum = 0;
   for (const j of JOB_ORDER) tSum += tg[j];
@@ -250,8 +291,7 @@ function assignByTargets(s, d) {
   for (const j of JOB_ORDER) {
     const want = avail * tg[j] * scale;
     if (j === 'forager') { out[j] = want; continue; }
-    let cap = jobUnlocked(s, j) ? jobCap(s, d, j) : 0;
-    if (j === 'nurse' && tg.nurse > base.nurse + EPS) cap = Math.min(cap, Math.max(avail * base.nurse * scale, usefulNurses(d)));
+    const cap = jobUnlocked(s, j) ? jobCap(s, d, j) : 0;   // C231: the nurse cap (useful maximum) bounds targets and bias alike
     out[j] = Math.min(want, cap);
     surplus += want - out[j];
   }
@@ -342,6 +382,7 @@ function updateBias(s, d, n) {
 export function tick(s, d, dt, env) {
   enforce(s);
   if (!(dt > 0)) return;
+  releaseLeafcutters(s, d);   // C238 (real ticks only: a zero-time derive pass may not have the nest's leaf cap yet)
   const col = s.run.colony;
   if (!col.thresholdJobs && col.jobBias !== undefined) delete col.jobBias;
   if (!col.autoJobs && !col.thresholdJobs) return;
@@ -377,6 +418,7 @@ export const handlers = {
       if (!ok(from) || !ok(to) || from === to) return 'invalid';
       if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return 'invalid';
       if (to !== 'idle' && !jobUnlocked(s, to)) return 'locked';
+      if (to === 'leafcutter' && !leavesUsable(d)) return 'requirements:garden';   // C238
       const avail = from === 'idle' ? idleMinors(s) : num(s.run.colony.jobs[from]);
       if (!(avail > EPS)) return 'invalid:empty';
       if (to !== 'idle' && !(jobCap(s, d, to) - num(s.run.colony.jobs[to]) > EPS)) return 'max';
@@ -408,6 +450,7 @@ export const handlers = {
           const v = m[j];
           if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return 'invalid';
           if (v > 0 && !jobUnlocked(s, j)) return 'locked';
+          if (v > 0 && j === 'leafcutter' && !leavesUsable(d)) return 'requirements:garden';   // C238
           if (v > jobCap(s, d, j) + EPS) return 'max';
           total += v;
         } else total += num(col.jobs[j]);

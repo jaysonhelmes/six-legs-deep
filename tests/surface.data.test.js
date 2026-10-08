@@ -61,7 +61,8 @@ test('abilities, slots, trail, scout, territory and mound constants match DESIGN
   assert.equal(SCOUT.forceExp, 0.6);
   assert.equal(MAP.radiusBase, 8);
   assert.equal(TERRITORY.claimGrowth, 1.06);
-  assert.equal(MOUND.growth, 1.9);
+  assert.equal(MOUND.freeMax, 5);
+  assert.ok(MOUND.grow && MOUND.grow.adults.w > 0, "C220 growth weights");
   assert.ok(Object.isFrozen(TERRAIN) && Object.isFrozen(SOURCES.seed_patch.stock));
 });
 
@@ -82,16 +83,3 @@ test('claim cost sequence: claimed 0/10/30/50/80 → 10 / 18 / 57 / 184 / 1,059 
   assert.ok(Math.abs(surface.claimCost(s).pheromone - 9) < 1e-9);
 });
 
-test('mound cost: L1 300, L5 3,910, L10 96,800, L20 5.9e7 soil; null past COST_MAX', () => {
-  const s = newState();
-  const lv = (L) => {
-    s.run.surface.mound = L - 1;
-    return surface.moundCost(s).soil;
-  };
-  assert.equal(lv(1), 300);
-  assert.equal(Math.round(lv(5)), 3910);
-  assert.ok(Math.abs(lv(10) - 96800) < 10);
-  assert.ok(Math.abs(lv(20) / 5.9e7 - 1) < 0.01);
-  s.run.surface.mound = 2000;
-  assert.equal(surface.moundCost(s), null);
-});

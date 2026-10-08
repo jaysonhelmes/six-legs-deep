@@ -4,9 +4,10 @@
 
 import { GRID, CELL } from '../data/balance.js';
 import * as nestgeom from '../systems/nestgeom.js';
+import { COLS } from '../systems/nestgeom.js';
 import * as nestSys from '../systems/nest.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding (the active nest width)
 const ROWS = GRID.rows;
 const DRAG_PX = 5;
 const LONG_PRESS_MS = 550;
@@ -516,6 +517,10 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
         break;
       case 'pupa':
         call(bridge, 'openChooser', 'pupa', {});
+        break;
+      // C216: the "house full" pip opens the Build tab (Galleries add housing)
+      case 'housePip':
+        call(bridge, 'openTab', 'build');
         break;
       case 'mold':
         act('scrapeMold', { uid: t.id }, cx, cy);

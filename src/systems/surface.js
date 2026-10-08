@@ -12,7 +12,7 @@ import { ADAPTATIONS } from '../data/adaptations.js';
 import { HARDSHIPS, BOONS } from '../data/prestige.js';
 import { GEOM } from '../data/strata.js';
 import { HEX_COUNT, ringOf, neighbors, hexDist, hexIndex, countInRadius } from '../core/hex.js';
-import { grant, spend, canAfford, refund } from '../core/wallet.js';
+import { grant, spend, refund } from '../core/wallet.js';
 import { geoCost, clampNum } from '../core/math.js';
 import { randInt, weighted } from '../core/rng.js';
 import * as rivals from './rivals.js';   // rivalLand [q]
@@ -250,9 +250,11 @@ function rebuildTerritory(s, d, trunk) {
     }
   }
   let count = 0;
+  let perm = 0;
   for (let i = 0; i < HEX_COUNT; i++) {
     if (D.owned[i] === 0) continue;
     count++;
+    if (D.owned[i] !== OWN_TRAIL) perm++;
     for (const n of neighbors(i)) {
       if (D.rival[n] !== 0) {
         D.border[i] = 1;
@@ -261,6 +263,7 @@ function rebuildTerritory(s, d, trunk) {
     }
   }
   D.ownedCount = count;
+  D.permCount = perm;   // C222: owned hexes that are not trail-held (feeds t_peak)
   const frontier = [];
   for (let i = 0; i < nIn; i++) {
     if (S.revealed[i]) continue;
@@ -618,7 +621,10 @@ export function tick(s, d, dt, env) {
   scoutTick(s, d, step, env);
   sourcesTick(s, d, step, env);
   channelTick(s, d, env);
-  s.run.tPeak = Math.max(num(s.run.tPeak), num(d.surface.ownedCount));
+  if (dt > 0) moundTick(s, d, env);   // C220 (a zero-time derive pass after load never changes the save)
+  // C222: peak territory counts permanent land only (auto radius, claims, conquests); hexes held only by a trail
+  // (Trunk Trails, C162) are temporary and do not raise t_peak.
+  s.run.tPeak = Math.max(num(s.run.tPeak), num(d.surface.permCount, num(d.surface.ownedCount)));
   // ARCH-R: "longest trail (hexes)" counted as hex steps from origin to source (path.length − 1).
   let longest = num(s.meta.stats.longestTrail);
   for (const t of S.trails) if (Array.isArray(t.path)) longest = Math.max(longest, t.path.length - 1);
@@ -686,12 +692,105 @@ export function canClaim(s, d, hex) {
 }
 
 /**
- * Soil cost of the next Mound level (300 × 1.9^(L−1) for level L), or null at MAX.
+ * C220: the Mound is no longer bought with soil (it grows with the colony, moundGrowth). Kept for old callers: always
+ * null ("nothing to buy").
  * @param {import('../core/types.js').State} s
- * @returns {import('../core/types.js').Cost|null}
+ * @returns {null}
  */
-export function moundCost(s) {
-  return geoCost({ soil: MOUND.base }, MOUND.growth, Math.max(0, num(s.run.surface.mound)));
+export function moundCost(s) { // eslint-disable-line no-unused-vars
+  return null;
+}
+
+/** Summed levels of the active chambers (the Mound's "chambers" input, C220). */
+function chamberLevels(s) {
+  const list = s.run.nest && Array.isArray(s.run.nest.chambers) ? s.run.nest.chambers : [];
+  let n = 0;
+  for (const c of list) if (c && c.status === 'active') n += Math.max(0, num(c.level));
+  return n;
+}
+
+/**
+ * [q] C220: the Mound's growth (DESIGN §8.7). value = Σ w × log10(1 + x / div) over MOUND.grow (peak adults this run,
+ * summed active chamber levels, cells dug this run); the earned level is floor(value), capped at MOUND.freeMax
+ * without mound_building; `level` never falls below the stored level (old saves keep theirs as a floor). `prog` is
+ * the fraction toward the next level (0 when capped), `shown` the smooth value the renderer draws (level + prog).
+ * @param {import('../core/types.js').State} s
+ * @returns {{ level: number, earned: number, value: number, next: number, prog: number, shown: number, cap: number,
+ *   capped: boolean, active: boolean, parts: { adults: number, chambers: number, dug: number },
+ *   inputs: { adults: number, chambers: number, dug: number } }}
+ */
+export function moundGrowth(s) {
+  const G = MOUND.grow;
+  const inputs = { adults: Math.max(0, num(s.run.stats && s.run.stats.maxAdults)), chambers: chamberLevels(s),
+    dug: Math.max(0, num(s.run.stats && s.run.stats.cellsDug)) };
+  const parts = { adults: 0, chambers: 0, dug: 0 };
+  let value = 0;
+  for (const k of ['adults', 'chambers', 'dug']) {
+    const g = G[k];
+    parts[k] = g.w * Math.log10(1 + inputs[k] / g.div);
+    value += parts[k];
+  }
+  value = clampNum(value);
+  const cap = owns(s, 'mound_building') ? Infinity : MOUND.freeMax;
+  const stored = Math.max(0, Math.floor(num(s.run.surface.mound)));
+  const active = unlocked(s, 'mound');
+  const earned = active ? Math.min(cap, Math.floor(value + 1e-9)) : 0;
+  const level = Math.max(stored, earned);
+  const capped = active && level >= cap && value >= cap + 1 - 1e-9;
+  const prog = !active || level >= cap ? 0 : Math.max(0, Math.min(1, value - level));
+  return { level, earned, value, next: level + 1, prog, shown: level + prog, cap, capped, active, parts, inputs };
+}
+
+/** C220: raise the stored Mound level to what the colony has earned (one moundLeveled per level). */
+function moundTick(s, d, env) {
+  const S = s.run.surface;
+  const g = moundGrowth(s);
+  while (num(S.mound) < g.level) {
+    S.mound = Math.max(0, Math.floor(num(S.mound))) + 1;
+    env.emit('moundLeveled', { level: S.mound });
+  }
+}
+
+/**
+ * [q] Reason an aphid colony (source uid `srcUid`) cannot move to `hex` now, or null (DESIGN §8.4: with
+ * aphid_shepherding it moves onto an owned hex holding a flower patch or leaf plant; one colony per hex). The
+ * moveAphids validator; C237: the map's "Move aphid colony…" tool tints the hexes this accepts.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} srcUid
+ * @param {number} hex
+ * @returns {import('../core/types.js').ReasonCode|null}
+ */
+export function canMoveAphids(s, d, srcUid, hex) {
+  if (!owns(s, 'aphid_shepherding')) return 'locked';
+  if (!Number.isInteger(srcUid)) return 'invalid';
+  const src = sourceByUid(s, srcUid);
+  if (!src) return 'notFound';
+  if (src.type !== 'aphid_colony') return 'invalid';
+  if (!isHex(hex) || hex >= hexesIn(s) || hex === src.hex) return 'invalid';
+  if (!d.surface.owned[hex]) return 'invalid:owned';
+  const here = s.run.surface.sources.filter((x) => x.hex === hex && !(x.data && x.data.dormant));
+  // ARCH-R: "owned plant hex" read as an owned hex holding a flower_patch or leaf_plant source; the colony then shares it.
+  if (!here.some((x) => x.type === 'flower_patch' || x.type === 'leaf_plant')) return 'invalid:target';
+  if (here.some((x) => x.type === 'aphid_colony')) return 'blocked';
+  return null;
+}
+
+/**
+ * [q] C237: every hex the aphid colony `srcUid` could move to now (canMoveAphids === null), ascending.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} srcUid
+ * @returns {number[]}
+ */
+export function aphidTargets(s, d, srcUid) {
+  if (canMoveAphids(s, d, srcUid, -1) !== 'invalid') return [];   // locked / not an aphid colony
+  const out = new Set();
+  for (const x of s.run.surface.sources) {
+    if (!x || (x.type !== 'flower_patch' && x.type !== 'leaf_plant')) continue;
+    if (canMoveAphids(s, d, srcUid, x.hex) === null) out.add(x.hex);
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 /**
@@ -776,10 +875,17 @@ export function spawnSource(s, d, type, hex = -1, opts = {}) {
     const entries = [];
     const lo = rMin <= 0 ? 0 : countInRadius(rMin - 1);
     const hi = countInRadius(rMax);
+    // C221: opts.revealed → revealed hexes only; opts.reach (trails.reachDist) → hexes a trail can reach; opts.noRival →
+    // not on rival land (d.surface.rival)
+    const reach = o.reach && typeof o.reach.length === 'number' ? o.reach : null;
+    const rival = o.noRival && d && d.surface && d.surface.rival ? d.surface.rival : null;
     for (let i = lo; i < hi; i++) {
       const code = S.terrain[i];
       if (busy.has(i) || holes.has(i) || code === CODE.stone || code === CODE.puddle) continue;
       if (want >= 0 && code !== want) continue;
+      if (o.revealed && !S.revealed[i]) continue;
+      if (reach && !(reach[i] < Infinity)) continue;
+      if (rival && rival[i] !== 0) continue;
       let w = 1;
       if (isPrey && logs.some((g) => hexDist(g, i) <= (lfx.preyRadius ?? 0))) w = lfx.prey ?? 1;
       entries.push({ i, w });
@@ -921,17 +1027,15 @@ export function addEntrance(s, d, kind, hex, col, ref) {
 }
 
 /**
- * Autobuyer step (WP7): buy one Mound level if allowed and affordable.
+ * Autobuyer step (WP7). C220: the Mound grows on its own (moundGrowth), so there is nothing to buy: always false.
+ * Kept so the automation category and old saves' autobuy settings stay valid.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {import('../core/types.js').Env} env
- * @returns {boolean} true if a level was bought
+ * @returns {boolean} false
  */
-export function autoMoundStep(s, d, env) {
-  const cmd = { type: 'buyMound' };
-  if (handlers.buyMound.validate(s, d, cmd) !== null) return false;
-  handlers.buyMound.apply(s, d, cmd, env);
-  return true;
+export function autoMoundStep(s, d, env) { // eslint-disable-line no-unused-vars
+  return false;
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -982,38 +1086,10 @@ export const handlers = {
     },
   },
 
-  /** buyMound {}: next Mound level for soil (levels above MOUND.freeMax need mound_building). */
-  buyMound: {
-    validate(s) {
-      if (!unlocked(s, 'mound')) return 'locked';
-      if (num(s.run.surface.mound) >= MOUND.freeMax && !owns(s, 'mound_building')) return 'requirements';
-      const cost = moundCost(s);
-      if (!cost) return 'max';
-      if (!canAfford(s, cost)) return 'cantAfford';
-      return null;
-    },
-    apply(s, d, cmd, env) {
-      if (!spend(s, moundCost(s))) return;
-      s.run.surface.mound += 1;
-      env.emit('moundLeveled', { level: s.run.surface.mound });
-    },
-  },
-
   /** moveAphids { src, hex }: move an aphid colony onto an owned flower/leaf hex (aphid_shepherding); its trails re-route. */
   moveAphids: {
     validate(s, d, cmd) {
-      if (!owns(s, 'aphid_shepherding')) return 'locked';
-      if (!Number.isInteger(cmd.src)) return 'invalid';
-      const src = sourceByUid(s, cmd.src);
-      if (!src) return 'notFound';
-      if (src.type !== 'aphid_colony') return 'invalid';
-      if (!isHex(cmd.hex) || cmd.hex >= hexesIn(s) || cmd.hex === src.hex) return 'invalid';
-      if (!d.surface.owned[cmd.hex]) return 'invalid:owned';
-      const here = s.run.surface.sources.filter((x) => x.hex === cmd.hex && !(x.data && x.data.dormant));
-      // ARCH-R: "owned plant hex" read as an owned hex holding a flower_patch or leaf_plant source; the colony then shares it.
-      if (!here.some((x) => x.type === 'flower_patch' || x.type === 'leaf_plant')) return 'invalid:target';
-      if (here.some((x) => x.type === 'aphid_colony')) return 'blocked';
-      return null;
+      return canMoveAphids(s, d, cmd.src, cmd.hex);
     },
     apply(s, d, cmd, env) {
       const S = s.run.surface;

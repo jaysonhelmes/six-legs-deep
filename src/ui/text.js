@@ -3,7 +3,7 @@
 // §10 events. Pure module (no DOM). Display names come from the data tables' `name` fields when present; the
 // fallbacks below keep the UI readable while a data table is still empty.
 
-import { CHAMBERS, ADJACENCY, ADJACENCY_ORDER } from '../data/chambers.js';
+import { CHAMBERS, ADJACENCY, ADJACENCY_ORDER, CHAMBER_RULES } from '../data/chambers.js';
 import { RESEARCH, BRANCHES } from '../data/research.js';
 import { ADAPTATIONS } from '../data/adaptations.js';
 import { COSMETICS, COSMETIC_SLOT_NAMES } from '../data/cosmetics.js';
@@ -20,8 +20,10 @@ import { GENOME, SPECIES } from '../data/genome.js';
 import { HARDSHIPS, SITES, BOONS, EDICTS, FLIGHT, AUTO_FLIGHT } from '../data/prestige.js';
 import { UNLOCKS } from '../data/unlocks.js';
 import { LAYERS, GEOM } from '../data/strata.js';
-import { TERRAIN } from '../data/surface.js';
-import { YEAR } from '../data/seasons.js';
+import { TERRAIN, TRAIL, TERRITORY } from '../data/surface.js';
+import { ACTIONS, REWARDS, RAIDS } from '../data/combat.js';
+import { CAPS } from '../data/economy.js';
+import { YEAR, SEASON_MODS } from '../data/seasons.js';
 import { DRAINAGE } from '../data/soilFeatures.js';
 import { fmt, fmtTime, fmtCount, fmtRate, fmtPct, fmtMult } from './format.js';
 import { ringOf } from '../core/hex.js';   // C184 source tooltips
@@ -117,7 +119,7 @@ export const RES_NAMES = Object.freeze({
 export const RES_TIPS = Object.freeze({
   food: 'Brought home by foragers. Eggs, chambers and upkeep spend it.',
   soil: 'Dug out by diggers. Pays for chamber levels and the Mound.',
-  insight: 'Earned by scouting and libraries. Spent on research.',
+  insight: 'Earned by scouting and Scent Libraries. Spent on research.',
   pheromone: 'Regenerates over time. Fuels Mark, Rally, Frenzy and claims.',
   chitin: 'From insects, hunts, battles, moults and Middens. Soldiers need it. Capped.',
   honeydew: 'Milked from aphids by herders. Feeds the queen and repletes.',
@@ -305,6 +307,7 @@ export const REASON_DETAILS = Object.freeze({
   // colony, jobs, research, seasons, prestige
   'invalid:garrison': 'Not that many in the garrison (ants out on the map are busy).',
   'invalid:total': 'Not enough workers for those jobs.',
+  'requirements:garden': 'Leafcutters need a Fungus Garden first: without one the leaves they bring home are wasted.',   // C238
   'invalid:sum': 'The shares add up to more than 100%.',
   'invalid:length': 'Season length must be ' + (YEAR.chronoMin % 60 === 0 && YEAR.chronoMax % 60 === 0
     ? YEAR.chronoMin / 60 + '–' + YEAR.chronoMax / 60 + ' minutes.' : fmtTime(YEAR.chronoMin) + '–' + fmtTime(YEAR.chronoMax) + '.'),
@@ -362,13 +365,13 @@ export const REASON_BY_COMMAND = Object.freeze({
   rerouteTrail: { blocked: 'No walkable route through those waypoints.' },
   moveAphids: { blocked: 'Aphids already live there.', invalid: 'Pick another hex for the aphids.',
     'invalid:owned': 'Aphids can only move onto your territory.', 'invalid:target': 'Needs a flower patch or leaf plant on your land.' },
-  buyMound: { requirements: 'Higher Mound levels need ' + nameOr(RESEARCH, 'mound_building', 'Mound Building') + ' research.' },
   rearAlate: { requirements: 'Needs an active Nuptial Chamber.' },
   dispatchGuard: { 'invalid:nest': 'Your garrison defends the nest on its own.' },
   // C185
   clearAntlion: { 'requirements:soldiers': 'Clearing the pit needs ' + ((EVENTS.ev_antlion_pit && EVENTS.ev_antlion_pit.num.soldiers) || 3)
     + ' soldiers at home (garrison).', notFound: 'The antlion pit is gone.' },
-  assignEscorts: { 'invalid:count': 'No soldiers at home to send as escorts.' },
+  assignEscorts: { 'invalid:count': 'No soldiers at home to send as escorts.',
+    max: 'A Lycaenid trail needs exactly 5 escorts: more add nothing.' },   // C236
   fly: { requirements: 'Flight requirements not met yet: see the checklist.' },
   supercolony: { requirements: 'Supercolony requirements not met yet: see the checklist.' },
   speciate: { requirements: 'Speciation requirements not met yet: see the checklist.' },
@@ -571,7 +574,7 @@ export const CHAMBER_TIPS = Object.freeze({
   granary: 'Stores food. Shallow hauls faster; deep is safer.',
   scent_library: 'Produces insight. Deeper and royal-adjacent is better.',
   midden: 'Fewer diseases, +2% output. Keep away from nurseries.',
-  barracks: '+8 soldier berths. Near an entrance: instant deploy.',
+  barracks: 'Soldier berths; ≤12 cells from an entrance: instant deploy, +10% home AP.',
   war_hall: '+4 supermajor berths per level. Deep: row 30 or lower.',
   carapace_store: 'Stores more chitin: raises the chitin cap.',
   carapace_workshop: 'More chitin from every source; recycles fallen soldiers.',
@@ -595,7 +598,10 @@ export const CHAMBER_ABOUT = Object.freeze({
   granary: 'Raises your food store. Shallow granaries shorten the haul; deep ones hold more and are safer from raids.',
   scent_library: 'Produces insight for research. It works better deep (gravel or lower) and next to the Royal Chamber.',
   midden: 'The colony\'s refuse heap: fewer diseases, a little more output and some chitin. Keep it away from nurseries and gardens.',
-  barracks: 'Berths for soldiers: +' + FXN('barracks', 'berths', 8) + ' per level, and more soldier attack. Near an entrance the garrison deploys at once.',
+  barracks: 'Berths for soldiers: +' + FXN('barracks', 'berths', 8) + ' per level, and soldier attack +' + Math.round(FXN('barracks', 'atk', 0.05) * 100)
+    + '% per level (up to +' + Math.round(FXN('barracks', 'atkMax', 0.5) * 100) + '%). Within ' + num0(GEOM && GEOM.barracksPath, 12)
+    + ' path cells of an entrance (the walk through your tunnels from the Barracks to the nearest entrance shaft) the garrison deploys at once and gets +'
+    + Math.round((FXN('barracks', 'homeAP', 1.1) - 1) * 100) + '% home AP: Army Power when it defends the nest against raids.',
   war_hall: 'Berths for supermajors: +' + FXN('war_hall', 'berths', 4) + ' per level. Every supermajor egg needs a free War Hall berth; it is dug deep.',
   carapace_store: 'Stacks of shed plates and husks: raises how much chitin the colony can hold (+' + FXN('carapace_store', 'chitinCap', 300)
     + ' at level 1, growing ×' + FXN('carapace_store', 'capGrowth', 1.6) + ' a level).',
@@ -747,15 +753,15 @@ export function linkText(link) {
 /** Adaptation effect tooltips. */
 export const ADAPT_TIPS = Object.freeze({
   quick_dispatch: '+1 food per click.',
-  strong_mandibles: 'Forager output +10% (additive).',
+  strong_mandibles: 'Forager output +10% a level; adds with other +% forage bonuses.',
   royal_feeding: '+0.05 eggs per second base lay rate.',
-  digging_claws: 'Dig +25% (additive).',
-  potent_trails: 'Forager output ×1.12.',
+  digging_claws: 'Dig work +25% a level: faster digging and more soil. Additive.',
+  potent_trails: 'Forager output ×1.12 per level (multiplies everything).',
   serrated_mandibles: 'Soldier and supermajor attack ×1.10.',
   thick_cuticle: 'Soldier and supermajor health ×1.10.',
   sweet_tooth: 'Honeydew ×1.15.',
   queens_feast: 'Lay rate ×1.1.',
-  long_legs: 'Trails lose less to distance.',
+  long_legs: 'Trails lose less to distance: navigation +0.25 a level.',
 });
 
 /** C200: Archive copy (Research tab, one permanent track per branch). */
@@ -769,7 +775,7 @@ export const ARCHIVE_TEXT = Object.freeze({
 export const RESEARCH_TIPS = Object.freeze({
   trail_memory: 'Forager ×1.25 and +1 trail slot.',
   scent_marking: 'Unlocks pheromone, Mark, Mass Recruit and hex claims.',
-  tandem_running: 'Trails reach further. Unlocks Long Legs.',
+  tandem_running: 'Navigation +1. Unlocks Long Legs (Adaptations tab): trails lose less to distance.',
   recruitment_pheromones: 'Forager ×1.75. Unlocks Rally.',
   double_bridge: 'Trails find shortcuts and strengthen twice as fast.',
   persistent_trails: 'Trails fade half as fast; higher maximum strength.',
@@ -792,7 +798,7 @@ export const RESEARCH_TIPS = Object.freeze({
   age_polyethism: 'Jobs assign themselves by preset ratios.',
   royal_pheromones: 'Lay rate ×1.5.',
   trophic_eggs: 'Eggs cost 30% less.',
-  thermal_brood_shuttling: 'Brood moves to the warmest nurseries first.',
+  thermal_brood_shuttling: 'Brood fills frost-safe nurseries first; no topsoil overheat; frost snaps spare brood.',
   nuptial_preparation: 'Nuptial Chamber and alate rearing. Required to fly.',
   response_thresholds: 'Automatic jobs follow the current bottleneck.',
   living_larders: 'Repletes and the Repletion Hall.',
@@ -800,7 +806,7 @@ export const RESEARCH_TIPS = Object.freeze({
   supermajors: 'Unlocks the supermajor caste.',
   aphid_husbandry: 'Herders, honeydew and Root Aphid Pens.',
   leafcutting: 'Unlocks the leafcutter job.',
-  aphid_shepherding: 'Move aphid colonies; herder capacity ×2.',
+  aphid_shepherding: 'Herder cap ×2. Move aphid colonies to owned flower or leaf hexes.',
   fungiculture: 'Fungus Gardens, gardeners, Nutrition and Fungal Brood.',
   lycaenid_clients: 'Lycaenid caterpillars appear for honeydew.',
   root_cultivation: 'Grow your own roots down into the nest for Root Aphid Pens.',
@@ -1061,7 +1067,7 @@ export const EVENT_COPY = Object.freeze({
   ev_queens_vigor: 'The queen glows with vigor: lay ×3 for 60 s.',
   ev_rival_mating_flight: 'Rival alates fill the sky: rivals weakened. Attack now!',
   ev_rival_queen_dies: 'A rival queen has died; that nest is weakened.',
-  ev_flight_day: 'Warm still air: perfect flight weather for 3 min.',
+  ev_flight_day: 'Warm, still air (a "flying ant day"): Nuptial Flights get ×1.5 alates for 3 min.',
   ev_golden_aphid: 'A golden aphid! Click it within 15 s.',
   ev_mole_tunnel: 'A mole tunnels through: free tunnels below.',
   ev_wandering_queen: 'A strange queen waits at the entrance.',
@@ -1120,13 +1126,188 @@ export const BATTLE_NAMES = Object.freeze({
 export const RAID_PHASES = Object.freeze({ warning: 'Incoming', trail: 'Trail fight', border: 'Border fight', gate: 'Gate fight', done: 'Over' });
 /** War action tooltips. */
 export const WAR_TIPS = Object.freeze({
-  raid: 'Hit 40% of defenders, no home bonus. Food and chitin.',
-  assault: 'Fight every defender. Victory conquers the nest.',
+  raid: 'Hit-and-run: ' + Math.round(num0(ACTIONS.raid && ACTIONS.raid.engage, 0.4) * 100) + '% of defenders, no home bonus. Food and chitin, no conquest.',
+  assault: 'All defenders, home bonus ×' + num0(ACTIONS.assault && ACTIONS.assault.home, 1.25) + '. Victory conquers the nest and its land.',
   hunt: 'Hunt the prey for food and chitin.',
   termite: 'Raid the termite mound for a big payout.',
   tournament: 'A bloodless display contest for a border hex.',
   bribe: 'Pay honeydew for a 5-minute truce.',
 });
+
+/**
+ * C207: what each war action is, in full, shown under the action buttons of the war-party form (Map → War and the
+ * right-click war chooser). Numbers from data/combat.js ACTIONS / REWARDS (raid = engage 0.4, home 1; assault = engage
+ * 1, home 1.25 or a fortress's 1.5, reduced by your supermajors' share of AP, rivals.effectiveHome).
+ */
+export const WAR_KIND_EXPLAIN = Object.freeze({
+  raid: 'Raid — a hit-and-run for loot. Your party fights only ' + Math.round(num0(ACTIONS.raid && ACTIONS.raid.engage, 0.4) * 100)
+    + '% of the nest\'s soldiers, with no home bonus for them. Win: food (' + num0(REWARDS.raidFoodSec, 30) + ' s of your food income × √tier) and '
+    + 'chitin for every enemy killed. The nest is not conquered: it keeps its land and its other soldiers, and can raid you back.',
+  assault: 'Assault — a full attack to conquer the nest. You fight every defender, and they fight at home: their Army Power ×'
+    + num0(ACTIONS.assault && ACTIONS.assault.home, 1.25) + ' (supermajors cancel part of this home bonus). Win: the nest falls, all its land becomes your '
+    + 'territory with an outpost entrance, and you take food (' + num0(REWARDS.conquestFoodSec, 120) + ' s of income × √tier), chitin, insight and captured workers.',
+  hunt: 'Hunt — kill the prey for food and chitin. The prey is gone afterwards.',
+  termite: 'Termite raid — break into the mound for a big payout of food and chitin. The mound recovers and can be raided again later.',
+  tournament: 'Tournament — a bloodless display contest. Choose a border hex on the map; the bigger display wins the hex.',
+});
+
+/**
+ * C207: the loot a won battle carried home ({ food, chitin, insight, minors } from combat.grantReward), as one line:
+ * "Loot carried home: +120 food, +8 chitin". '' when nothing was granted.
+ * @param {Object|null} loot
+ * @returns {string}
+ */
+export function lootText(loot) {
+  if (!loot || typeof loot !== 'object') return '';
+  const parts = [];
+  for (const [k, name] of [['food', 'food'], ['chitin', 'chitin'], ['insight', 'insight'], ['minors', 'captured workers']]) {
+    const v = num0(loot[k], 0);
+    if (v >= 0.5) parts.push('+' + (k === 'minors' ? fmtCount(Math.floor(v)) : fmt(v)) + ' ' + name);
+  }
+  return parts.length ? 'Loot carried home: ' + parts.join(', ') : '';
+}
+
+/** Plain number for rules text: up to two decimals, no padding ("3", "0.25", "1.5"). */
+export function plainNum(x) {
+  const v = Math.round(num0(x, 0) * 100) / 100;
+  return Math.abs(v) >= 1000 ? fmt(v) : String(v);
+}
+
+/**
+ * C208: the Map tab's "How trails work" help (also the Manual's Trails entry). Numbers from data/surface.js TRAIL;
+ * `dNav` = the colony's current navigation (surface.dNavFor), `sMax` = its strength cap (trails sMaxFor). Lines that
+ * would name unrevealed things can be toned down: o.research (name Tandem Running / Long Legs), o.jobs (name herders and
+ * leafcutters), o.soldiers (the chitin-priority line); each defaults to true.
+ * @param {{ dNav?: number, sMax?: number, research?: boolean, jobs?: boolean, soldiers?: boolean }} [o]
+ * @returns {string[]}
+ */
+export function trailHelpLines(o = {}) {
+  const fmt = plainNum;
+  const dNav = num0(o.dNav, num0(TRAIL.dNavBase, 3));
+  const sMax = num0(o.sMax, num0(TRAIL.sMax, 100));
+  const slope = Math.round(num0(TRAIL.slope, 0.35) * 100);
+  return [
+    'A trail sends foragers' + (o.jobs === false ? '' : ' (or herders, leafcutters)') + ' from an entrance to one source and back. Its row shows the workers on it and what it brings home per second.',
+    'Distance: every hex past the first makes a source ' + slope + '% richer, but each worker also walks longer, so it makes fewer round trips. '
+      + 'Distance efficiency = 1 ÷ (1 + (length − 1) ÷ navigation). Your navigation is ' + fmt(dNav) + ' (' + fmt(TRAIL.dNavBase) + ' at first; '
+      + (o.research === false ? 'upgrades' : 'Tandem Running, Long Legs and later research') + ' raise it). At low navigation a 9-hex trail pays about what a 1-hex trail pays per worker; higher navigation makes long trails pay more.',
+    'Travel time: the trail\'s length counts its ground (sand and other slow ground count as longer, garden paths as shorter) plus the haul down to food storage for trails '
+      + 'from the main entrance, so deep storage makes every main-entrance trail count as longer.',
+    'Strength (the pheromone bar): walking workers lay scent. Strength heads toward ' + fmt(TRAIL.sScale) + ' × workers ÷ (workers + ' + fmt(TRAIL.sEqK)
+      + ' × length): more workers make a stronger trail, and a long trail needs more workers for the same strength. Yield is ×(1 + strength ÷ ' + fmt(TRAIL.sScale)
+      + '): close to ×2 on a busy trail' + (sMax > num0(TRAIL.sScale, 100) ? ', up to ×' + fmt(1 + sMax / num0(TRAIL.sScale, 100)) + ' when Mark tops it up to the cap (' + fmt(sMax) + ')' : ' (the cap is ' + fmt(sMax) + '; Mark adds strength up to it)') + '. A trail with no workers fades: strength halves every ' + fmt(TRAIL.tHalf) + ' s.',
+    'Capacity: each source can use only so many workers (more as the colony grows); past that, extra workers add less and less.',
+    'Who goes where: workers you pin on a trail with − / + stay there. The rest are shared out a small batch at a time, each batch to the trail where it adds the most yield '
+      + 'right now, trails still under their capacity first.' + (o.soldiers === false ? '' : ' While chitin is short for soldier eggs, chitin trails are filled first ("chitin priority").'),
+    'Why far trails can yield less: with low navigation the walk eats the extra richness, and the same workers keep a long trail weaker than a short one.',
+  ];
+}
+
+/**
+ * C208: a trail's distance terms (d.surface.trails entry: rich, eff, dEff) and its strength's yield factor, e.g.
+ * "6 hexes (+0.8 haul to storage): richness ×2.75, distance efficiency ×0.37", "Strength 64: yield ×1.64".
+ * @param {Object} tr trail
+ * @param {Object} dt d.surface.trails entry
+ * @returns {string[]}
+ */
+export function trailDistanceLines(tr, dt) {
+  const out = [];
+  if (!tr || tr.job === 'lycaenid') return out;
+  const len = num0(tr.len, 0);
+  const dEff = num0(dt && dt.dEff, len);
+  const r2 = (x) => String(Math.round(x * 100) / 100);
+  if (dt && Number.isFinite(dt.rich) && Number.isFinite(dt.eff)) {
+    out.push(r2(len) + ' hex' + (len === 1 ? '' : 'es') + (dEff - len > 0.05 ? ' (+' + r2(dEff - len) + ' haul to storage)' : '')
+      + ': richness ×' + r2(dt.rich) + ', distance efficiency ×' + r2(dt.eff) + '.');
+  }
+  out.push('Strength ' + fmtCount(num0(tr.S, 0)) + ': yield ×' + r2(1 + num0(tr.S, 0) / num0(TRAIL.sScale, 100)) + '. More workers make it stronger; unused it fades.');
+  return out;
+}
+
+
+/**
+ * C208: trail colours on the Above map (render/surfaceRenderer.js trailColor; cosmetics recolour forager trails only).
+ * `swatch` names the palette key in render/palette.js SURFACE; `color` mirrors it (UI modules do not import render; a test
+ * keeps them equal).
+ */
+export const TRAIL_LEGEND = Object.freeze([
+  Object.freeze({ id: 'forager', swatch: 'trail', color: '#f3d9a4', label: 'Foragers', text: 'Pale gold: foragers bringing food (and chitin from dead insects). Trail-colour cosmetics recolour only these.' }),
+  Object.freeze({ id: 'herder', swatch: 'trailHerder', color: '#f0a830', label: 'Herders', text: 'Amber: herders milking aphids for honeydew.' }),
+  Object.freeze({ id: 'leafcutter', swatch: 'trailLeaf', color: '#7fd36a', label: 'Leafcutters', text: 'Green: leafcutters cutting leaves for the fungus.' }),
+  Object.freeze({ id: 'lycaenid', swatch: 'trailLycaenid', color: '#a99cf0', label: 'Lycaenid', text: 'Lavender, dashed: soldiers escorting a lycaenid caterpillar for honeydew.' }),
+]);
+/** C208: what the shape of a trail line means. */
+export const TRAIL_LINE_NOTE = 'Thicker line = more workers; brighter = stronger scent; dotted = paused (no way round a blocked hex); running light dashes = Rally.';
+
+/**
+ * C209: what owning land does (claim UI, hex tooltips while claiming, Manual). Numbers from data/surface.js TERRITORY,
+ * data/prestige.js FLIGHT.tPeakDiv and data/combat.js RAIDS.borderMult. Territory adds to forager output only
+ * (stats.js forage aAdd), in the same "+%" group as Strong Mandibles. Lines naming unrevealed systems can be left out:
+ * o.raids (raid warnings), o.flight (the Prestige tab), o.rivals (rival nests); each defaults to true.
+ * @param {{ raids?: boolean, flight?: boolean, rivals?: boolean }} [o]
+ * @returns {string[]}
+ */
+export function territoryBenefitLines(o = {}) {
+  const per = num0(TERRITORY.yieldPerHex, 0.005);
+  const max = num0(TERRITORY.yieldMax, 1);
+  return [
+    '+' + plainNum(per * 100) + '% forager output per owned hex (up to +' + Math.round(max * 100) + '% at ' + fmtCount(Math.round(max / per)) + ' hexes), added to Strong Mandibles\' +%.',
+    'Sources on your land yield ×' + num0(TERRITORY.ownedSource, 1.25) + '.',
+    o.raids === false ? '' : 'Trails that stay entirely inside your land cannot be raided.',
+    o.flight === false ? '' : 'Your peak territory this run raises the next Nuptial Flight: +' + plainNum(100 / num0(FLIGHT && FLIGHT.tPeakDiv, 400)) + '% alates per hex.',
+    o.rivals === false ? '' : 'Border hexes (your hexes touching rival land): a trail crossing one is ' + num0(RAIDS.borderMult, 2) + '× as likely to be picked for a trail raid.',
+  ].filter(Boolean);
+}
+
+/** C210: "+X%" vs "×Y" (Manual, upgrade-row tooltips). */
+export const BONUS_STACK_TIP = '“+X%” bonuses add together within their group before multiplying; “×Y” multiplies the whole total.';
+
+/**
+ * C210: Flight Day (data/events.js ev_flight_day: summer only, needs Nuptial Preparation, a flight-weather effect of
+ * ×num.w for num.sec; Flight weather W = the better of the season's flightW and this effect, prestige.js).
+ */
+export function flightDayText() {
+  const ev = EVENTS.ev_flight_day || { num: {} };
+  const w = num0(ev.num && ev.num.w, 1.5);
+  const sec = num0(ev.num && ev.num.sec, 180);
+  const summer = num0(SEASON_MODS.summer && SEASON_MODS.summer.flightW, 1.25);
+  const span = sec % 60 === 0 ? (sec / 60) + ' minute' + (sec === 60 ? '' : 's') : fmtTime(sec);
+  return 'Flight Day (the real "flying ant day"): a rare random summer event once you have Nuptial Preparation. For ' + span
+    + ' the air is warm and still, and a Nuptial Flight gets ×' + w + ' alates instead of summer\'s ×' + summer + '. If you can fly then, a toast offers it.';
+}
+
+/** C210: the honeydew cap rule (stats.js: CAPS.honeydewBase + CAPS.honeydewFrac × food cap). */
+export function honeydewCapText() {
+  return 'Cap = ' + num0(CAPS.honeydewBase, 50) + ' + ' + Math.round(num0(CAPS.honeydewFrac, 0.1) * 100)
+    + '% of your food cap. Honeydew is not kept in Granaries, but every Granary (anything that raises the food cap) raises its cap too.';
+}
+
+/** C211: when a chamber counts as frost-exposed (nestgeom.exposedTo: more than half its rows above the frost line). */
+export function frostExposedText(frostRow = 0) {
+  return 'Frost-exposed: more than half of its rows lie above the frost line' + (num0(frostRow, 0) > 0 ? ' (row ' + fmtCount(Math.ceil(frostRow)) + ' now)' : '')
+    + ', so it works at ×' + num0(CHAMBER_RULES.frostMult, 0.5) + ' while the frost lasts, and brood in it freezes.';
+}
+
+/**
+ * C211: the inspect panel's "about" text with the live facts behind it: a Barracks' walking distance to the nearest
+ * entrance (d.nest.chambers[i].minEntPath, read-only) and a frost-exposed chamber's rule.
+ * @param {string} type
+ * @param {Object} [dc] d.nest.chambers entry
+ * @param {Object} [d]
+ * @returns {string}
+ */
+export function chamberAboutText(type, dc = null, d = null) {
+  const base = CHAMBER_ABOUT[type] || CHAMBER_TIPS[type] || '';
+  const extra = [];
+  if (type === 'barracks' && dc) {
+    const p = num0(dc.minEntPath, -1);
+    const lim = num0(GEOM && GEOM.barracksPath, 12);
+    if (p < 0) extra.push('No tunnel links it to an entrance yet: no entrance bonus.');
+    else extra.push('Path to the nearest entrance: ' + fmtCount(p) + ' cell' + (p === 1 ? '' : 's') + (p <= lim ? ' — within ' + lim + ', bonus active.' : ' — over ' + lim + ', no entrance bonus.'));
+  }
+  if (dc && dc.exposed) extra.push(frostExposedText(d && d.season ? d.season.frostRow : 0));
+  return [base].concat(extra).filter(Boolean).join(' ');
+}
 /** Battle tactics tooltips. */
 export const TACTIC_TIPS = Object.freeze({
   alarm_rally: '+30% attack for 8 s.',
@@ -1262,14 +1443,37 @@ export function eventToast(e, s = null) {
     }
     case 'raidResult':
       if (e.calledOff === 'fallen') return { text: 'Raid called off — their nest has fallen.', kind: 'good', priority: 'high' };   // C186
-      if (e.win) return { text: 'Raid repelled!', kind: 'good', priority: 'high' };
+      if (e.calledOff === 'truce') return { text: 'Raid called off — the truce holds.', kind: 'good', priority: 'high' };
+      if (e.win) {
+        const loot = lootText(e.loot);   // C227: chitin from the raiders killed
+        return { text: 'Raid repelled!' + (loot ? ' ' + loot + '.' : ''), kind: 'good', priority: 'high' };
+      }
       return {
         text: 'Raid lost: ' + fmt(e.foodLost || 0) + ' food, ' + fmtCount(e.broodLost || 0) + ' brood, ' + fmtCount(e.workersLost || 0) + ' workers.',
         kind: 'danger', priority: 'high',
       };
-    case 'conquest': return { text: 'Conquered: ' + rivalName(e.uid, e.rivalType) + '!', kind: 'good', priority: 'high' };
-    case 'battleEnd':
-      return { text: (BATTLE_NAMES[e.kind] || 'Battle') + (e.win ? ' won.' : ' lost.'), kind: e.win ? 'good' : 'bad', priority: 'low' };
+    case 'tournamentEnd': {
+      // C226: a won tournament flips the hex and pays a prize; withdraw/escalate are quieter
+      if (e.result === 'win') {
+        const pz = e.prize || {};
+        const bits = [];
+        if (pz.insight > 0) bits.push('+' + fmt(pz.insight) + ' insight');
+        if (pz.chitin > 0) bits.push('+' + fmt(pz.chitin) + ' chitin');
+        if (pz.raidDelay > 0) bits.push('their next raid delayed ' + Math.round(pz.raidDelay / 60) + ' min');
+        return { text: 'Tournament won: the hex is yours' + (bits.length ? ' (' + bits.join(', ') + ')' : '') + '.', kind: 'good', priority: 'high' };
+      }
+      if (e.result === 'withdraw') return { text: 'Tournament: your ants withdrew without a fight.', kind: 'info', priority: 'low' };
+      return null;
+    }
+    case 'conquest': {
+      const loot = lootText(e.loot);   // C207: the spoils (rivals.secure)
+      return { text: 'Conquered: ' + rivalName(e.uid, e.rivalType) + '!' + (loot ? ' ' + loot + '.' : ''), kind: 'good', priority: 'high' };
+    }
+    case 'battleEnd': {
+      // C207: what a won raid / hunt carried home (the glints drifting to your nest after a battle)
+      const loot = e.win ? lootText(e.loot) : '';
+      return { text: (BATTLE_NAMES[e.kind] || 'Battle') + (e.win ? ' won.' : ' lost.') + (loot ? ' ' + loot + '.' : ''), kind: e.win ? 'good' : 'bad', priority: loot ? 'high' : 'low' };
+    }
     case 'hungryStart': return { text: 'Hungry! Laying stopped. Assign more foragers.', kind: 'danger', priority: 'high' };
     case 'hungryEnd': return { text: 'The colony is fed again.', kind: 'good', priority: 'low' };
     case 'winterSoon': return { text: 'Winter in ' + fmtTime(Number(YEAR && YEAR.forecastSec) || 60) + ': shallow brood will freeze.', kind: 'info', priority: 'high' };
@@ -1594,3 +1798,22 @@ export function raidAlertCopy(o) {
   if (g > 0) return { text: 'Your garrison (' + fmtCount(g) + ') defends the entrance automatically.', action: 'view' };
   return { text: 'No soldiers at home — ' + raise + '; the garrison defends the entrance automatically.', action: null };
 }
+
+/** C234: Settings → Sound copy (labels and ≤ 12-word tooltips). */
+export const SOUND_COPY = Object.freeze({
+  title: 'Sound',
+  master: 'Sound effects',
+  masterTip: 'Short synthesised sounds. Saved for this browser only.',
+  volume: 'Volume',
+  volumeTip: 'How loud the sound effects play.',
+  actions: 'Actions',
+  actionsTip: 'Clicks, purchases, building, digging, trails and refusals.',
+  alerts: 'Alerts',
+  alertsTip: 'Events, raids, battles, achievements, reveals and ceremonies.',
+  ambience: 'Ambience',
+  ambienceTip: 'Season changes and finished chambers.',
+  test: 'Test',
+  testTip: 'Play a sample chime.',
+  note: 'Sounds start after your first click or key press, and pause while the tab is hidden.',
+  unavailable: 'Sound is not available in this browser.',
+});

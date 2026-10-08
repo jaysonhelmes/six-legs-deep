@@ -308,7 +308,10 @@ test('C122: "Level cheapest" still shows (and levels) the selected chamber when 
   assert.equal(other.self, false);
   const list = cheapestButton(s, d, 'gallery', { compact: true });
   assert.match(list.label, /^Lvl cheapest · /);
-  assert.ok(list.label.length <= 22, 'compact: ' + list.label);
+  // C212: the compact label names every resource of the cost (the button also draws them with icons)
+  assert.match(list.label, /^Lvl cheapest · .+ food · .+ soil$/, 'compact: ' + list.label);
+  assert.equal(list.head, 'Lvl cheapest');
+  assert.ok(list.cost.food > 0 && list.cost.soil > 0);
   assert.equal(list.ok, true);
   s.run.res.food = 0;
   assert.equal(cheapestButton(s, d, 'gallery', { compact: true }).ok, false, 'quiet when unaffordable');

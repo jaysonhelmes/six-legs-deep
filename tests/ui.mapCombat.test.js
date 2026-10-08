@@ -83,7 +83,12 @@ test('C185: right-clicking a Lycaenid trail offers +1 / +5 escorts with the coun
   assert.deepEqual(items[1].args, { uid: 80, n: 3 }, '+5 capped by the 1 soldier at home');
   assert.deepEqual(escortMenuItems(s, d, { ...t, job: 'forager' }), []);
   s.run.colony.adults.soldier = 2;   // all on the trail: none at home → the command refuses with a reason
-  assert.deepEqual(escortMenuItems(s, d, t)[1].args, { uid: 80, n: 7 });
+  assert.deepEqual(escortMenuItems(s, d, t)[1].args, { uid: 80, n: 5 }, 'C236: never past the 5 a Lycaenid trail needs');
+  t.escorts = 5;
+  const full = escortMenuItems(s, d, t);
+  assert.equal(full.length, 1);
+  assert.ok(full[0].disabled && full[0].type === null && full[0].label.includes('5/5'), 'C236: full trail offers no more');
+  t.escorts = 2;
   assert.equal(reasonText('invalid:count', 'assignEscorts'), 'No soldiers at home to send as escorts.');
   s.run.events.objects.push({ uid: 90, kind: 'antlion', hex: 5, cell: -1, t: -1, data: { occ: 89 } });
   const ant = eventObjectMenuItems(s, d, 90);

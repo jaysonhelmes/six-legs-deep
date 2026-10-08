@@ -9,7 +9,7 @@
 
 import { h, clear, setText } from './dom.js';
 import { fmt, fmtCount } from './format.js';
-import { nameOf, humanize, CHOICE_LABELS, BATTLE_NAMES, EVENT_COPY, unlockLabel, blueprintNote } from './text.js';
+import { nameOf, humanize, CHOICE_LABELS, BATTLE_NAMES, EVENT_COPY, unlockLabel, blueprintNote, lootText } from './text.js';
 import { EVENTS } from '../data/events.js';
 
 /** Entries kept in memory. */
@@ -98,12 +98,18 @@ export function logEntryFor(e, s = null) {
         + fmtCount(Number(e.workersLost) || 0) + ' workers taken.', kind: 'bad' };
     case 'battleEnd': {
       const what = BATTLE_NAMES[e.kind] || 'Battle';
-      const lost = Number(e.lost) || 0;
+      // C207: e.lost is { soldier, supermajor, militia }; a won raid / hunt names its loot
+      const L = e.lost && typeof e.lost === 'object' ? e.lost : null;
+      const lost = L ? (Number(L.soldier) || 0) + (Number(L.supermajor) || 0) + (Number(L.militia) || 0) : Number(e.lost) || 0;
       const kills = Number(e.kills) || 0;
-      return { cat: 'war', text: what + (e.win ? ' won' : ' lost') + (kills > 0 || lost > 0 ? ' (' + fmtCount(kills) + ' foes down, ' + fmtCount(lost) + ' ants lost)' : '') + '.',
-        kind: e.win ? 'good' : 'bad' };
+      const loot = e.win ? lootText(e.loot) : '';
+      return { cat: 'war', text: what + (e.win ? ' won' : ' lost') + (kills > 0 || lost > 0 ? ' (' + fmtCount(kills) + ' foes down, ' + fmtCount(lost) + ' ants lost)' : '') + '.'
+        + (loot ? ' ' + loot + '.' : ''), kind: e.win ? 'good' : 'bad' };
     }
-    case 'conquest': return { cat: 'war', text: 'Conquered ' + rivalOf(s, e.uid, e.rivalType) + '!', kind: 'good' };
+    case 'conquest': {
+      const loot = lootText(e.loot);
+      return { cat: 'war', text: 'Conquered ' + rivalOf(s, e.uid, e.rivalType) + '!' + (loot ? ' ' + loot + '.' : ''), kind: 'good' };
+    }
     case 'blueprintPlaced': {
       if (typeof e.text === 'string' && e.text) return { cat: 'nest', text: sentence(e.text), kind: 'info' };
       const n = Number(e.n ?? e.count ?? e.chambers);
@@ -123,6 +129,8 @@ export function logEntryFor(e, s = null) {
     case 'chamberActivated':
       return Number(e.level) > 1 ? null : { cat: 'nest', text: chamber(e.chamberType) + ' complete.', kind: 'good' };
     case 'cacheFound': return { cat: 'nest', text: 'Found a ' + humanize(e.kind).toLowerCase() + ': +' + fmt(Number(e.amount) || 0) + ' ' + nameOf('res', e.res).toLowerCase() + '.', kind: 'good' };
+    // C214: a tunnel the player did not draw (a mole, a blueprint's tunnels or an access tunnel for a planned chamber)
+    case 'tunnelAuto': return { cat: 'nest', text: tunnelAutoText(e), kind: 'info' };
     case 'entranceOpened': return { cat: 'nest', text: 'A new entrance opened to the surface.', kind: 'good' };
     case 'achievement': return { cat: 'progress', text: 'Achievement: ' + nameOf('achievement', e.id) + '.', kind: 'gold' };
     case 'unlock': return { cat: 'progress', text: 'Unlocked: ' + unlockLabel(e.key) + '.', kind: 'info' };
@@ -137,9 +145,29 @@ export function logEntryFor(e, s = null) {
   }
 }
 
+/**
+ * C214: event-log line for tunnelAuto { reason, chamberType, n }: "A mole dug 9 tunnel cells.", "Access tunnel (6 cells)
+ * queued for the planned Granary.", "Blueprint tunnels queued (14 cells).".
+ * @param {Object} e
+ * @returns {string}
+ */
+export function tunnelAutoText(e) {
+  const n = Number(e && (e.n !== undefined ? e.n : Array.isArray(e.cells) ? e.cells.length : 0)) || 0;
+  const cells = fmtCount(n) + ' cell' + (n === 1 ? '' : 's');
+  const ch = e && e.chamberType ? nameOf('chamber', e.chamberType) || '' : '';
+  switch (e && e.reason) {
+    case 'mole': return 'A mole dug a free tunnel (' + cells + ').';
+    case 'access': return 'Access tunnel (' + cells + ') queued for the planned ' + (ch || 'chamber') + '.';
+    case 'blueprint': return 'Blueprint tunnels queued (' + cells + ').';
+    case 'route': return 'Tunnel (' + cells + ') routed to the new ' + (ch || 'chamber') + '.';
+    case 'shaft': return (ch ? ch + ' exit shaft' : 'Entrance shaft') + ' queued (' + cells + ').';
+    default: return 'Tunnel queued (' + cells + ').';
+  }
+}
+
 /** Bus event types the shell feeds into the log. */
 export const LOG_EVENTS = Object.freeze(['eventSpawned', 'eventResolved', 'raidWarning', 'raidResult', 'battleEnd', 'conquest',
-  'blueprintPlaced', 'blueprintDropped', 'blueprintAdjusted', 'waterStruck', 'chamberActivated', 'cacheFound', 'entranceOpened',
+  'blueprintPlaced', 'blueprintDropped', 'blueprintAdjusted', 'waterStruck', 'chamberActivated', 'cacheFound', 'entranceOpened', 'tunnelAuto',
   'achievement', 'unlock', 'fieldGuide', 'researchBought', 'hardshipTier', 'flightComplete', 'supercolonyComplete', 'speciationComplete',
   'runStarted']);
 

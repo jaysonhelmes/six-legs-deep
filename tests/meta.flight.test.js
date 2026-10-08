@@ -188,7 +188,8 @@ test('strata keep the last 12 records and daughters the last 8', () => {
   assert.equal(s.cycle.daughters.length, 8);
   assert.equal(s.cycle.daughters[7].alates, s.meta.pending.alates);
   // C130: each record also carries the Colony History metadata (no hardship key on a normal run, no date while meta.lastSeen is 0)
-  for (const r of s.meta.strata) assert.deepEqual(Object.keys(r).sort(), ['at', 'cells', 'dur', 'gain', 'kind', 'n', 'peak', 'sp']);
+  // C219: plus the chambers drawn in the gallery (ch) when the nest has any with a level
+  for (const r of s.meta.strata) assert.deepEqual(Object.keys(r).filter((k) => k !== 'ch').sort(), ['at', 'cells', 'dur', 'gain', 'kind', 'n', 'peak', 'sp']);
 });
 
 test('flight stats: fastest flight and first flight time', () => {

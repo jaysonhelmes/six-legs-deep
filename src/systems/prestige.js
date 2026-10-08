@@ -497,9 +497,16 @@ export function startRun(s, d, opts) {
 
   // Nest.
   const royalCount = Number.isFinite(sp.royalStart) && sp.royalStart > 0 ? sp.royalStart : 1;
+  // C215: the run's nest width is decided now (Satellite Nest levels widen it), and never changes during the run
+  const cols = nest.runStartCols(s);
   const genNest = nestgen.generateNest(run.seed, {
-    tags: run.landingTags.slice(), rootCols: Array.isArray(map.rootCols) ? map.rootCols.slice() : [], royalCount });
-  if (genNest && Array.isArray(genNest.cells) && genNest.cells.length === GRID.cols * GRID.rows) run.nest = plainCopy(genNest);
+    tags: run.landingTags.slice(), rootCols: Array.isArray(map.rootCols) ? map.rootCols.slice() : [], royalCount, cols });
+  if (genNest && Array.isArray(genNest.cells) && genNest.cells.length === cols * GRID.rows) {
+    run.nest = plainCopy(genNest);
+    // the main entrance sits on the (centred) main shaft column of this width
+    const mainCol = genNest.shafts && genNest.shafts[0] ? genNest.shafts[0].col : GRID.baseMainCol;
+    for (const e of run.surface.entrances) if (e && e.kind === 'main') e.col = mainCol;
+  }
 
   rivals.spawnInitial(s, d, Array.isArray(map.rivalSpecs) ? map.rivalSpecs.slice() : []);
   research.grantInnate(s);
@@ -606,7 +613,13 @@ function runEndBookkeeping(s, kind, gain) {
     if (era.researchRuns[id] >= need) era.innate[id] = true;
   }
   const strata = s.meta.strata;
-  strata.push({ kind, cells: strataSilhouette(s.run.nest.cells), at: s.meta.simTime, ...strataMeta(s, gain) });
+  const rec = { kind, cells: strataSilhouette(s.run.nest.cells), at: s.meta.simTime, ...strataMeta(s, gain) };
+  // C219: the chambers (type, rectangle, level) for the Colony History drawing; C215: the nest width when it is not 40
+  const ch = nest.strataChambers(s.run.nest.chambers);
+  if (ch) rec.ch = ch;
+  const cols = nest.nestCols(s);
+  if (cols !== GRID.baseCols) rec.cols = cols;
+  strata.push(rec);
   while (strata.length > RESET.strataMax) strata.shift();
   compactStrata(strata);
   if (kind === 'run') {

@@ -20,8 +20,10 @@ import { LAYER_ORDER, LAYERS, GEOM, DIG } from '../data/strata.js';
 import { CHAMBERS, ADJACENCY } from '../data/chambers.js';
 import { BROOD } from '../data/economy.js';
 import { FLIGHT } from '../data/prestige.js';
+import { GOLDEN } from '../data/events.js';
 import * as nestSys from '../systems/nest.js';
 import * as nestgeom from '../systems/nestgeom.js';
+import { COLS, NCELLS as NCELL } from '../systems/nestgeom.js';
 import { adultsTotal, broodTotal } from '../core/state.js';
 import { bitsDecode } from '../core/save.js';
 import { effectsFor } from '../core/effects.js';
@@ -44,9 +46,8 @@ import { drawNestStrip } from './minimap.js';
 import * as art from './nestArt.js';
 import * as decor from './nestDecor.js';
 
-const COLS = GRID.cols;
+// C215: COLS / NCELL are nestgeom's live bindings: the width of the nest being drawn (synced every frame, syncWidth)
 const ROWS = GRID.rows;
-const NCELL = COLS * ROWS;
 /** C118: cultivated roots are a little greener than wild ones. */
 const ROOT_OWN = '#c4d48e';
 const ROOT_OWN_DARK = '#8fa35c';
@@ -375,6 +376,37 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   function chamberCenter(c) {
     const r = chamberRectPx(c);
     return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+  }
+
+  /**
+   * C215: make the active width the drawn nest's, and when it differs from the buffers' width (a wider run started, or
+   * a save of another width was loaded), reallocate every per-cell buffer, rebuild the cached canvases and refit the
+   * camera.
+   */
+  let bufCols = COLS;
+  function syncWidth(s) {
+    nestgeom.syncCols(s);
+    if (COLS === bufCols && cache.drawn.length === NCELL) return;
+    bufCols = COLS;
+    cache.drawn = new Int8Array(NCELL).fill(-9);
+    cache.roots = new Uint8Array(NCELL);
+    cache.rootOwn = new Uint8Array(NCELL);
+    cache.water = new Uint8Array(NCELL);
+    cache.stoneId = new Int16Array(NCELL);
+    cache.force = new Uint8Array(NCELL);
+    cache.canvas = null;
+    cache.ctx = null;
+    cache.cpp = 0;
+    margin.canvas = null;
+    geo.at = new Int16Array(NCELL).fill(-1);
+    geo.shaftCells = new Uint8Array(NCELL);
+    geo.passCells = new Uint8Array(NCELL);
+    geo.door = new Uint8Array(NCELL);
+    scratchA = new Uint8Array(NCELL);
+    scratchB = new Uint8Array(NCELL);
+    scratchC = new Uint8Array(NCELL);
+    if (typeof cam.setCols === 'function') cam.setCols(COLS);
+    dropCaches();
   }
 
   function dropCaches() {
@@ -1372,9 +1404,9 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
   }
 
-  const scratchA = new Uint8Array(NCELL);
-  const scratchB = new Uint8Array(NCELL);
-  const scratchC = new Uint8Array(NCELL);
+  let scratchA = new Uint8Array(NCELL);
+  let scratchB = new Uint8Array(NCELL);
+  let scratchC = new Uint8Array(NCELL);
   /** out = 8-neighbour dilation of `src`. */
   function dilate(src, out) {
     out.fill(0);
@@ -2011,6 +2043,15 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         chamberPath(ctx, c, v, 0.5);
         ctx.stroke();
       }
+      // C213: a frost-exposed chamber (majority of its cells above the frost line) wears an icy dashed outline in winter
+      if (exposed && winter) {
+        ctx.strokeStyle = 'rgba(191,227,255,0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        chamberPath(ctx, c, v, 1.5);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       // onboarding / advisor glow on the Royal Chamber ('canvas:royal', vocabulary shared with ui/onboarding.js)
       if (ui0.glow === 'canvas:royal' && c.type === 'royal_chamber') {
         const g = (time * 0.9) % 1;
@@ -2032,7 +2073,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
         ctx.fillStyle = NEST.digFace;
         ctx.fillRect(box.x + 2, by, bw * clamp(pct / 100, 0, 1), bh);
       }
-      labelQueue.push({ c, r, box, isSel, isHov, pct, building });
+      labelQueue.push({ c, r, box, isSel, isHov, pct, building, frost: exposed && winter });
     }
     // activation glows
     for (let gI = glows.length - 1; gI >= 0; gI--) {
@@ -2317,6 +2358,26 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.fill();
   }
 
+  /** C213: the small ❄ "frost-exposed" badge (a six-armed star on a dark disc). */
+  function drawFrostBadge(ctx, x, y, r) {
+    ctx.fillStyle = 'rgba(18,10,5,0.82)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(191,227,255,0.85)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.strokeStyle = '#d8efff';
+    ctx.lineWidth = Math.max(1, r * 0.18);
+    ctx.beginPath();
+    for (let k = 0; k < 3; k++) {
+      const a = (k * Math.PI) / 3 + Math.PI / 2;
+      ctx.moveTo(x - Math.cos(a) * r * 0.6, y - Math.sin(a) * r * 0.6);
+      ctx.lineTo(x + Math.cos(a) * r * 0.6, y + Math.sin(a) * r * 0.6);
+    }
+    ctx.stroke();
+  }
+
   function drawLabels(ctx, W) {
     const v = view();
     const u = v.cell;
@@ -2357,8 +2418,14 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       }
       ctx.fillStyle = '#ffe08a';
       ctx.fillText(L.c.status === 'growing' ? '↑' : String(Math.max(0, L.c.level | 0) || '·'), bx, by + 0.5);
-      if (ups && ups.has(L.c.uid) && L.box.h >= br * 4.4) {
+      const upShown = !!(ups && ups.has(L.c.uid) && L.box.h >= br * 4.4);
+      if (upShown) {
         drawUpBadge(ctx, bx, by + br * 2.05, br * 0.78);
+        ctx.fillStyle = '#ffe08a';
+      }
+      // C213: ❄ badge on a frost-exposed chamber in winter (under the level badge, left of the ▲ when both show)
+      if (L.frost && L.box.h >= br * 4.4) {
+        drawFrostBadge(ctx, upShown ? bx - br * 2 - 3 : bx, by + br * 2.05, br * 0.78);
         ctx.fillStyle = '#ffe08a';
       }
       // C109: link badge left of the level badge when the chamber receives an adjacency bonus (red: a hygiene hit)
@@ -2461,9 +2528,10 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.beginPath();
     ctx.ellipse(q.x, q.y + unit * 0.36 * grow, unit * 0.85 * grow, unit * 0.15, 0, 0, Math.PI * 2);
     ctx.fill();
-    // abdomen pulse glow
-    if (pulse > 0) {
-      ctx.fillStyle = `rgba(255,236,190,${0.35 * pulse})`;
+    // abdomen pulse glow with each egg (C217: toned down, warmer and smaller so it reads as her abdomen, not a flashing
+    // blob; none under reduced motion or at overview zoom)
+    if (pulse > 0 && !reduced && unit >= 8) {
+      ctx.fillStyle = `rgba(255,214,160,${0.16 * pulse})`;
       ctx.beginPath();
       ctx.ellipse(q.x - unit * 0.45 * grow, q.y, unit * 0.42 * grow * (1 + 0.15 * pulse), unit * 0.3 * grow * (1 + 0.15 * pulse), 0, 0, Math.PI * 2);
       ctx.fill();
@@ -2494,19 +2562,32 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     cosmetics.drawQueenCosmetic(ctx, s, q.x, q.y, unit * grow, time);
   }
 
-  /** "House full" pip over the Royal Chamber (diegetic hint, DESIGN §25.6); drawn outside the cavity clip. */
-  function drawHousePip(ctx, s, d, unit) {
+  /**
+   * C216: where the "house full" pip sits (over the Royal Chamber's top-right corner) while housing is full, else null.
+   * { x, y, k } in CSS px (k = half width).
+   */
+  function housePipPos(s, d, unit) {
     const st = d && d.stats;
-    if (!st || !(st.housing > 0)) return;
+    if (!st || !(st.housing > 0)) return null;
     const used = (s.run.colony.adults ? s.run.colony.adults.minor || 0 : 0) + broodTotal(s);
-    if (used < st.housing) return;
+    if (used < st.housing) return null;
     const c = royalRect();
-    if (!c || !(c.uid >= 0)) return;
+    if (!c || !(c.uid >= 0)) return null;
     const r = chamberRectPx(c);
-    const px = r.x + r.w - unit * 0.5;
-    const py = r.y - unit * 0.1;
-    const bob = Math.sin(time * 3) * 1.5;
-    const k = Math.max(6, unit * 0.4);
+    return { x: r.x + r.w - unit * 0.5, y: r.y - unit * 0.1, k: Math.max(6, unit * 0.4) };
+  }
+
+  /**
+   * "House full" pip over the Royal Chamber (diegetic hint, DESIGN §25.6); drawn outside the cavity clip. C216: it is
+   * hit-tested (kind 'housePip': tooltip "Housing full…", a click opens the Build tab).
+   */
+  function drawHousePip(ctx, s, d, unit) {
+    const hp = housePipPos(s, d, unit);
+    if (!hp) return;
+    const px = hp.x;
+    const py = hp.y;
+    const bob = reduced ? 0 : Math.sin(time * 3) * 1.5;
+    const k = hp.k;
     ctx.fillStyle = '#ffe08a';
     ctx.beginPath();
     ctx.moveTo(px - k, py + bob);
@@ -2814,7 +2895,30 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   function drawPupa(ctx, s, unit) {
     const p = pupaPos(s);
     if (!p) return;
-    const a = 0.5 + 0.5 * Math.sin(time * 6);
+    // C217: a slower pulse (it was a fast white-gold flash) and, from mid zoom, a 'Golden pupa' tag with a ring that
+    // empties as its time runs out, so the glow explains itself
+    const a = reduced ? 0.6 : 0.5 + 0.5 * Math.sin(time * 3);
+    const pu = s.run.golden && s.run.golden.pupa;
+    const life = Number(GOLDEN && GOLDEN.pupaLife) > 0 ? Number(GOLDEN.pupaLife) : 15;
+    const frac = pu ? clamp((Number(pu.t) || 0) / life, 0, 1) : 0;
+    if (frac > 0) {
+      ctx.strokeStyle = 'rgba(255,214,80,0.85)';
+      ctx.lineWidth = Math.max(1.5, unit * 0.08);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, unit * 0.85, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+      ctx.stroke();
+    }
+    if (unit >= 10) {
+      ctx.font = '600 10px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      const tw = ctx.measureText('Golden pupa: click').width;
+      ctx.fillStyle = 'rgba(15,8,3,0.75)';
+      ctx.fillRect(p.x - tw / 2 - 3, p.y - unit * 0.95 - 13, tw + 6, 13);
+      ctx.fillStyle = '#ffd447';
+      ctx.fillText('Golden pupa: click', p.x, p.y - unit * 0.95 - 1);
+      ctx.textAlign = 'left';
+    }
     ctx.fillStyle = `rgba(255,214,80,${0.25 + 0.25 * a})`;
     ctx.beginPath();
     ctx.arc(p.x, p.y, unit * 0.7, 0, Math.PI * 2);
@@ -3137,6 +3241,19 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.strokeStyle = tint;
     ctx.lineWidth = 2;
     ctx.stroke();
+    // C213: when the ghost straddles the hard-winter frost line, draw that line across it (exposed: amber, safe: blue)
+    const fm = (res.mods || []).find((m) => m && (m.key === 'frostExposed' || m.key === 'frostSafe') && m.row > 0);
+    if (fm) {
+      const fy = v.oy + Math.ceil(fm.row) * v.cell;
+      ctx.strokeStyle = fm.key === 'frostExposed' ? 'rgba(255,210,122,0.9)' : 'rgba(191,227,255,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x - v.cell, fy);
+      ctx.lineTo(x + (g.w + 1) * v.cell, fy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.font = '600 11px system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
@@ -3192,6 +3309,15 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       if (!m || !m.key) continue;
       // adjacency / hygiene are spelled out by the link lines above (C109)
       if ((m.key === 'adjacency' || m.key === 'hygiene') && (links.length || lost.length)) continue;
+      // C213: frost in cells (the majority rule): exposed, or straddling the line but safe
+      if (m.key === 'frostExposed' && Number.isFinite(m.total) && m.total > 0) {
+        lines.push({ t: `Frost-exposed in winter: ${m.above} of ${m.total} cells above the frost line (×${m.value})`, c: '#ffd27a' });
+        continue;
+      }
+      if (m.key === 'frostSafe') {
+        lines.push({ t: `Safe from frost: most cells below the frost line (${m.above} of ${m.total} above)`, c: '#bfe3ff' });
+        continue;
+      }
       // raidReach carries the path distance to the nearest entrance; the others are multipliers or bonuses.
       const val = m.key === 'raidReach' && Number.isFinite(m.value) ? ` (${Math.round(m.value)} cells)`
         : Number.isFinite(m.value) ? ` ${m.value > 0 && m.key !== 'haul' ? '+' : ''}${Math.round(m.value * 100) / 100}` : '';
@@ -3481,6 +3607,48 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       ctx.lineWidth = 2;
       ctx.strokeRect(bx - 2 - p * 4, by - 2 - p * 4, w * v.cell + 4 + p * 8, h * v.cell + 4 + p * 8);
     }
+    // C203: the target stays outlined and labelled ("Nest full: pick Gallery in the Build tab, then click here"), so the
+    // flying box reads as an instruction rather than an unexplained white rectangle
+    ctx.strokeStyle = 'rgba(255,236,160,0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(bx + 0.5, by + 0.5, w * v.cell - 1, h * v.cell - 1);
+    ctx.setLineDash([]);
+    if (typeof demo.label === 'string' && demo.label) drawDemoLabel(ctx, demo.label, bx, by, w * v.cell, h * v.cell);
+  }
+
+  /**
+   * C203: the chamber demo's label, a dark pill beside the target footprint (right, else left, else above), kept inside
+   * the canvas and off the Royal Chamber below it.
+   */
+  function drawDemoLabel(ctx, text, tx, ty, tw0, th0) {
+    const fpx = 12;
+    ctx.save();
+    ctx.font = `600 ${fpx}px system-ui, sans-serif`;
+    const tw = ctx.measureText(text).width;
+    const pw = tw + 16;
+    const ph = fpx + 10;
+    const W = cam.w > 0 ? cam.w : pw + 8;
+    const H = cam.h > 0 ? cam.h : top + ph + 4;
+    let x = tx + tw0 + 8;
+    let y = ty + th0 / 2 - ph / 2;
+    if (x + pw > W - 4) x = tx - 8 - pw;
+    if (x < 4) { x = tx + tw0 / 2 - pw / 2; y = ty - ph - 8; }
+    x = clamp(x, 4, Math.max(4, W - pw - 4));
+    y = clamp(y, 4, Math.max(4, H - ph - 4));
+    ctx.fillStyle = 'rgba(20,14,8,0.88)';
+    ctx.strokeStyle = 'rgba(242,199,108,0.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, pw, ph, ph / 2);
+    else ctx.rect(x, y, pw, ph);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#f6ead2';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + pw / 2, y + ph / 2 + 0.5);
+    ctx.restore();
   }
 
   function overlayInfo(s, d) {
@@ -3743,6 +3911,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const d = D();
     const ctx = layer.ctx;
     if (!s || !s.run || !s.run.nest || !ctx) return;
+    syncWidth(s); // C215
     if (s !== lastS) {
       if (lastS) dropCaches();
       lastS = s;
@@ -3898,6 +4067,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const s = S();
     const d = D();
     if (!s || !s.run || !s.run.nest) return null;
+    syncWidth(s); // C215
     ensureViewport();
     fields.sync(s.run.nest.cells, s.run.nest.rev);
     syncGeo(s);
@@ -3906,6 +4076,9 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const i = pxToCell(cssX, cssY, v);
     const pp = pupaPos(s);
     if (pp && Math.hypot(cssX - pp.x, cssY - pp.y) <= unit * 0.9) return { view: 'nest', kind: 'pupa' };
+    // C216: the yellow "house full" pip over the Royal Chamber
+    const hp = housePipPos(s, d, unit);
+    if (hp && Math.abs(cssX - hp.x) <= hp.k * 1.2 && Math.abs(cssY - hp.y) <= hp.k * 1.3) return { view: 'nest', kind: 'housePip' };
     for (const m of moldSpots(s)) {
       const c = cellCenter(m.i);
       if (Math.hypot(cssX - c.x, cssY - c.y) <= Math.max(9, unit * 0.8)) return { view: 'nest', kind: 'mold', id: m.uid };

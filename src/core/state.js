@@ -4,7 +4,7 @@
 // numbers (radius, reveal rings, nanitics, spawn timers, first event countdown, season length) are read from the owning
 // data tables so that tuning src/data/*.js never leaves the schema behind (ground rule 12).
 
-import { GRID, CELL, HEX, CLICK_CAP } from '../data/balance.js';
+import { GRID, CELL, HEX, CLICK_CAP, nestLayout } from '../data/balance.js';
 import { MAP } from '../data/surface.js';
 import { EGG } from '../data/economy.js';
 import { SOURCES } from '../data/sources.js';
@@ -48,12 +48,14 @@ export function royalRes(r) {
  * Default nest grid: all SOIL, main shaft (column 20, rows 0–19) TUNNEL, Royal Chamber (rows 20–21, cols 18–21) CHAMBER.
  * @returns {number[]} 3,200 cell codes, index = y * 40 + x
  */
-export function defaultNestCells() {
-  const cells = new Array(GRID.cols * GRID.rows).fill(CELL.SOIL);
-  for (let y = 0; y < GRID.shaftRows; y++) cells[y * GRID.cols + GRID.mainCol] = CELL.TUNNEL;
-  const r = GRID.royal;
+export function defaultNestCells(cols = GRID.baseCols) {
+  // C215: laid out for a nest `cols` wide (default the base 40, whatever nest is active), centred on the main shaft
+  const L = nestLayout(cols);
+  const cells = new Array(L.cols * GRID.rows).fill(CELL.SOIL);
+  for (let y = 0; y < GRID.shaftRows; y++) cells[y * L.cols + L.mainCol] = CELL.TUNNEL;
+  const r = L.royal;
   for (let y = r.y; y < r.y + r.h; y++) {
-    for (let x = r.x; x < r.x + r.w; x++) cells[y * GRID.cols + x] = CELL.CHAMBER;
+    for (let x = r.x; x < r.x + r.w; x++) cells[y * L.cols + x] = CELL.CHAMBER;
   }
   return cells;
 }
@@ -68,7 +70,7 @@ export function createRun(seed) {
   const revealed = new Array(HEX.count).fill(0);
   const nReveal = countInRadius(SKELETON.revealRings);
   for (let i = 0; i < nReveal; i++) revealed[i] = 1;
-  const r = GRID.royal;
+  const r = GRID.baseRoyal; // C215: a fresh run skeleton is always the base 40-wide nest
   return {
     index: 0,
     seed: s32, mapSeed: s32,
@@ -116,7 +118,7 @@ export function createRun(seed) {
       queue: [],
       features: { caches: [], water: [], roots: [] },
       backfill: [],
-      shafts: [{ kind: 'main', col: GRID.mainCol, open: true, ref: -1 }],
+      shafts: [{ kind: 'main', col: GRID.baseMainCol, open: true, ref: -1 }],
       maint: 0,
       deepestRow: r.y + r.h - 1,
       // C106: pending blueprint chambers [{ type, x, y }] and the blueprint tunnel cells behind them (nest.applyBlueprint).
@@ -124,6 +126,8 @@ export function createRun(seed) {
       bpTunnels: [],
       // C119: blueprint notes for the player (Royal Chamber / Water Well), flushed as blueprintDropped events by nest.tick.
       bpNotes: [],
+      // C214: who dug the tunnels the player did not draw ([{ w: why, t?: chamber type, c: cells }], newest last; nest.tagTunnel)
+      dugBy: [],
     },
     surface: {
       rev: 1,
@@ -146,7 +150,7 @@ export function createRun(seed) {
       claims: 0,
       channel: null,
       mound: 0,
-      entrances: [{ kind: 'main', hex: 0, col: GRID.mainCol, ref: -1 }],
+      entrances: [{ kind: 'main', hex: 0, col: GRID.baseMainCol, ref: -1 }],
       spawn: { insect: SOURCES.dead_insect.spawn.every, prey: SOURCES.prey_caterpillar.spawn.every, boonPrey: 0 },
       cd: { mark: 0, rally: 0, frenzy: 0 },
     },

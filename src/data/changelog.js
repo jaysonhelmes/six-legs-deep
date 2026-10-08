@@ -10,6 +10,48 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.12.0',
+    date: '2026-10-07',
+    title: 'A gentler start, sound, and clearer everything',
+    sections: [
+      { heading: "New players", notes: [
+        "The opening is calmer: features arrive one at a time and further apart, and advanced systems wait until you have built a Gallery, drawn a trail and bought your first research. Each new feature introduces itself with a one-line tip.",
+        "The small nest view at the start is labelled \"Your nest\" with an Expand button; the Gallery demo only appears when your nest is full and says exactly what to do; clicking the queen no longer throws a panel open.",
+      ] },
+      { heading: "Sound", notes: [
+        "Sound effects for actions and notifications (generated live, no downloads), with on/off, volume and per-category switches in Settings. They start after your first click and pause when the tab is hidden.",
+      ] },
+      { heading: "Nest and build", notes: [
+        "The Royal Chamber has its own Build row; level buttons show their full cost with icons; \"Hide maxed\" toggle; placeable chambers are listed first and undiscovered ones stay hidden.",
+        "Frost: the placement preview shows how many cells sit above the frost line, and exposed chambers get an icy outline in winter.",
+        "Tunnels you did not dig say who did when you hover them, and the yellow house over the Royal Chamber now explains itself (housing full).",
+        "Satellite Nest levels widen your nest by 4 columns each side for new runs. Colony History pictures now show each chamber in colour.",
+        "Fixed: a blueprint chamber moved off water could land in a layer you cannot dig yet.",
+      ] },
+      { heading: "Map and combat", notes: [
+        "The Mound now grows by itself as your colony grows, widening your home territory; levels you had are kept.",
+        "Fallen fruit, picnics and termite swarms only appear where you can reach them; every gain popup shows its resource icon.",
+        "Enemy strength is labelled the same everywhere, rival land can no longer cover your entrances, and only permanent land counts toward peak territory.",
+        "Tournaments are worth it: easier to win, 90 s cooldown, and a win gives insight, chitin and delays that rival’s next raid.",
+        "Bribe truces really last 5 minutes and show a countdown; repelled raids bring home chitin; Lycaenid trails stop at the 5 escorts they need.",
+        "With Aphid Shepherding, right-click an aphid colony to move it. Leafcutters unlock once a Fungus Garden can store their leaves.",
+      ] },
+      { heading: "Colony", notes: [
+        "Colony sections fold and unfold; job buttons show how many ants one click moves (Per click 1 / 10 / 100 / Max).",
+        "Nurses are capped at the most that still help (4 per brood slot); caste rows show food upkeep; queued alates can be cancelled and show their cost.",
+      ] },
+      { heading: "Explanations", notes: [
+        "The war-party form explains raid vs assault; won battles say what loot was carried home.",
+        "The Map tab explains how trails work (distance, travel time, strength, how workers are shared) and what territory gives, with a trail colour legend.",
+        "Clearer descriptions for the Barracks, Digging Claws, Long Legs, Thermal Brood Shuttling, Flight Day, honeydew storage and frost; the Scent Library is always called that.",
+        "Research has a search box, and Manual search puts the best matches first.",
+      ] },
+      { heading: "Balance", notes: [
+        "The Nuptial Flight now needs slightly more food gathered (same 13 alates at the threshold) to keep the first Flight around 40-50 minutes.",
+      ] },
+    ],
+  },
+  {
     version: '0.11.0',
     date: '2026-10-05',
     title: 'Queens, chitin storage, event log and smarter automation',

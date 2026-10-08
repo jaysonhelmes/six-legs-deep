@@ -309,6 +309,7 @@ export function lineHexes(a, b) {
 export function colForHex(i) {
   const q = QS[i];
   const r = RS[i];
-  const c = Math.round(GRID.mainCol + COL_PER_HEX * (q + r / 2));
-  return Math.min(GRID.cols - 2, Math.max(1, c));
+  // C215: in the base 40-wide frame (nestgen shifts it into a wider run's nest)
+  const c = Math.round(GRID.baseMainCol + COL_PER_HEX * (q + r / 2));
+  return Math.min(GRID.baseCols - 2, Math.max(1, c));
 }

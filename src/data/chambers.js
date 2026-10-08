@@ -21,6 +21,19 @@ export const CHAMBER_ORDER = freeze([
   'water_well', 'nuptial_chamber', 'deep_vault',
 ]);
 
+/**
+ * C219: stable one-character codes of chamber types for the Colony History record (s.meta.strata[].ch). APPEND ONLY:
+ * a code, once used in a save, must keep meaning the same type.
+ */
+export const CHAMBER_CODES = freeze({
+  royal_chamber: 'a', gallery: 'b', nursery: 'c', granary: 'd', scent_library: 'e', midden: 'f', barracks: 'g', war_hall: 'h',
+  carapace_store: 'i', carapace_workshop: 'j', root_aphid_pen: 'k', fungus_garden: 'l', repletion_hall: 'm', hibernaculum: 'n',
+  thermal_chimney: 'o', gate: 'p', water_well: 'q', nuptial_chamber: 'r', deep_vault: 's',
+});
+
+/** C219: chambers kept per Colony History record, the largest first (the save budget: about 9 characters each). */
+export const HISTORY_CHAMBERS_MAX = 24;
+
 /** Chambers by id (ARCHITECTURE §6.3 shape). */
 export const CHAMBERS = freeze({
   royal_chamber: {
@@ -200,7 +213,7 @@ export const ADJACENCY_ORDER = freeze(['adj_nursery_royal', 'adj_library_royal',
  */
 export const ADJACENCY = freeze({
   adj_nursery_royal:      { id: 'adj_nursery_royal', a: 'nursery', b: 'royal_chamber', path: 4, text: '+15% brood speed' },
-  adj_library_royal:      { id: 'adj_library_royal', a: 'scent_library', b: 'royal_chamber', path: 4, text: 'Library ×1.10' },
+  adj_library_royal:      { id: 'adj_library_royal', a: 'scent_library', b: 'royal_chamber', path: 4, text: 'Scent Library ×1.10' },
   adj_granary_repletion:  { id: 'adj_granary_repletion', a: 'granary', b: 'repletion_hall', path: 4, text: 'Replete cap bonus ×1.25' },
   adj_garden_well:        { id: 'adj_garden_well', a: 'fungus_garden', b: 'water_well', path: 4, text: 'Garden +30%' },
   hyg_midden:             { id: 'hyg_midden', a: 'midden', b: ['nursery', 'fungus_garden'], path: 6, text: 'Hygiene −20%' },

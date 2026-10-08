@@ -84,7 +84,7 @@ const GROW_L = (GEOM && GEOM.footprintMaxL) || 8;
 const PLACE_TRIES = 30;
 const PLACE_ROW = Object.freeze({ default: 8, granary: 4, scent_library: 26, barracks: 6, war_hall: 34, midden: 30, nuptial_chamber: 12 });
 
-const PURCHASE_TYPES = new Set(['buyAdaptation', 'buyResearch', 'buyRefinement', 'placeChamber', 'levelChamber', 'buyMound',
+const PURCHASE_TYPES = new Set(['buyAdaptation', 'buyResearch', 'buyRefinement', 'placeChamber', 'levelChamber',
   'claimHex', 'buyTrait', 'buyFederation', 'buyGenome']);
 const PURCHASE_EVENTS = new Set(['adaptationBought', 'researchBought', 'refinementBought', 'chamberLeveled', 'moundLeveled', 'claimDone']);
 
@@ -268,7 +268,8 @@ export class Bot {
     };
     if (u.job_herder) { counts.herder = Math.min(capOf('herder'), Math.floor(0.15 * m)); free -= counts.herder; }
     if (u.job_gardener) { counts.gardener = Math.min(capOf('gardener'), Math.floor(0.1 * m)); free -= counts.gardener; }
-    if (u.job_leafcutter) { counts.leafcutter = Math.min(free, counts.gardener > 0 ? counts.gardener : Math.floor(0.05 * m)); free -= counts.leafcutter; }
+    // C238: leafcutters only once a Fungus Garden stores leaves (jobCap is 0 before)
+    if (u.job_leafcutter) { counts.leafcutter = Math.min(free, capOf('leafcutter'), counts.gardener > 0 ? counts.gardener : Math.floor(0.05 * m)); free -= counts.leafcutter; }
     const r = { ...POLICY.jobRatio };
     if (this.soilBinding) { r.digger = POLICY.diggerRatioSoil; r.forager = 1 - r.digger - r.nurse - r.scout; }
     if (!u.job_digger) { r.forager += r.digger; r.digger = 0; }
@@ -531,11 +532,7 @@ export class Bot {
     if (agg.libraryInsight > 0 && this.growType('scent_library', { levelOnly: true })) return;
     if (royal && u.royal_levelup && !housingFull && this.growType('royal_chamber', { levelOnly: true })) return;
     if (this.chambersOf('carapace_workshop').length > 0 && this.growType('carapace_workshop', { levelOnly: true })) return;
-    // 4. Mound (soil sink) when soil is plentiful.
-    if (u.mound) {
-      const mc = q(surface.moundCost, s);
-      if (mc && Number.isFinite(mc.soil) && s.run.res.soil >= 2 * mc.soil && canAfford(s, mc)) this.act('buyMound', {});
-    }
+    // 4. C220: the Mound grows on its own with the colony (nothing to buy).
   }
 
   adaptPolicy() {

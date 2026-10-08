@@ -108,13 +108,16 @@ export function buildAutoBox({ game, bridge }) {
   const autoPart = h('div', null, ch.el, md.el, prioBox);
   const el = h('section', { class: 'sec auto-box auto-build' }, h('h3', { class: 'sec-title', text: 'Automation' }), autoPart, bpHint);
   const renderPrio = (s) => {
-    const prio = arr(obj(s.meta && s.meta.automation && s.meta.automation.autobuy).priority);
+    // C220: the Mound grows on its own, so its autobuyer is hidden; it stays last in the saved order
+    const full = arr(obj(s.meta && s.meta.automation && s.meta.automation.autobuy).priority);
+    const prio = full.filter((c) => c !== 'mound');
+    const tail = full.filter((c) => c === 'mound');
     const sig = prio.join(',');
     if (prioList.__sig === sig) return;
     prioList.__sig = sig;
     clear(prioList);
     prio.forEach((p, i) => {
-      const move = (j) => { const n = prio.slice(); [n[i], n[j]] = [n[j], n[i]]; act('setAutomation', { patch: { autobuy: { priority: n } } }); };
+      const move = (j) => { const n = prio.slice(); [n[i], n[j]] = [n[j], n[i]]; act('setAutomation', { patch: { autobuy: { priority: n.concat(tail) } } }); };
       prioList.appendChild(h('li', null, h('span', { text: AUTOBUY_NAMES[p] || p }),
         h('button', { type: 'button', class: 'btn btn-icon', text: '↑', disabled: i === 0, attrs: { 'aria-label': 'Earlier' }, on: { click: () => move(i - 1) } }),
         h('button', { type: 'button', class: 'btn btn-icon', text: '↓', disabled: i === prio.length - 1, attrs: { 'aria-label': 'Later' }, on: { click: () => move(i + 1) } })));
@@ -131,6 +134,7 @@ export function buildAutoBox({ game, bridge }) {
       if (!own) return;
       setProp(ch.input, 'checked', autobuyOn(s, 'chambers'));
       setProp(md.input, 'checked', autobuyOn(s, 'mound'));
+      show(md.el, false);   // C220
       renderPrio(s);
     },
   };

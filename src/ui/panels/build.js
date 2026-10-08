@@ -1,18 +1,20 @@
 // Build panel: chamber list (locked items greyed with their unlock condition), dig-queue chips (reorder, cancel,
 // work, ETA), Help Dig, tools (backfill), the Mound, the inspect view of the selected chamber (level up with direction,
 // relocate, demolish, modifiers) and blueprints. Owner: WP9. Contract: ARCHITECTURE §14.5 (Build row), §8.2, §13.7.
-// Queries: nest.placementCost, nest.levelInfo, d.nest.queueInfo, surface.moundCost.
+// Queries: nest.placementCost, nest.levelInfo, d.nest.queueInfo, surface.moundGrowth (C220).
 
 import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
-import { fmt, fmtCount, fmtTime, fmtMult, fmtRate } from '../format.js';
-import { nameOf, CHAMBER_TIPS, CHAMBER_ABOUT, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText,
+import { fmt, fmtCount, fmtTime, fmtMult, fmtRate, fmtPct } from '../format.js';
+import { nameOf, CHAMBER_TIPS, CHAMBER_ABOUT, chamberAboutText, DIG_KIND_NAMES, unlockHint, reasonText, placementRuleLines, levelGainText, adjacencyLines, linkText,
   plannedWaitText, blueprintLockHint, BLUEPRINT_EDIT_LOCKED } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks, unneededTunnels, pocketAction, pocketAt,
-  rootCap, rootCost, plannedWaits, plannedWait } from '../../systems/nest.js';
+  rootCap, rootCost, plannedWaits, plannedWait, upgradeAffordable } from '../../systems/nest.js';
+import { isAvailable as researchAvailable } from '../../systems/research.js';
+import { UNLOCKS } from '../../data/unlocks.js';
 import { DRAINAGE, ROOT_CULT } from '../../data/soilFeatures.js';
-import { moundCost } from '../../systems/surface.js';
-import { CHAMBER_ORDER, CHAMBERS } from '../../data/chambers.js';
+import { moundGrowth } from '../../systems/surface.js';
+import { CHAMBER_ORDER, CHAMBERS, CHAMBER_RULES } from '../../data/chambers.js';
 import { DIG } from '../../data/strata.js';
 import { MOUND } from '../../data/surface.js';
 import { RESEARCH } from '../../data/research.js';
@@ -24,7 +26,6 @@ import { CLICK_CAP, GRID } from '../../data/balance.js';
 import { makeAct, note, progressBar, armedButton, subTabStrip } from './common.js';
 import { buildAutoBox } from './automation.js';
 
-const GRID_COLS = (GRID && GRID.cols) || 40;
 
 /** Chamber ids when data/chambers.js is still empty (DESIGN §7.6 order). */
 export const CHAMBER_FALLBACK = Object.freeze(['royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks',
@@ -188,16 +189,194 @@ export function cheapestButton(s, d, type, { selectedUid = 0, compact = false } 
   if (!c) return { show: false, uid: 0, label: '', tip: '', ok: false, self: false };
   const many = num(c.count) > 1;
   const self = !!selectedUid && c.uid === selectedUid;
-  const food = num(c.cost && c.cost.food);
-  const short = food > 0 ? fmt(food) : num(c.cost && c.cost.soil) > 0 ? fmt(num(c.cost.soil)) + ' soil' : '';
+  // C212: every resource of the cost, named ("47.7K food · 2.1K soil"); the button also draws them with icons
+  const short = costShortText(c.cost);
   const g = q(() => levelGain(s, d, c.uid), null);
   const lines = g && !g.max ? g.lines.map(levelGainText).filter(Boolean) : [];
   const head = many ? (self ? 'This one is the cheapest to level. ' : 'Levels the cheapest ' + nameOf('chamber', type) + ': ') : '';
   // C142: L levels the cheapest of the type, Shift+L the selected one
   const tip = head + 'L' + fmtCount(num(c.level)) + ' → L' + fmtCount(num(c.level) + 1) + ': ' + (lines.join('; ') || 'next level')
     + '. Cost ' + costText(c.cost) + '.' + (many ? ' Key: L with a ' + nameOf('chamber', type) + ' selected.' : ' Key: L with it selected.');
-  const label = compact ? (many ? 'Lvl cheapest' : 'Lvl up') + (short ? ' · ' + short : '') : 'Level cheapest (L)';
-  return { show: compact ? true : many, uid: c.uid, label, tip, ok: q(() => canPay(s, c.cost), true), self };
+  const head2 = compact ? (many ? 'Lvl cheapest' : 'Lvl up') : 'Level cheapest (L)';
+  const label = compact ? head2 + (short ? ' · ' + short : '') : head2;
+  const up = q(() => upgradeAffordable(s, d, c.uid), false);
+  return { show: compact ? true : many, uid: c.uid, label, head: head2, cost: { ...obj(c.cost) }, tip, ok: q(() => canPay(s, c.cost), true), self, up };
+}
+
+/**
+ * C212: a cost as short named parts, "47.7K food · 2.1K soil" (resources with an amount, in the cost's order).
+ * @param {Object|null} cost
+ * @returns {string}
+ */
+export function costShortText(cost) {
+  return Object.keys(obj(cost)).filter((r) => num(cost[r]) > 0).map((r) => fmt(num(cost[r])) + ' ' + r).join(' · ');
+}
+
+/**
+ * C213: the frost line of a chamber's tooltip (nest.chamberFrost): exposed now ("Frost-exposed: 4 of 6 cells above
+ * the frost line (row 18): effect ×0.5"), or in a hard winter when it straddles that line ("Safe from frost: most cells
+ * below the frost line (2 of 6 above)"); '' when frost does not concern it.
+ * @param {Object|null} fr nest.chamberFrost
+ * @param {boolean} [exposedNow] derive's exposed flag (frost or a frost snap)
+ * @returns {string}
+ */
+export function frostTipLine(fr, exposedNow = false) {
+  if (!fr || fr.immune) return '';
+  const n = fr.now;
+  if (exposedNow || (n && n.exposed)) {
+    const a = n && n.total > 0 && n.exposed ? n : fr.hard;
+    return 'Frost-exposed: ' + fmtCount(a.above) + ' of ' + fmtCount(a.total) + ' cells above the frost line'
+      + (a.row > 0 ? ' (row ' + fmtCount(Math.ceil(a.row)) + ')' : '') + ': effect ×' + num(CHAMBER_RULES && CHAMBER_RULES.frostMult, 0.5) + '.';
+  }
+  const hd = fr.hard;
+  if (hd && hd.exposed) return 'Frost-exposed in a hard winter: ' + fmtCount(hd.above) + ' of ' + fmtCount(hd.total) + ' cells above row ' + fmtCount(Math.ceil(hd.row)) + '.';
+  if (hd && hd.straddles) return 'Safe from frost: most cells below the frost line (' + fmtCount(hd.above) + ' of ' + fmtCount(hd.total) + ' above row ' + fmtCount(Math.ceil(hd.row)) + ').';
+  return '';
+}
+
+/**
+ * C216: the yellow "house" pip over the Royal Chamber (drawn while housing is full): what it means and what to do.
+ * @param {Object} s
+ * @param {Object} d
+ * @returns {string[]}
+ */
+export function housePipLines(s, d) {
+  const cap = num(d && d.stats && d.stats.housing);
+  const adults = num(s && s.run && s.run.colony && s.run.colony.adults && s.run.colony.adults.minor);
+  let brood = 0;
+  for (const b of arr(s && s.run && s.run.colony && s.run.colony.brood)) brood += num(b && b.n);
+  return ['Housing full: ' + fmtCount(Math.floor(adults + brood)) + ' / ' + fmtCount(Math.floor(cap)) + ' (workers and brood).',
+    'The queen\'s eggs wait for room. Build or level Galleries to house more ants.', 'Click to open the Build tab.'];
+}
+
+/**
+ * C217: the golden pupa's tooltip lines (what it is, how long it stays, the click).
+ * @param {Object} s
+ * @returns {string[]}
+ */
+export function pupaTipLines(s) {
+  const pu = s && s.run && s.run.golden && s.run.golden.pupa;
+  const left = pu ? Math.max(0, Math.ceil(num(pu.t))) : 0;
+  return ['A rare golden pupa from the queen\'s eggs (the pulsing gold glow).', 'Click to claim Frenzy or Windfall.'
+    + (left > 0 ? ' Gone in ' + fmtTime(left) + '.' : '')];
+}
+
+/**
+ * C214: the "Dug by" line of a nest cell's tooltip (nest.cellInfo(...).dugBy), for open or queued tunnel cells the
+ * player did not draw: "Dug by: a mole (Mole Tunnel event)", "Dug by: access tunnel for the planned Granary", "Dug by:
+ * auto-route to the Gallery", …; '' otherwise (a chamber cell or plain soil keeps its own lines).
+ * @param {{ dugBy?: { why: string, type: string|null }|null, code?: number }|null} info
+ * @returns {string}
+ */
+export function dugByText(info) {
+  const db = info && info.dugBy;
+  if (!db) return '';
+  const ch = db.type ? nameOf('chamber', db.type) : '';
+  const what = {
+    mole: 'a mole (Mole Tunnel event): a free tunnel',
+    access: 'access tunnel for the planned ' + (ch || 'chamber') + ' (blueprint)',
+    blueprint: 'your blueprint\'s saved tunnels',
+    route: 'auto-route to the ' + (ch || 'chamber') + ' (it did not touch an open cell)',
+    shaft: ch ? 'the ' + ch + '\'s exit shaft' : 'an entrance shaft',
+    cache: 'a dig to buried soil you clicked',
+    court: "the passage joining your queens' chambers",
+    royalOld: "the Royal Chamber's old room (your blueprint moved it)",
+  }[db.why];
+  return what ? 'Dug by: ' + what + '.' : '';
+}
+
+/** C217: the queen's tooltip line about the soft glow on her abdomen (each egg she lays). */
+export function queenGlowLine() {
+  return 'Her abdomen glows softly each time she lays eggs.';
+}
+
+/** localStorage key of the Build tab's "Hide maxed" toggle (per-browser UI convenience, outside the save; C212). */
+export const HIDE_MAXED_KEY = 'sld.build.hideMaxed';
+
+function browserStore() {
+  try {
+    return typeof window !== 'undefined' && window && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Remembered "Hide maxed" choice (false when storage is missing or blocked). */
+export function loadHideMaxed(store = browserStore()) {
+  try {
+    return !!store && store.getItem(HIDE_MAXED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Remember the "Hide maxed" choice; storage failures keep it for this session only. */
+export function saveHideMaxed(on, store = browserStore()) {
+  try {
+    if (store) store.setItem(HIDE_MAXED_KEY, on ? '1' : '0');
+  } catch { /* storage blocked */ }
+}
+
+/**
+ * C212: is an unlock condition "known" to the player before it is met — a research node that can be bought now
+ * (its prerequisites owned; visible and buyable in the Research tab) or already owned, or a combination (any / all)
+ * of known parts. Milestones (adult counts, run time, custom triggers, built chambers) are not: the chamber they
+ * unlock stays hidden until it arrives.
+ * @param {Object} s
+ * @param {Object} cond data/unlocks.js condition
+ * @returns {boolean}
+ */
+export function condKnown(s, cond) {
+  if (!cond || typeof cond !== 'object') return false;
+  if (Array.isArray(cond.any)) return cond.any.some((c) => condKnown(s, c));
+  if (Array.isArray(cond.all)) return cond.all.length > 0 && cond.all.every((c) => condKnown(s, c) || condMet(s, c));
+  if (typeof cond.research === 'string') {
+    if (!isShown(s, 'panel_research')) return false;
+    return hasResearch(s, cond.research) || q(() => researchAvailable(s, cond.research), false);
+  }
+  if (typeof cond.flag === 'string') return isShown(s, cond.flag);
+  return false;
+}
+
+/** A simple part already met (a flag shown, a research owned); used by condKnown's `all`. */
+function condMet(s, cond) {
+  if (!cond || typeof cond !== 'object') return false;
+  if (typeof cond.research === 'string') return hasResearch(s, cond.research);
+  if (typeof cond.flag === 'string') return isShown(s, cond.flag);
+  return false;
+}
+
+/**
+ * C212: the Build tab's chamber list (the Royal Chamber has its own pinned row): every type that is unlocked, already
+ * built, or locked behind a known unlock (condKnown; shown greyed with its requirement). Types whose unlock is not yet
+ * revealed are left out entirely. Order: placeable types first, then types at their instance limit (dropped with
+ * hideMaxed), then locked ones; data order within each group.
+ * @param {Object} s
+ * @param {{ hideMaxed?: boolean, ids?: string[] }} [opts]
+ * @returns {{ ids: string[], hidden: number, states: Object<string, 'open'|'maxed'|'locked'> }}
+ */
+export function chamberListing(s, { hideMaxed = false, ids = null } = {}) {
+  const all = (ids || chamberIds()).filter((id) => id !== 'royal_chamber');
+  const states = {};
+  const groups = { open: [], maxed: [], locked: [] };
+  let hidden = 0;
+  for (const id of all) {
+    const key = chamberKey(id);
+    const unlocked = isShown(s, key);
+    const have = arr(s && s.run && s.run.nest && s.run.nest.chambers).filter((c) => c && c.type === id).length;
+    let st;
+    if (unlocked) st = have >= maxInstances(s, id) ? 'maxed' : 'open';
+    else if (have > 0) st = 'locked';
+    else {
+      const u = UNLOCKS.find((x) => x && x.key === key);
+      if (!u || !condKnown(s, u.cond)) continue;
+      st = 'locked';
+    }
+    if (st === 'maxed' && hideMaxed) { hidden++; continue; }
+    states[id] = st;
+    groups[st].push(id);
+  }
+  return { ids: [...groups.open, ...groups.maxed, ...groups.locked], hidden, states };
 }
 
 /**
@@ -415,26 +594,33 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     h('div', { class: 'row-between' }, digRate, h('span', { class: 'btn-row' }, helpBtn, backfillBtn, unneededBtn)), noDiggers, queueList, queueEmpty);
 
   // --- chambers ---
-  const royalRow = h('div', { class: 'buy-row royal-row' });
-  const royalLvl = h('span', { class: 'lvl' });
-  royalRow.append(h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('chamber', 'royal_chamber') }), royalLvl,
-    h('span', { class: 'buy-desc', text: CHAMBER_TIPS.royal_chamber })),
-  h('div', { class: 'buy-side' }, h('button', { type: 'button', class: 'btn btn-small', text: 'Inspect',
-    on: { click: () => { bridge.select({ view: 'nest', kind: 'chamber', id: 1 }); ui.setUI({ subTab: 'inspect' }); } } })));
+  // C212: the Royal Chamber is a full chamber row (level up / level cheapest with its cost, ▲ when affordable, place
+  // another with Polygyny / Queens' Council), pinned above the list, plus Inspect.
+  const royalRow = createChamberRow('royal_chamber');
+  royalRow.classList.add('royal-row');
+  royalRow.__r.side.appendChild(h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Inspect',
+    on: { click: () => { bridge.select({ view: 'nest', kind: 'chamber', id: 1 }); ui.setUI({ subTab: 'inspect' }); } } }));
   const chamberList = h('div', { class: 'list chamber-list' });
-  const chamberSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Chambers' }), royalRow, chamberList);
+  // C212: "Hide maxed" drops types at their instance limit (remembered per browser)
+  let hideMaxed = loadHideMaxed();
+  const hideMaxedBox = h('input', { type: 'checkbox', class: 'check' });
+  hideMaxedBox.checked = hideMaxed;
+  hideMaxedBox.addEventListener('change', () => { hideMaxed = !!hideMaxedBox.checked; saveHideMaxed(hideMaxed); });
+  const hiddenMaxed = h('span', { class: 'muted hide-owned-count' });
+  const hideMaxedRow = h('label', { class: 'toggle-row hide-maxed', dataset: { tip: 'Hide chamber types you have built to their limit. They can still be levelled from the nest (L) or the Inspect tab.' } },
+    hideMaxedBox, h('span', { text: 'Hide maxed' }), hiddenMaxed);
+  const chamberSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Chambers' }), royalRow, hideMaxedRow, chamberList);
 
   // --- mound ---
+  // C220: the Mound grows on its own with the colony (adults, chamber levels, digging): a progress bar, no purchase
   const moundLvl = h('span', { class: 'lvl' });
-  const moundCostEl = h('span', { class: 'cost' });
-  const moundBtn = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Raise',
-    on: { click: (ev) => act('buyMound', {}, ev, moundBtn) } });
+  const moundBar = progressBar('bar-thin');
   const moundNote = h('p', { class: 'note' });
   const moundSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Mound' }),
     h('div', { class: 'buy-row', dataset: { tip: 'Better defence, wider auto-claim, softer winters.' } },
       h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: 'Mound' }), moundLvl,
-        h('span', { class: 'buy-desc', text: 'Soil heaped at the entrance: defence, territory, warmth.' })),
-      h('div', { class: 'buy-side' }, moundCostEl, moundBtn)), moundNote);
+        h('span', { class: 'buy-desc', text: 'Grows by itself as the colony grows: more ants, bigger chambers, more digging.' }))),
+    moundBar.el, moundNote);
 
   // --- cultivated roots (C118) ---
   const rootMeta = h('span', { class: 'lvl' });
@@ -570,19 +756,27 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     const adjEl = h('span', { class: 'buy-desc buy-adj', text: adjLines.length ? 'Adjacency: ' + adjLines.join(' ') : '' });
     if (!adjLines.length) adjEl.hidden = true;
     // C108: level the instance with the lowest next cost (tooltip: what that level gives).
+    // C212: the label, then the cost with resource icons ("Lvl cheapest · 🍞47.7K · ⛏2.1K")
+    const cheapLabel = h('span', { class: 'cheap-label' });
+    const cheapCost = h('span', { class: 'cost cheap-cost' });
     const cheap = h('button', { type: 'button', class: 'btn btn-small btn-buy btn-cheapest',
-      on: { click: (ev) => { const c = q(() => cheapestLevel(game.s, game.d, id), null); if (c) act('levelChamber', { uid: c.uid }, ev, cheap); } } });
+      on: { click: (ev) => { const c = q(() => cheapestLevel(game.s, game.d, id), null); if (c) act('levelChamber', { uid: c.uid }, ev, cheap); } } },
+    cheapLabel, cheapCost);
+    // C212: ▲ = the cheapest instance's next level can be bought right now (the nest view's badge, C156)
+    const upMark = h('span', { class: 'up-mark', text: '▲', dataset: { tip: 'Upgrade affordable: its next level can be bought now.' } });
+    upMark.hidden = true;
     const place = h('button', { type: 'button', class: 'btn btn-small btn-buy', text: 'Place',
       on: { click: () => {
         const t = ui.getUI().tool;
         if (t && t.kind === 'placeChamber' && t.chamber === id) ui.setUI({ tool: null });
         else { ui.setUI({ tool: { kind: 'placeChamber', chamber: id } }); switchToNest(); }
       } } });
+    const side = h('div', { class: 'buy-side' }, costEl, place, cheap);
     const row = h('div', { class: 'buy-row chamber-row', dataset: { id } }, // the description is on the row: no duplicate tooltip
-      h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('chamber', id) }), inst,
+      h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: nameOf('chamber', id) }), inst, upMark,
         h('span', { class: 'buy-desc', text: CHAMBER_TIPS[id] || '' }), adjEl, req, lockHint),
-      h('div', { class: 'buy-side' }, costEl, place, cheap));
-    row.__r = { inst, costEl, lockHint, place, req, cheap };
+      side);
+    row.__r = { inst, costEl, lockHint, place, req, cheap, cheapLabel, cheapCost, upMark, side };
     return row;
   }
 
@@ -599,30 +793,41 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     const rules = chamberRuleText(s, d, id);
     setText(r.req, rules ? 'Placement: ' + rules : '');
     show(r.req, !!rules);
-    const c = unlocked ? q(() => placementCost(s, id), null) : null;
+    const royal = id === 'royal_chamber';
+    const c = unlocked && have < max ? q(() => placementCost(s, id), null) : null;
     const capMsg = unlocked && have < max ? overCapHint(c, d) : '';
-    setText(r.lockHint, unlocked ? capMsg : unlockHint(key));
+    // C212: the Royal Chamber's levels wait for the royal_levelup unlock (20 adults); say so on its row
+    const royalLock = royal && !isShown(s, 'royal_levelup') ? unlockHint('royal_levelup') : '';
+    setText(r.lockHint, unlocked ? capMsg || royalLock : unlockHint(key));
     toggleClass(r.lockHint, 'warn', !!capMsg);
     if (unlocked) {
-      const ok = setCost(r.costEl, have >= max ? null : c, s);
+      // a type at its limit shows no placement cost (its level-up cost is on the Level button)
+      show(r.costEl, have < max);
+      const ok = have < max ? setCost(r.costEl, c, s) : true;
       toggleClass(row, 'cant', !ok && have < max);
       toggleClass(row, 'maxed', have >= max);
       setProp(r.place, 'disabled', have >= max);
+      // the Royal Chamber's Place button only matters when a second queen's chamber is allowed
+      show(r.place, !royal || max > 1);
       const t = ui.getUI().tool;
       const active = !!(t && t.kind === 'placeChamber' && t.chamber === id);
       toggleClass(row, 'active', active);
       setText(r.place, active ? 'Cancel' : have >= max ? 'Max' : 'Place');
     }
     // C108: level the cheapest instance of this type (Shift+L in the nest).
-    // C122: compact ("Lvl cheapest · 1.20K"), green when affordable, quiet when not; the detail is in the tooltip.
+    // C122 / C212: compact ("Lvl cheapest · 1.20K food · 300 soil", icons on the cost), green when affordable, quiet
+    // when not; the detail is in the tooltip.
     const cb = unlocked && have > 0 ? cheapestButton(s, d, id, { compact: true }) : null;
-    show(r.cheap, !!cb && cb.show && isShown(s, id === 'royal_chamber' ? 'royal_levelup' : key));
+    const showCheap = !!cb && cb.show && isShown(s, royal ? 'royal_levelup' : key);
+    show(r.cheap, showCheap);
     if (cb && cb.show) {
-      setText(r.cheap, cb.label);
+      setText(r.cheapLabel, cb.head);
+      setCost(r.cheapCost, cb.cost, s);
       toggleClass(r.cheap, 'cant', !cb.ok);
       r.cheap.dataset.tip = cb.tip;
-      r.cheap.setAttribute('aria-label', (num(have) > 1 ? 'Level cheapest. ' : 'Level up. ') + cb.tip);
+      r.cheap.setAttribute('aria-label', cb.label + '. ' + cb.tip);
     }
+    show(r.upMark, showCheap && !!cb.up);
     toggleClass(row, 'glow', ui.getUI().glow === 'build:' + id);
   }
 
@@ -729,7 +934,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     const kind = sel && sel.view === 'nest' ? sel.kind : null;
     if (kind === 'planned') {
       const cell = num(sel.i, -1);
-      const sp = arr(s.run.nest.bpPending).find((p) => p && Number.isInteger(p.x) && Number.isInteger(p.y) && p.y * GRID_COLS + p.x === cell);
+      const sp = arr(s.run.nest.bpPending).find((p) => p && Number.isInteger(p.x) && Number.isInteger(p.y) && p.y * GRID.cols + p.x === cell);
       if (!sp) return false;
       setText(featTitle, 'Planned: ' + nameOf('chamber', sp.type));
       setText(featBadge, 'Blueprint');
@@ -800,7 +1005,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     const dc = obj(arr(d && d.nest && d.nest.chambers)[idx]);
     setText(inspTitle, nameOf('chamber', ch.type) + ' · L' + fmtCount(num(ch.level)) + (num(ch.target) > num(ch.level) ? ' → L' + fmtCount(ch.target) : ''));
     setText(inspStatus, STATUS_NAMES[ch.status] || ch.status || '');
-    setText(inspAbout, CHAMBER_ABOUT[ch.type] || CHAMBER_TIPS[ch.type] || '');
+    setText(inspAbout, chamberAboutText(ch.type, dc, d));   // C211: + a Barracks' entrance distance, the frost-exposure rule
     toggleClass(inspStatus, 'badge-good', ch.status === 'active');
     toggleClass(inspStatus, 'badge-warn', ch.status !== 'active');
     const digging = ch.status !== 'active';
@@ -923,23 +1128,31 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         setText(unneededBtn, 'Backfill unneeded…');
       }
       // chambers
-      const royal = arr(s.run.nest.chambers).find((c) => c && c.uid === 1);
-      show(royalRow, isShown(s, 'royal_levelup') && !!royal);
-      if (royal) setText(royalLvl, 'L' + fmtCount(num(royal.level)));
-      const ids = chamberIds().filter((id) => id !== 'royal_chamber' || maxInstances(s, id) > 1);
-      // Every chamber is listed; locked ones are greyed with their unlock condition (DESIGN §25.3).
-      syncList(chamberList, ids, (id) => id, createChamberRow, (row, id) => updateChamberRow(row, id, s, d));
+      // C212: the Royal Chamber's pinned row (level badge in its count: "L3 · 1 / 1")
+      const royals = arr(s.run.nest.chambers).filter((c) => c && c.type === 'royal_chamber');
+      show(royalRow, royals.length > 0);
+      if (royals.length) {
+        updateChamberRow(royalRow, 'royal_chamber', s, d);
+        const lv = royals.map((c) => 'L' + fmtCount(num(c.level))).join(', ');
+        setText(royalRow.__r.inst, lv + (maxInstances(s, 'royal_chamber') > 1 ? ' · ' + fmtCount(royals.length) + ' / ' + fmtCount(maxInstances(s, 'royal_chamber')) : ''));
+      }
+      // C212: placeable types first, then maxed ones (hidden with "Hide maxed"), then locked types whose unlock is known
+      // (greyed with their requirement); types whose unlock is not revealed yet are not listed at all.
+      const listing = chamberListing(s, { hideMaxed });
+      setText(hiddenMaxed, hideMaxed && listing.hidden > 0 ? '(' + fmtCount(listing.hidden) + ' hidden)' : '');
+      show(hideMaxedRow, hideMaxed || Object.values(listing.states).includes('maxed'));
+      syncList(chamberList, listing.ids, (id) => id, createChamberRow, (row, id) => updateChamberRow(row, id, s, d));
       // mound
       const mUnlocked = isShown(s, 'mound');
       show(moundSec, mUnlocked);
       if (mUnlocked) {
         const L = num(s.run.surface && s.run.surface.mound);
         setText(moundLvl, 'L' + fmtCount(L));
-        const c = q(() => moundCost(s), null);
-        const ok = setCost(moundCostEl, c, s);
-        toggleClass(moundBtn, 'cant', !ok);
+        const g = q(() => moundGrowth(s), null);   // C220
         const free = num(MOUND && MOUND.freeMax, 5);
-        setText(moundNote, L >= free && !hasResearch(s, 'mound_building') ? 'Levels above ' + free + ' need Mound Building research.' : '');
+        const capped = L >= free && !hasResearch(s, 'mound_building');
+        moundBar.set(g && !capped ? num(g.prog) : 1, capped ? 'Waiting for Mound Building' : fmtPct(g ? num(g.prog) : 0, { signed: false }) + ' to L' + fmtCount(L + 1));
+        setText(moundNote, capped ? 'Levels above ' + free + ' need Mound Building research; the Mound keeps growing once you have it.' : '');
       }
       // cultivated roots (C118)
       const rootsOn = hasResearch(s, ROOT_CULT ? ROOT_CULT.research : 'root_cultivation');
@@ -974,7 +1187,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         syncList(plannedList, pend, (p) => p.type + '|' + p.x + '|' + p.y + '|' + (p.float ? 'f' : ''), (p0) => {
           const label = h('span', { class: 'planned-label' });
           const why = h('span', { class: 'planned-wait' });
-          const cell = p0.y * GRID_COLS + p0.x;
+          const cell = p0.y * GRID.cols + p0.x;
           const btn = h('button', { type: 'button', class: 'btn btn-icon btn-danger-ghost', text: '×', attrs: { 'aria-label': 'Cancel planned chamber' },
             dataset: { tip: 'Cancel this planned chamber (this run only).' },
             on: { click: (ev) => act('cancelPlanned', { cell }, ev, btn) } });

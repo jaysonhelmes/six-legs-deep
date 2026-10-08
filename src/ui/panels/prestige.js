@@ -13,7 +13,10 @@ import {
 } from '../text.js';
 import { isShown, traitLevel, fedLevel, genomeLevel, num, arr, obj } from '../reveal.js';
 import { projectAlates, projectKinship, projectGenes, kinshipBreakdown } from '../../systems/prestige.js';
-import { broodSummary } from '../../systems/population.js';
+import * as TEXT from '../text.js';
+import { broodSummary, alateQueueCost } from '../../systems/population.js';
+import { CASTES } from '../../data/castes.js';
+import { EVENTS } from '../../data/events.js';
 import { eggCost } from '../../systems/stats.js';
 import { traitCost, fedCost, genomeCost } from '../../systems/traits.js';
 import { goal as hardshipGoal, effectiveTier } from '../../systems/hardships.js';
@@ -22,7 +25,7 @@ import { FED_ORDER, FEDERATION } from '../../data/federation.js';
 import { GENOME_ORDER, GENOME, SPECIES_ORDER, SPECIES } from '../../data/genome.js';
 import { FLIGHT, SUPER, SPEC, HARDSHIP, HARDSHIPS, EDICTS } from '../../data/prestige.js';
 import { SOFTCAPS } from '../../data/balance.js';
-import { YEAR } from '../../data/seasons.js';
+import { YEAR, SEASON_MODS } from '../../data/seasons.js';
 import { makeAct, note, progressBar, subTabStrip, sliderRow } from './common.js';
 import { historyCount } from '../history.js';
 import { flightAutoBox, superAutoBox } from './automation.js';
@@ -57,6 +60,59 @@ export function rearedRuleText(max = num(FLIGHT.rearedMax, 25)) {
   const pct = Math.round(per * 100);
   return 'Each reared alate gives +' + pct + '% more alates on your next flight (+' + pct + '% each, additive: ' + max + ' reared = +'
     + Math.round(per * max * 100) + '%).';
+}
+
+/**
+ * C232: a cost in words, "1.2K food + 6.6 honeydew" ('' for null).
+ * @param {Object|null} cost
+ * @returns {string}
+ */
+export function costWords(cost) {
+  if (!cost) return '';
+  return Object.keys(cost).filter((r) => num(cost[r]) > 0).map((r) => fmt(num(cost[r])) + ' ' + r).join(' + ');
+}
+
+/**
+ * C232: tooltip of a Rear n button: what the n alates will cost when laid, and that nothing is paid now.
+ * @param {number} n
+ * @param {Object|null} cost population.alateQueueCost(s, d, n)
+ * @returns {string}
+ */
+export function rearButtonTip(n, cost) {
+  const w = costWords(cost);
+  return 'Queue ' + n + (n === 1 ? ' alate' : ' alates') + (w ? ': about ' + w + ' in all, paid as the queen lays each egg' : '')
+    + '. Nothing is paid now, and Cancel queued is free.';
+}
+
+/**
+ * C232: Flight Day in one line, from the event data (summer only, needs Nuptial Preparation, lasts N min): shown on the
+ * "Flight weather" row of "What increases flight alates" (the row's tooltip is flightDayTip()).
+ * @returns {string}
+ */
+export function flightDayLine() {
+  const ev = EVENTS && EVENTS.ev_flight_day ? EVENTS.ev_flight_day : null;
+  const n = ev && ev.num ? ev.num : {};
+  const sec = num(n.sec, 180);
+  const dur = sec % 60 === 0 ? (sec / 60) + ' min' : fmtTime(sec);
+  return 'Flight Day: a random summer event (once you have Nuptial Preparation) that gives perfect flight weather, ×'
+    + num(n.w, 1.5) + ' alates for ' + dur + '. Fly while it lasts; it replaces summer\'s ×'
+    + num(SEASON_MODS.summer && SEASON_MODS.summer.flightW, 1.25) + ' (the better one counts).';
+}
+
+/**
+ * C232: the weather row's tooltip: the Manual's Flight Day text (text.js flightDayText, C210) when present, else the
+ * short line.
+ * @returns {string}
+ */
+export function flightDayTip() {
+  const t = TEXT.flightDayText;
+  if (typeof t === 'function') {
+    try {
+      const v = t();
+      if (typeof v === 'string' && v) return v;
+    } catch { /* fall back */ }
+  }
+  return flightDayLine();
 }
 
 /** C169: what raises kinship, in words (shown under the kinship breakdown). */
@@ -188,13 +244,24 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const alateCost = h('span', { class: 'cost' });
   const rear1 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 1', on: { click: (ev) => act('rearAlate', { n: 1 }, ev, rear1) } });
   const rear5 = h('button', { type: 'button', class: 'btn btn-small', text: 'Rear 5', on: { click: (ev) => act('rearAlate', { n: 5 }, ev, rear5) } });
+  // C232: the queue can be emptied (free: eggs are paid when laid), and the price of queueing 1 / 5 more is shown
+  const cancelRear = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Cancel queued',
+    dataset: { tip: 'Empty the rearing queue. Free: queued alates cost nothing until the queen lays their eggs. Eggs already laid keep growing.' },
+    on: { click: (ev) => act('cancelRear', {}, ev, cancelRear) } });
+  const q1Cost = h('span', { class: 'cost' });
+  const q5Cost = h('span', { class: 'cost' });
+  const queueCostEl = h('p', { class: 'note rear-queue-cost',
+    dataset: { tip: 'What the queued alates will cost when laid, at today\'s egg price. Each alate egg costs more honeydew than the last (×'
+      + fmt(num(CASTES.alate && CASTES.alate.extra && CASTES.alate.extra.honeydew && CASTES.alate.extra.honeydew.growth, 1.15))
+      + ' per alate laid this run). Nothing is paid when you queue.' } },
+  'Queue 1: ', q1Cost, ' · Queue 5: ', q5Cost);
   const autoRear = h('input', { type: 'checkbox', class: 'check' });
   autoRear.addEventListener('change', (ev) => act('setAutomation', { patch: { autoRear: !!autoRear.checked } }, ev, autoRear));
   const rearRule = h('p', { class: 'note rear-rule', text: rearedRuleText() });
   const alateSec = h('section', { class: 'sec sec-alates' }, h('h3', { class: 'sec-title', text: 'Alate rearing' }),
     rearRule,
     h('dl', { class: 'kv' }, h('dt', { text: 'Reared / cells' }), alateCount, h('dt', { text: 'Next alate egg' }), h('dd', null, alateCost)),
-    h('div', { class: 'btn-row' }, rear1, rear5),
+    h('div', { class: 'btn-row' }, rear1, rear5, cancelRear), queueCostEl,
     h('label', { class: 'toggle-row', dataset: { tip: 'Rear alates whenever a cell is free.' } }, autoRear, h('span', { text: 'Auto-rear' })));
   views.flight.append(
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Nuptial Flight' }),
@@ -468,6 +535,17 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
             + (num(c.rearRequested) > 0 ? ' · ' + fmtCount(c.rearRequested) + ' queued' : ''));
           setCost(alateCost, q(() => eggCost(s, d, 'alate'), null), s);
           setProp(autoRear, 'checked', !!(s.meta.automation && s.meta.automation.autoRear));
+          const queued = num(c.rearRequested);
+          show(cancelRear, queued > 0);
+          if (queued > 0) setText(cancelRear, 'Cancel queued (' + fmtCount(queued) + ')');
+          const c1 = q(() => alateQueueCost(s, d, 1), null);
+          const c5 = q(() => alateQueueCost(s, d, 5), null);
+          setCost(q1Cost, c1, s);
+          setCost(q5Cost, c5, s);
+          const t1 = rearButtonTip(1, c1);
+          const t5 = rearButtonTip(5, c5);
+          if (rear1.title !== t1) rear1.title = t1;
+          if (rear5.title !== t5) rear5.title = t5;
         }
         const alates = num(proj.alates, q(() => projectAlates(s, d), 0));
         setText(projEl, fmtCount(alates));
@@ -496,7 +574,10 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
           const how = h('span', { class: 'ff-how' });
           const val = h('span', { class: 'ff-val' });
           const mult = h('span', { class: 'ff-mult' });
-          const row = h('div', { class: 'ff-row', dataset: { id: r.id } }, h('div', { class: 'ff-main' }, label, how), h('div', { class: 'ff-side' }, val, mult));
+          // C232: the weather row explains Flight Day inline (and as its tooltip)
+          const extra = r.id === 'weather' ? h('span', { class: 'ff-how ff-extra', text: flightDayLine() }) : null;
+          const row = h('div', { class: 'ff-row', dataset: r.id === 'weather' ? { id: r.id, tip: flightDayTip() } : { id: r.id } },
+            h('div', { class: 'ff-main' }, label, how, extra), h('div', { class: 'ff-side' }, val, mult));
           row.__r = { label, how, val, mult };
           return row;
         }, (row, r) => {

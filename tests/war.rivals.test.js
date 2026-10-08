@@ -113,7 +113,7 @@ test('rivalLand = disc(hex, radius) ∪ extra − lost, inside the map radius, s
   assert.deepEqual(rivals.rivalLand(s, null), []);
 });
 
-test('growth +1 %/min of base (+3 % in summer) up to ×3; none in winter or offline; timers pause offline', () => {
+test('growth +1 %/min of base (+3 % in summer) up to ×3; none in winter or offline; timers keep running offline (C225)', () => {
   const { s, d } = world();
   const r = rival(s, 'pavement_ants', 60);
   r.truce = 100;
@@ -127,7 +127,7 @@ test('growth +1 %/min of base (+3 % in summer) up to ×3; none in winter or offl
   const n1 = r.n;
   run(s, d, 600, { dt: 60, offline: true });
   assert.equal(r.n, n1, 'frozen offline');
-  near(r.bribeCd, 880, 1e-6, 'timers paused offline');
+  near(r.bribeCd, 280, 1e-6, 'C225: truce and cooldown timers run offline too');
   d.season.id = 'winter';
   run(s, d, 60);
   assert.equal(r.n, n1, 'dormant in winter');
@@ -326,29 +326,35 @@ test('tournaments: flip on ratio ≥ 1.5, withdraw ≤ 1/1.5, otherwise choose; 
   assert.equal(tournament.validate(s, d, { ...cmd, hex: r.hex }), 'invalid:hex');
   assert.equal(tournament.validate(s, d, { ...cmd, hex: hexIndex(-3, 0) }), 'invalid:hex');
   assert.equal(tournament.validate(s, d, { ...cmd, soldier: 101 }), 'requirements:garrison');
-  // 10 soldiers × 3 = 30 vs 3 × 15 = 45 → 0.667 = 1/1.5 → withdraw
-  act(tournament, s, d, cmd);
+  // C226: rival display = 1.5 × soldiers × tier step. 4 soldiers × 3 = 12 vs 1.5 × 15 = 22.5 → 0.53 ≤ 1/1.5 → withdraw
+  act(tournament, s, d, { ...cmd, soldier: 4 });
   assert.equal(r.tourCd, ACTIONS.tournament.cdSec);
   assert.equal(tournament.validate(s, d, cmd), 'cooldown');
   let ev = run(s, d, ACTIONS.tournament.sec + 0.2);
   assert.equal(ev.find((e) => e.type === 'tournamentEnd').result, 'withdraw');
-  // 40 soldiers → 120 / ~45 ≥ 1.5 → win
+  // 40 soldiers → 120 / ~22.5 ≥ 1.5 → win (C226: plus a prize and a later raid)
   r.tourCd = 0;
   act(tournament, s, d, { ...cmd, soldier: 40 });
   const n0 = r.n;
+  const raidIn0 = r.raidIn;
+  const ins0 = s.run.res.insight;
   ev = run(s, d, ACTIONS.tournament.sec + 0.2);
-  assert.equal(ev.find((e) => e.type === 'tournamentEnd').result, 'win');
+  const won = ev.find((e) => e.type === 'tournamentEnd');
+  assert.equal(won.result, 'win');
+  assert.ok(won.prize && won.prize.insight > 0 && won.prize.raidDelay === ACTIONS.tournament.raidDelaySec, 'C226 prize');
+  assert.ok(s.run.res.insight > ins0, 'C226: insight granted');
+  near(r.raidIn, raidIn0 + ACTIONS.tournament.raidDelaySec, 1e-6, 'C226: next raid delayed');
   assert.ok(r.lost.includes(hex));
   assert.equal(s.run.surface.claimed[hex], 1);
   assert.ok(r.n < n0);
   assert.equal(s.meta.counters.tournamentsWon, 1);
   assert.equal(rivals.rivalLand(s, r).includes(hex), false);
-  // in between (ratio ≈ 1.07): choose escalate
+  // in between (ratio ≈ 1.1): choose escalate
   r.tourCd = 0;
   const hex2 = hexIndex(2, 1);
   for (const n of neighbors(hex2)) if (!rivals.rivalLand(s, r).includes(n)) d.surface.owned[n] = 1;
-  act(tournament, s, d, { ...cmd, hex: hex2, soldier: 0, minor: 48 });
-  assert.equal(s.run.colony.militia, 48);
+  act(tournament, s, d, { ...cmd, hex: hex2, soldier: 0, minor: 24 });
+  assert.equal(s.run.colony.militia, 24);
   run(s, d, ACTIONS.tournament.sec + 0.2);
   const tb = s.run.war.battles.find((b) => b.kind === 'tournament');
   assert.ok(tb && tb.odds > 1 / 1.5 && tb.odds < 1.5);
@@ -357,7 +363,7 @@ test('tournaments: flip on ratio ≥ 1.5, withdraw ≤ 1/1.5, otherwise choose; 
   const esc = s.run.war.battles.find((b) => b.kind === 'escalate');
   assert.ok(esc);
   near(esc.foe.n, r.n * ACTIONS.tournament.escalateEngage, 1e-9);
-  assert.equal(esc.you.militia, 48);
+  assert.equal(esc.you.militia, 24);
   assert.ok(ev.some((e) => e.type === 'battleStart' && e.kind === 'escalate'));
   r.truce = 10;
   r.tourCd = 0;
@@ -519,6 +525,8 @@ test('previewAction: odds, AP, losses, loot, march time and "what would raise it
   const tp = rivals.previewAction(s, d, 'tournament', r.uid, { soldier: 30 });
   assert.equal(tp.win, 1);
   near(tp.youAP, 90, 1e-9);
+  assert.equal(tp.outcome, 'win', 'C226: expected outcome');
+  assert.ok(tp.loot.insight > 0 && tp.loot.chitin > 0, 'C226: the prize is previewed');
 });
 
 test('d.combat: garrison, home bonus (mound, barracks near an entrance), escort AP, rival AP, danger hexes', { skip: !DATA_OK && 'needs data' }, () => {

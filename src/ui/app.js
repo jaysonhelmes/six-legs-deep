@@ -27,8 +27,8 @@ import { MANUAL_KEYS } from './manualContent.js';
 import { openPatchNotes, updateNotice, createUpdatePill, versionLabel, markSeen } from './patchNotes.js';
 import { CURRENT_VERSION } from '../data/changelog.js';
 import { openWelcome } from './welcome.js';
-import { createOnboarding } from './onboarding.js';
-import { isClickableSource, escortMenuItems, eventObjectMenuItems } from './panels/map.js';
+import { createOnboarding, createCallout } from './onboarding.js';
+import { isClickableSource, escortMenuItems, eventObjectMenuItems, aphidMenuItems } from './panels/map.js';
 import { satelliteHexWhy, frontWindows, frontWindowSec, spanText } from './rules.js';
 import * as colonyPanel from './panels/colony.js';
 import * as buildPanel from './panels/build.js';
@@ -46,6 +46,7 @@ import { EVENTS } from '../data/events.js';
 import { bestOrigin } from '../systems/trails.js';
 import { createEventLog, logEntryFor, LOG_EVENTS, openEventLog } from './eventLog.js';
 import { createResourceTracker, setActiveTracker } from './resourceStats.js';
+import { createSound, setActiveSound, EVENT_SOUNDS } from './sound.js';
 
 /** Reveal key of every tab (ARCHITECTURE §14.5). */
 export const TAB_KEYS = Object.freeze({
@@ -60,7 +61,7 @@ const PANELS = {
 };
 
 /** Toast-worthy bus events (copy in text.js eventToast). */
-const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'raidResult', 'conquest', 'battleEnd', 'hungryStart', 'hungryEnd',
+const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'raidResult', 'tournamentEnd', 'conquest', 'battleEnd', 'hungryStart', 'hungryEnd',
   'winterSoon', 'seasonChanged', 'chamberActivated', 'cacheFound', 'softcapHit', 'beetleClaimed', 'beetleSpawned', 'pupaSpawned',
   'hardshipTier', 'entranceOpened', 'rivalSighted', 'adultsDied', 'broodDied', 'giftOpened', 'commandRejected', 'flightComplete',
   'supercolonyComplete', 'speciationComplete', 'blueprintDropped', 'trailRehomed',
@@ -99,9 +100,31 @@ export function visibleTabs(s) {
   return TAB_IDS.filter((id) => isShown(s, TAB_KEYS[id]));
 }
 
-/** First-load inset mode: the Below view is a 30 % inset until panel_build is revealed (DESIGN §25.1). */
+/** C203: the uiFlag the inset's Expand button sets (the player opened the nest view before the first housing cap). */
+export const NEST_OPEN_FLAG = 'nest_open';
+
+/**
+ * First-load inset mode: the Below view is a labelled 30 % inset until panel_build is revealed (DESIGN §25.1), or
+ * until the player expands it from its label (C203).
+ */
 export function isInset(s) {
+  if (s && s.meta && obj(s.meta.onboarding && s.meta.onboarding.done)[NEST_OPEN_FLAG]) return false;
   return !isShown(s, 'panel_build');
+}
+
+/**
+ * C203 (player report "the Royal Chamber panel opens at once"): may a click on the nest canvas open Build → Inspect for
+ * this target? Not for the queen / Royal Chamber until its level-ups are revealed (there is nothing to do there yet,
+ * and clicking the queen is how the player feeds her), and never before the Build tab exists. Pure.
+ * @param {Object} s
+ * @param {Object|null} target the selection (bridge.select) the click made
+ * @returns {boolean}
+ */
+export function canvasInspectAllowed(s, target) {
+  if (!isShown(s, 'panel_build')) return false;
+  if (!target || target.view !== 'nest') return true;
+  const royal = target.kind === 'queen' || ((target.kind === 'chamber' || target.kind === 'nursery') && num(target.id) === 1);
+  return !royal || isShown(s, 'royal_levelup');
 }
 
 /**
@@ -201,8 +224,8 @@ export function mountUI(root, game, opts = {}) {
   let landingDeadline = 0;
   let endingShown = false;
   let pendingFocus = null;
+  let insetWas = null; // C203: inset state at the last syncViews (the inset → full view transition)
   let lastPointer = null; // last canvas pointer position (bridge.hover), for refusals raised without one
-  let audio = null;
   const panelErr = new Set();
 
   // ------------------------------------------------------------------ skeleton (index.html provides it; built if missing)
@@ -305,6 +328,8 @@ export function mountUI(root, game, opts = {}) {
       if (target.view === 'surface' && target.kind === 'trail' && isShown(game.s, TAB_KEYS.map)) openTab('map', null);
     },
     openTab(tabId, sub = null) {
+      // C203: a nest click on the queen does not throw the Royal Chamber's inspect panel open before it can level up
+      if (tabId === 'build' && sub === 'inspect' && !canvasInspectAllowed(game.s, getUI().selection)) return;
       openTab(tabId, sub);
     },
     openChooser(kind, data = {}) {
@@ -346,6 +371,15 @@ export function mountUI(root, game, opts = {}) {
   rail.appendChild(railVersion);
   const eventCard = createEventCard(eventCardEl, { game, bridge });
   const onboarding = createOnboarding({ game, ui: uistate, root });
+  // C204: one-line callout for the first reveal of each feature (under the HUD, one at a time)
+  const callout = createCallout(stage, { game });
+  // C203: the first-load nest inset is labelled, and the player can open the full nest view from it
+  const insetLabel = h('div', { class: 'inset-label' },
+    h('span', { class: 'inset-label-text' }, 'Your nest', h('span', { class: 'inset-label-sub', text: ': the queen and her eggs' })),
+    h('button', { type: 'button', class: 'btn btn-small inset-expand', text: 'Expand', dataset: { tip: 'Show the nest full size.' },
+      on: { click: () => { game.actions.do('uiFlag', { key: NEST_OPEN_FLAG, value: true }); refresh(true); } } }));
+  viewBelow.appendChild(insetLabel);
+  try { callout.resume(); } catch { /* best effort */ }
 
   // ------------------------------------------------------------------ banner, view tabs, panel chrome
   const banner = h('div', { class: 'storage-banner', role: 'alert' }, h('span', { text: 'Saving unavailable: use Export (Settings) to keep your colony.' }),
@@ -570,6 +604,14 @@ export function mountUI(root, game, opts = {}) {
   function syncViews() {
     const st = getUI();
     const inset = isInset(game.s);
+    // C203: when the inset opens up (first housing cap, or the Expand button) in a view that hides the nest (the narrow
+    // default), show the nest: that is where the next step happens. A view the player picked is kept.
+    if (insetWas === true && !inset && !viewShows(effectiveView(st.view, st.layout), st.layout).below && !storedView()) {
+      insetWas = inset;
+      setUI({ view: viewsFor(st.layout).includes('split') && st.layout !== 'narrow' ? 'split' : 'below' });
+      return;
+    }
+    insetWas = inset;
     const view = effectiveView(st.view, st.layout);
     root.setAttribute('data-inset', inset ? 'true' : 'false');
     root.setAttribute('data-view', view);
@@ -741,6 +783,9 @@ export function mountUI(root, game, opts = {}) {
   function menuItems(t) {
     const s = game.s;
     const A = (type, args, label) => ({ label, run: (ev) => runAct(type, args, ev) });
+    // C236 / C237: a menu entry from a panel helper: a command, a tool to arm, or a disabled note
+    const M = (it) => (it.disabled ? { label: it.label, disabled: true, run: () => {} }
+      : it.tool ? { label: it.label, run: () => setUI({ tool: it.tool }) } : A(it.type, it.args, it.label));
     const items = [];
     if (!t) return items;
     if (t.kind === 'chamber' || t.kind === 'nursery' || t.kind === 'queen') { // nursery/queen picks carry the chamber uid
@@ -752,7 +797,7 @@ export function mountUI(root, game, opts = {}) {
       if (isShown(s, 'ability_rally')) items.push(A('rally', { uid: t.id }, 'Rally'));
       // C185: a Lycaenid trail takes escorts straight from the menu
       const tr = arr(s.run.surface.trails).find((x) => x && x.uid === t.id);
-      for (const it of escortMenuItems(s, game.d, tr)) items.push(A(it.type, it.args, it.label));
+      for (const it of escortMenuItems(s, game.d, tr)) items.push(M(it));
       items.push({ label: 'Reroute', run: () => setUI({ tool: { kind: 'reroute', uid: t.id } }) });
       items.push(A('deleteTrail', { uid: t.id }, 'Delete trail'));
     } else if (t.kind === 'rival') {
@@ -774,7 +819,8 @@ export function mountUI(root, game, opts = {}) {
       // trails reach every forageable source, Lycaenid caterpillars too (escorted honeydew trails, job 'lycaenid')
       // one trail per destination (C100): a source that already has a trail offers to remove it instead (player request)
       const existing = src ? arr(s.run.surface.trails).find((x) => x && x.src === src.uid) : null;
-      if (existing) for (const it of escortMenuItems(s, game.d, existing)) items.push(A(it.type, it.args, it.label));   // C185
+      if (existing) for (const it of escortMenuItems(s, game.d, existing)) items.push(M(it));   // C185 / C236
+      if (src) for (const it of aphidMenuItems(s, game.d, src)) items.push(M(it));   // C237: Aphid Shepherding moves a colony
       if (existing) items.push(A('deleteTrail', { uid: existing.uid }, 'Remove trail to here'));
       // C185: an antlion pit is cleared by garrison soldiers, any time while it is there
       if (t.kind === 'eventObject') for (const it of eventObjectMenuItems(s, game.d, t.id)) items.push(A(it.type, it.args, it.label));
@@ -818,7 +864,8 @@ export function mountUI(root, game, opts = {}) {
     menu = h('div', { class: 'ctx-menu', role: 'menu' });
     for (const it of items) {
       menu.appendChild(h('button', { type: 'button', class: 'ctx-item', role: 'menuitem', text: it.label,
-        on: { click: (ev) => { closeMenu(); it.run(ev); } } }));
+        attrs: it.disabled ? { disabled: 'disabled', 'aria-disabled': 'true' } : {},
+        on: { click: (ev) => { if (it.disabled) return; closeMenu(); it.run(ev); } } }));
     }
     const vw = win ? win.innerWidth : 1280;
     const vh = win ? win.innerHeight : 900;
@@ -961,28 +1008,26 @@ export function mountUI(root, game, opts = {}) {
     return arr(s.run.rivals.list).filter((r) => r && r.type === 'great_rival' && r.group === g).length;
   }
 
-  // ------------------------------------------------------------------ sound
-  function chime() {
-    if (!game.s.meta.settings.sound || !win) return;
-    try {
-      const AC = win.AudioContext || win.webkitAudioContext;
-      if (!AC) return;
-      audio = audio || new AC();
-      const t0 = audio.currentTime;
-      const o = audio.createOscillator();
-      const g = audio.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(880, t0);
-      o.frequency.exponentialRampToValueAtTime(1320, t0 + 0.18);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.7);
-      o.connect(g);
-      g.connect(audio.destination);
-      o.start(t0);
-      o.stop(t0 + 0.75);
-    } catch { /* audio is optional */ }
+  // ------------------------------------------------------------------ sound (C234: ui/sound.js)
+  // Procedural Web Audio sounds. Settings are per browser (Settings → Sound); the AudioContext starts on the first
+  // pointer or key input and pauses while the tab is hidden. Player actions sound from the game.actions.do wrapper
+  // (automation never goes through it, so it stays silent); notifications from the bus (sound.EVENT_SOUNDS).
+  const sfx = createSound({ storage: browserStorage, AudioContext: (win && (win.AudioContext || win.webkitAudioContext)) || null, doc: docu });
+  setActiveSound(sfx);
+  offs.push(sfx.attach(docu), () => { setActiveSound(null); sfx.destroy(); });
+  function chime() { sfx.forEvent('unlock', {}); }   // the reveal chime (called by the unlock handler below)
+  for (const type of Object.keys(EVENT_SOUNDS)) {
+    if (type !== 'unlock') offs.push(game.bus.on(type, (e) => { sfx.forEvent(type, e || {}); }));
   }
+  const baseDo = game.actions && game.actions.do;
+  if (typeof baseDo === 'function') {
+    const doWithSound = function (type, args) { const r = baseDo.call(this, type, args); sfx.forAction(type, r); return r; };
+    game.actions.do = doWithSound;
+    offs.push(() => { if (game.actions.do === doWithSound) game.actions.do = baseDo; });
+  }
+  let sfxTab = getUI().tab;   // a very soft tick when the player switches tabs (not when the shell switches one)
+  offs.push(onUI((st) => { if (st.tab !== sfxTab) { sfxTab = st.tab; if (sfx.recentGesture(400)) sfx.play('tab'); } }));
+  if (win) win.sldSound = sfx;   // debug: sldSound.info() in the console
 
   // ------------------------------------------------------------------ bus subscriptions
   const bus = game.bus;
@@ -1031,6 +1076,7 @@ export function mountUI(root, game, opts = {}) {
   }
   sub('unlock', (e) => {
     chime();
+    try { callout.show(e.key); } catch (err) { console.error('[ui] callout failed', err); }
     const tab = PANEL_UNLOCKS[e.key];
     if (!tab) return;
     freshTabs.add(tab);
@@ -1095,6 +1141,7 @@ export function mountUI(root, game, opts = {}) {
       closeMenu();
       setUI({ tool: null, selection: null, hover: null, ghostDemo: null });
       if (type === 'reset') { visited.clear(); saveVisited(); }   // a brand-new colony: every tab is new again
+      if (type !== 'runStarted') callout.hide();   // C204: the callout belonged to the old colony
       if (type === 'reset') { eventLog.clear(); eventLog.persist(colonyId()); resTracker.reset(); }
       if (type === 'imported') { eventLog.load(colonyId()); resTracker.reset(); }
       tooltips.hide();
@@ -1349,6 +1396,7 @@ export function mountUI(root, game, opts = {}) {
       endingShown = true;
       openEnding(mctx);
     }
+    try { callout.update(now); } catch (err) { if (!panelErr.has('callout')) { panelErr.add('callout'); console.error('[ui] callout failed', err); } }
     if (tickCount % 4 === 0) {
       try { onboarding.update(s, d, now); } catch (err) { if (!panelErr.has('onb')) { panelErr.add('onb'); console.error('[ui] onboarding failed', err); } }
     }
@@ -1431,6 +1479,7 @@ export function mountUI(root, game, opts = {}) {
       tooltips.destroy();
       eventCard.destroy();
       onboarding.destroy();
+      callout.destroy();
       intro.destroy();
       hud.destroy();
       toasts.clear();

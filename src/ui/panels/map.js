@@ -8,11 +8,12 @@ import { fmt, fmtRate, fmtCount, fmtTime, fmtPct } from '../format.js';
 import {
   nameOf, reasonText, WAR_TIPS, TACTIC_TIPS, PARTY_NAMES, BATTLE_NAMES, RAID_PHASES, RES_NAMES,
   sourceTipLines, detourText, trailSlotsText, raidAlertCopy,
+  WAR_KIND_EXPLAIN, trailHelpLines, TRAIL_LEGEND, TRAIL_LINE_NOTE, territoryBenefitLines, trailDistanceLines,
 } from '../text.js';
 import { isShown, hasResearch, fedLevel, num, arr, obj } from '../reveal.js';
-import { previewTrail, bestOrigin, trailOverlap, detourInfo } from '../../systems/trails.js';
-import { claimCost, canClaim, sourceAt, expeditionInfo } from '../../systems/surface.js';
-import { previewAction, garrison as garrisonOf } from '../../systems/rivals.js';
+import { previewTrail, bestOrigin, trailOverlap, detourInfo, escortMax } from '../../systems/trails.js';
+import { claimCost, canClaim, sourceAt, expeditionInfo, dNavFor, aphidTargets } from '../../systems/surface.js';
+import { previewAction, garrison as garrisonOf, rivalPower } from '../../systems/rivals.js';
 import { ringOf } from '../../core/hex.js';
 import { SOURCES } from '../../data/sources.js';
 import { TERRAIN_ORDER, TRAIL, ABILITIES, SCOUT } from '../../data/surface.js';
@@ -64,6 +65,55 @@ function sMaxFor(s) {
   const base = num(TRAIL && TRAIL.sMax, 100);
   const pt = RESEARCH.persistent_trails;
   return hasResearch(s, 'persistent_trails') ? Math.max(base, num(pt && pt.fx ? pt.fx.sMax : NaN, base)) : base;
+}
+
+/**
+ * C208 / C209: a collapsible help box (<details>) holding a list of rule lines; `set(lines)` rebuilds the list only when
+ * the text changes. Explanatory copy comes from text.js.
+ * @param {string} title
+ * @param {string} cls
+ * @returns {{ el: HTMLElement, list: HTMLElement, set(lines: string[]): void }}
+ */
+export function helpBox(title, cls) {
+  const list = h('ul', { class: 'help-list' });
+  const el = h('details', { class: 'help-box ' + cls }, h('summary', { class: 'help-summary', text: title }), list);
+  let sig = null;
+  return {
+    el, list,
+    set(lines) {
+      const next = lines.join('|');
+      if (next === sig) return;
+      sig = next;
+      clear(list);
+      for (const t of lines) list.appendChild(h('li', { text: t }));
+    },
+  };
+}
+
+/** A number from a query, or the fallback when it throws or is not finite. */
+function safeNum(fn, fb) {
+  try {
+    const v = fn();
+    return Number.isFinite(v) ? v : fb;
+  } catch {
+    return fb;
+  }
+}
+
+/** C208: whether a trail job's legend item can show (its job revealed; Lycaenid with Lycaenid Clients). */
+export function legendShown(s, id) {
+  if (id === 'forager') return true;
+  if (id === 'lycaenid') return hasResearch(s, 'lycaenid_clients');
+  return isShown(s, 'job_' + id);
+}
+
+/** C208: the trail colour legend (swatch + label + what it means), from text.js TRAIL_LEGEND. */
+export function trailLegend() {
+  return h('div', { class: 'trail-legend' },
+    TRAIL_LEGEND.map((x) => h('span', { class: 'legend-item', dataset: { tip: x.text, job: x.id } },
+      h('span', { class: 'legend-swatch', attrs: { style: 'background:' + x.color + (x.id === 'lycaenid' ? ';background-image:repeating-linear-gradient(90deg,' + x.color + ' 0 4px,transparent 4px 7px);background-color:transparent' : '') } }),
+      h('span', { class: 'legend-label', text: x.label }))),
+    h('p', { class: 'note legend-note', text: TRAIL_LINE_NOTE }));
 }
 
 /** Ability tooltip copy built from data/surface.js ABILITIES (costs, durations, multipliers are never hardcoded). */
@@ -145,6 +195,66 @@ export function warNotes(s, d, rival, kind) {
 }
 
 /**
+ * C228: a rival's strength, labelled so the map and the War tab agree. `short` = "Nest strength X" (all its defenders,
+ * no home bonus — the figure the map tooltip and the rival row show); `tip` = what a raid and an assault would face.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {Object} r rival
+ * @returns {{ short: string, tip: string, nest: number, raid: number, assault: number }}
+ */
+export function powerText(s, d, r) {
+  let pw = null;
+  try { pw = rivalPower(s, d, r); } catch { pw = null; }
+  if (!pw) return { short: '', tip: '', nest: 0, raid: 0, assault: 0 };
+  const share = fmtPct(num(pw.raidShare, 0.4), { signed: false });
+  return {
+    short: 'Nest strength ' + fmt(pw.nest),
+    tip: 'Nest strength: all ' + fmtCount(num(r && r.n)) + ' defenders. A raid faces about ' + fmt(pw.raid) + ' (' + share
+      + ' of them, no home bonus); an assault about ' + fmt(pw.assault) + ' (all of them, ×' + num(pw.home, 1) + ' home bonus).',
+    nest: pw.nest, raid: pw.raid, assault: pw.assault,
+  };
+}
+
+/**
+ * C226 / C228 [pure]: the war preview's headline and power line. Raids and assaults name what you would face
+ * ("you 152 vs 126 they field (assault: all defenders + home bonus)"); a tournament states the expected outcome in
+ * words and the display ratio against the ratio needed.
+ * @param {Object} p rivals.previewAction result
+ * @param {string|null} kind
+ * @returns {{ win: string, power: string }}
+ */
+export function previewLines(p, kind) {
+  const q = obj(p);
+  const win = num(q.win);
+  if (kind === 'tournament') {
+    const at = num(q.winAt, 1.5);
+    const ratio = num(q.ratio, NaN);
+    const out = q.outcome === 'win' ? 'Win: the hex flips to you, no losses'
+      : q.outcome === 'withdraw' ? 'Too small: you would withdraw' : 'Close: escalate to a fight or withdraw';
+    const need = num(q.needDisplay) > 0 ? ' · ' + fmtCount(num(q.needDisplay)) + ' more display to win' : '';
+    return { win: out, power: 'Display ' + fmt(num(q.youAP)) + ' vs ' + fmt(num(q.foeAP))
+      + (Number.isFinite(ratio) ? ' = ×' + ratio.toFixed(2) : '') + ' (win at ×' + at + ')' + need };
+  }
+  const face = kind === 'raid' ? ' (raid: ' + fmtPct(num(ACTIONS && ACTIONS.raid && ACTIONS.raid.engage, 0.4), { signed: false }) + ' of their defenders)'
+    : kind === 'assault' ? ' (assault: all defenders + home bonus)' : '';
+  return { win: 'Victory ' + fmtPct(win, { signed: false }),
+    power: 'your power ' + fmt(num(q.youAP)) + ' vs ' + fmt(num(q.foeAP)) + ' they field' + face };
+}
+
+/**
+ * C225 [pure]: the war form's Bribe button: the truce's time left while one runs, the wait before the next bribe,
+ * else the honeydew price.
+ * @param {Object} r rival
+ * @param {number} ap rival AP (d.combat.rivalAP)
+ * @returns {string}
+ */
+export function bribeLabel(r, ap) {
+  if (num(r && r.truce) > 0) return 'Truce: ' + fmtTime(Math.ceil(num(r.truce))) + ' left';
+  if (num(r && r.bribeCd) > 0) return 'Bribe again in ' + fmtTime(Math.ceil(num(r.bribeCd)));
+  return Number.isFinite(ap) ? 'Bribe (' + fmt(num(ACTIONS && ACTIONS.bribe && ACTIONS.bribe.apMult, 2) * ap) + ' honeydew)' : 'Bribe';
+}
+
+/**
  * "What would raise it" lines (DESIGN §25.6 rule 8) with numbers formatted. While the Old Ridge is immune the only
  * thing that helps is territory, so that replaces the soldier and research hints.
  * @param {Object} s
@@ -199,12 +309,29 @@ export function escortMenuItems(s, d, trail) {
   if (!trail || trail.job !== 'lycaenid') return [];
   const min = num(SOURCES.lycaenid_caterpillar && SOURCES.lycaenid_caterpillar.minEscorts, 5);
   const cur = Math.max(0, Math.floor(num(trail.escorts)));
+  // C236: a Lycaenid trail needs exactly `min` escorts; the menu never offers more (more would add nothing)
+  if (cur >= min) return [{ label: 'Escorts ' + fmtCount(cur) + '/' + fmtCount(min) + ': enough to milk it', type: null, args: null, disabled: true }];
   const home = Math.floor(getGarrison(s, d).soldier);
-  const add = (k) => cur + (home >= 1 ? Math.min(k, home) : k);
-  return [
-    { label: 'Add escort (+1) · Escorts ' + fmtCount(cur) + '/' + fmtCount(min), type: 'assignEscorts', args: { uid: trail.uid, n: add(1) } },
-    { label: 'Add escorts (+5)', type: 'assignEscorts', args: { uid: trail.uid, n: add(5) } },
-  ];
+  const add = (k) => Math.min(min, cur + (home >= 1 ? Math.min(k, home) : k));
+  const items = [{ label: 'Add escort (+1) · Escorts ' + fmtCount(cur) + '/' + fmtCount(min), type: 'assignEscorts', args: { uid: trail.uid, n: add(1) } }];
+  if (min - cur > 1) items.push({ label: 'Add escorts up to ' + fmtCount(min) + ' (+' + fmtCount(add(min) - cur) + ')', type: 'assignEscorts', args: { uid: trail.uid, n: add(min) } });
+  return items;
+}
+
+/**
+ * C237: context-menu / panel entry for moving an aphid colony (Aphid Shepherding): "Move aphid colony…" arms the
+ * moveAphids tool (the map tints the hexes it may go to), or a disabled note when no owned flower or leaf hex is free.
+ * Empty for other sources or without the research.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {Object|null} src
+ * @returns {Array<{ label: string, tool?: Object, disabled?: boolean, type?: null, args?: null }>}
+ */
+export function aphidMenuItems(s, d, src) {
+  if (!src || src.type !== 'aphid_colony' || !hasResearch(s, 'aphid_shepherding')) return [];
+  const n = safeNum(() => aphidTargets(s, d, src.uid).length, 0);
+  if (n < 1) return [{ label: 'Move aphid colony: needs a flower or leaf plant on your land', type: null, args: null, disabled: true }];
+  return [{ label: 'Move aphid colony… (' + fmtCount(n) + ' place' + (n === 1 ? '' : 's') + ')', tool: { kind: 'moveAphids', src: src.uid } }];
 }
 
 /**
@@ -306,10 +433,12 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
   const bribe = h('button', { type: 'button', class: 'btn btn-ghost', dataset: { tip: WAR_TIPS.bribe },
     on: { click: (ev) => { if (st.target && st.target.type === 'rival') { const r = act('bribe', { rival: st.target.uid }, ev, bribe); if (r.ok) toastOk('Truce bought.'); } } } });
   const emptyNote = note('No targets yet. Scout to find rival nests and prey.');
+  // C207: what the chosen action is (raid vs assault in full), right under the action buttons
+  const kindNote = h('p', { class: 'note war-kind-note', attrs: { 'aria-live': 'polite' } });
 
   const el = h('div', { class: 'war-form' },
     h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Target' }), select),
-    kindRow, notesEl, sSol.el, sSup.el, sMin.el, h('div', { class: 'row-end' }, allBtn), retreat.el,
+    kindRow, kindNote, notesEl, sSol.el, sSup.el, sMin.el, h('div', { class: 'row-end' }, allBtn), retreat.el,
     h('div', { class: 'odds' }, winEl, lossEl, lootEl, marchEl, reasonEl, raiseEl),
     h('div', { class: 'btn-row' }, launch, bribe), emptyNote);
 
@@ -405,6 +534,8 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
       show(kindBtns[k], kinds.includes(k));
       toggleClass(kindBtns[k], 'selected', st.kind === k);
     }
+    setText(kindNote, (st.kind && WAR_KIND_EXPLAIN[st.kind]) || '');
+    show(kindNote, !!(st.kind && WAR_KIND_EXPLAIN[st.kind]));
     const g = getGarrison(s, d);
     const maxSol = Math.floor(g.soldier);
     const maxSup = Math.floor(g.supermajor);
@@ -434,7 +565,7 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
     show(bribe, !!rival);
     if (rival) {
       const ap = num(d && d.combat && d.combat.rivalAP ? d.combat.rivalAP[rival.uid] : NaN, NaN);
-      setText(bribe, Number.isFinite(ap) ? 'Bribe (' + fmt(num(ACTIONS && ACTIONS.bribe && ACTIONS.bribe.apMult, 2) * ap) + ' honeydew)' : 'Bribe');
+      setText(bribe, bribeLabel(rival, ap));   // C225: the truce's time left, or when a bribe is possible again
     }
     const notes = hasTarget ? warNotes(s, d, rival, st.kind) : [];
     const nsig = notes.join('|');
@@ -475,18 +606,20 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
       return;
     }
     const win = num(p.win);
-    setText(winEl, (st.kind === 'tournament' ? 'Display ratio ' : 'Victory ') + fmtPct(win, { signed: false }));
+    const pl = previewLines(p, st.kind);   // C226 / C228
+    setText(winEl, pl.win);
     toggleClass(winEl, 'good', win >= 0.75);
     toggleClass(winEl, 'bad', win < 0.4);
     const lo = num(p.lossesLo);
     const hi = num(p.lossesHi);
-    setText(lossEl, 'Expected losses ' + (Math.round(lo) === Math.round(hi) ? fmtCount(lo) : fmtCount(lo) + '–' + fmtCount(hi)) + ' ants'
-      + ' · power ' + fmt(num(p.youAP)) + ' vs ' + fmt(num(p.foeAP)));
+    setText(lossEl, st.kind === 'tournament' ? pl.power : 'Expected losses ' + (Math.round(lo) === Math.round(hi) ? fmtCount(lo) : fmtCount(lo) + '–' + fmtCount(hi)) + ' ants'
+      + ' · ' + pl.power);
     const loot = obj(p.loot);
     const parts = [];
     for (const k of ['food', 'chitin', 'insight']) if (num(loot[k]) > 0) parts.push(fmt(loot[k]) + ' ' + (RES_NAMES[k] || k).toLowerCase());
     if (num(loot.minors) > 0) parts.push(fmtCount(loot.minors) + ' captured workers');
-    setText(lootEl, parts.length ? 'Loot ≈ ' + parts.join(', ') : '');
+    setText(lootEl, parts.length ? (st.kind === 'tournament' ? 'Prize if you win ≈ ' : 'Loot ≈ ') + parts.join(', ')
+      + (st.kind === 'tournament' && num(p.raidDelay) > 0 ? ' · their next raid ' + fmtTime(num(p.raidDelay)) + ' later' : '') : '');
     setText(marchEl, num(p.marchSec) > 0 ? 'March ' + fmtTime(p.marchSec) : '');
     // the immunity is spelled out (with progress) in the notes above the sliders
     setText(reasonEl, p.ok === false && p.reason && p.reason !== 'blocked:immune' ? reasonText(p.reason, st.kind === 'tournament' ? 'tournament' : 'launchParty') : '');
@@ -563,8 +696,11 @@ export function createPanel(root, { game, ui, bridge }) {
     on: { click: (ev) => act('frenzy', {}, ev, frenzyBtn) } });
   const trailList = h('div', { class: 'list trail-list' });
   const noTrails = note('Drag from the entrance to a source on the map to draw a trail.');
+  // C208: what trails do, distance / travel time / strength, who goes where, and the colour legend
+  const trailHelp = helpBox('How trails work', 'trail-help');
+  trailHelp.el.appendChild(trailLegend());
   const trailsSec = h('section', { class: 'sec' },
-    h('h3', { class: 'sec-title' }, 'Trails ', slotsEl), h('div', { class: 'row-between' }, pherEl, frenzyBtn), trailList, noTrails);
+    h('h3', { class: 'sec-title' }, 'Trails ', slotsEl), h('div', { class: 'row-between' }, pherEl, frenzyBtn), trailList, noTrails, trailHelp.el);
 
   // --- selection ---
   const selBox = h('div', { class: 'sel-box' });
@@ -599,6 +735,10 @@ export function createPanel(root, { game, ui, bridge }) {
     h('dl', { class: 'kv' }, h('dt', { text: 'Hexes owned' }), h('dd', null, terrOwned), h('dt', { text: 'Peak this run' }), h('dd', null, terrPeak),
       claimDt, claimDd),
     channelEl, h('div', { class: 'btn-row' }, claimToolBtn, flagToolBtn, satToolBtn), satHint, expNote);
+  // C209: what owning land does (also on the Claim button and on hexes while claiming)
+  const terrHelp = helpBox('What territory gives', 'terr-help');
+  terrSec.appendChild(terrHelp.el);
+  claimToolBtn.dataset.tip = 'Click hexes next to your land to claim them. ' + territoryBenefitLines({ raids: false, flight: false, rivals: false }).join(' ');
 
   // --- rivals ---
   const rivalList = h('div', { class: 'list rival-list' });
@@ -645,7 +785,8 @@ export function createPanel(root, { game, ui, bridge }) {
     const eMinus = h('button', { type: 'button', class: 'btn btn-icon', text: '−', attrs: { 'aria-label': 'Fewer escorts' },
       on: { click: (ev) => act('assignEscorts', { uid, n: Math.max(0, num(cur().escorts) - step(ev)) }, ev, eMinus) } });
     const ePlus = h('button', { type: 'button', class: 'btn btn-icon', text: '+', attrs: { 'aria-label': 'More escorts' },
-      on: { click: (ev) => act('assignEscorts', { uid, n: num(cur().escorts) + step(ev) }, ev, ePlus) } });
+      // C236: a Lycaenid trail stops at the 5 escorts it needs (the button is disabled there)
+      on: { click: (ev) => act('assignEscorts', { uid, n: Math.min(escortMax(cur()), num(cur().escorts) + step(ev)) }, ev, ePlus) } });
     const workers = h('div', { class: 'stepper', dataset: { tip: 'Workers assigned to this trail (auto-fill adds more).' } },
       h('span', { class: 'stepper-label', text: 'Workers' }), wMinus, wCount, wPlus);
     const escorts = h('div', { class: 'stepper', dataset: { tip: 'Soldiers guarding this trail from raids.' } },
@@ -665,7 +806,7 @@ export function createPanel(root, { game, ui, bridge }) {
       if (ev.target && typeof ev.target.closest === 'function' && ev.target.closest('button')) return;
       bridge.select({ view: 'surface', kind: 'trail', id: uid });
     });
-    row.__r = { name, meta, yieldEl, detourEl, sBar, wCount, eCount, escorts, markBtn, rallyBtn, delBtn, wMinus, wPlus };
+    row.__r = { name, meta, yieldEl, detourEl, sBar, wCount, eCount, escorts, markBtn, rallyBtn, delBtn, wMinus, wPlus, ePlus };
     return row;
   }
 
@@ -687,7 +828,7 @@ export function createPanel(root, { game, ui, bridge }) {
     setText(r.meta, fmtCount(num(t.len)) + ' hex' + (num(t.len) === 1 ? '' : 'es') + (ov ? ' · shared ' + Math.round(100 * ov.frac) + '% ×' + ov.mult.toFixed(2) : '')
       + (dt.priority ? ' · chitin priority' : ''));
     r.meta.title = [ov ? 'Trunk Trails: ' + ov.shared + ' of its ' + ov.total + ' hexes are shared with another trail, so it yields ×' + ov.mult.toFixed(2) + '.' : '',
-      dt.priority ? 'Chitin is short for soldier eggs: free foragers fill this trail first.' : ''].filter(Boolean).join(' ');
+      dt.priority ? 'Chitin is short for soldier eggs: free foragers fill this trail first.' : '', ...trailDistanceLines(t, dt)].filter(Boolean).join(' ');
     // C182: on a detour round a molehill / spring puddle, or paused with no way round
     let dinfo = null;
     try { dinfo = detourInfo(s, t); } catch { dinfo = null; }
@@ -710,6 +851,12 @@ export function createPanel(root, { game, ui, bridge }) {
     show(r.wMinus.parentNode, !lyc);
     const lycMin = num(SOURCES.lycaenid_caterpillar && SOURCES.lycaenid_caterpillar.minEscorts, 5);
     setText(r.eCount, fmtCount(num(t.escorts)) + (lyc ? ' / ' + fmtCount(lycMin) : ''));
+    if (r.ePlus) {   // C236
+      const full = lyc && num(t.escorts) >= lycMin;
+      setProp(r.ePlus, 'disabled', full);
+      const etip = full ? 'Lycaenid trails need exactly ' + fmtCount(lycMin) + ' escorts: more add nothing.' : 'More escorts (Shift ×10)';
+      if (r.ePlus.getAttribute('data-tip') !== etip) r.ePlus.setAttribute('data-tip', etip);
+    }
     show(r.escorts, lyc || isShown(s, 'panel_war') || num(s.run.colony.adults.soldier) > 0);
     show(r.markBtn, isShown(s, 'ability_mark'));
     show(r.rallyBtn, isShown(s, 'ability_rally'));
@@ -758,8 +905,13 @@ export function createPanel(root, { game, ui, bridge }) {
         on: { click: () => { const src = sourceBy(game.s, uid); if (src) { form.setTarget({ type: 'source', uid }); ui.setUI({ subTab: 'war' }); } } } });
       const preview = h('p', { class: 'muted' });
       const gives = h('ul', { class: 'src-gives muted' });   // C184: what it gives, stock unit, regrowth, level progress
-      selBox.append(title, info, gives, preview, h('div', { class: 'btn-row' }, forage, draw, attack));
-      selRefs = { kind: 'source', uid, title, stockDd, levelDd, ttlDd, ringDd, forage, draw, attack, preview, gives };
+      // C237: Aphid Shepherding moves an aphid colony onto an owned flower / leaf hex (arms the moveAphids tool)
+      const moveAph = h('button', { type: 'button', class: 'btn', text: 'Move aphid colony…',
+        dataset: { tip: 'Pick a flower patch or leaf plant on your land; its trail follows.' },
+        on: { click: () => ui.setUI({ tool: { kind: 'moveAphids', src: uid } }) } });
+      const moveWhy = h('p', { class: 'muted' });
+      selBox.append(title, info, gives, preview, h('div', { class: 'btn-row' }, forage, draw, attack, moveAph), moveWhy);
+      selRefs = { kind: 'source', uid, title, stockDd, levelDd, ttlDd, ringDd, forage, draw, attack, preview, gives, moveAph, moveWhy };
       return;
     }
     const hex = sel.hex;
@@ -820,6 +972,12 @@ export function createPanel(root, { game, ui, bridge }) {
       setText(selRefs.attack, src.type === 'termite_mound' ? 'Raid mound…' : 'Hunt…');
       const hasTrail = arr(s.run.surface.trails).some((t) => t && t.src === src.uid);
       show(selRefs.draw, !combat && !hasTrail);
+      if (selRefs.moveAph) {   // C237
+        const am = aphidMenuItems(s, d, src);
+        show(selRefs.moveAph, am.length > 0);
+        setProp(selRefs.moveAph, 'disabled', !!(am[0] && am[0].disabled));
+        setText(selRefs.moveWhy, am[0] && am[0].disabled ? 'No place to move it yet: it needs a flower patch or leaf plant on your land.' : '');
+      }
       if (!combat && !hasTrail) {
         let p = null;
         try { p = previewTrail(s, d, originFor(s, d, src.hex), src.hex, []); } catch { p = null; }
@@ -890,7 +1048,10 @@ export function createPanel(root, { game, ui, bridge }) {
     setText(x.name, nameOf('rival', r.type) + frontLabel(s, r));
     setText(x.meta, 'Tier ' + num(r.tier) + ' · ' + fmtCount(num(r.n)) + ' soldiers');
     const ap = num(d && d.combat && d.combat.rivalAP ? d.combat.rivalAP[r.uid] : NaN, NaN);
-    setText(x.ap, Number.isFinite(ap) ? 'Power ' + fmt(ap) : '');
+    // C228: 'Nest strength' = every defender; the tip says what a raid / an assault would actually face
+    const pw = r.alive === false ? { short: '', tip: '' } : powerText(s, d, r);
+    setText(x.ap, Number.isFinite(ap) ? pw.short : '');
+    if (x.ap.getAttribute('data-tip') !== pw.tip) x.ap.setAttribute('data-tip', pw.tip);
     // F12 / F13: immunity progress, the Front window countdown and its rule, instead of a bare "Hostile"
     const st = rivalStatus(s, d, r);
     setText(x.status, st.text);
@@ -1031,6 +1192,10 @@ export function createPanel(root, { game, ui, bridge }) {
         for (const t of arr(d.surface && d.surface.trails)) if (t) dmap.set(t.uid, t);
         syncList(trailList, trails, (t) => t.uid, createTrailRow, (row, t) => updateTrailRow(row, t, s, d, dmap));
         show(noTrails, trails.length <= 1);
+        trailHelp.set(trailHelpLines({ dNav: safeNum(() => dNavFor(s), NaN), sMax: sMaxFor(s), research: isShown(s, 'panel_research'),
+          jobs: isShown(s, 'job_herder') || isShown(s, 'job_leafcutter'), soldiers: isShown(s, 'caste_soldier') }));
+        for (const it of trailHelp.el.querySelectorAll('.legend-item')) show(it, legendShown(s, it.dataset.job));
+        terrHelp.set(territoryBenefitLines({ raids: isShown(s, 'raid_warnings'), flight: isShown(s, 'panel_prestige'), rivals: isShown(s, 'panel_rivals') }));
         updateSelection(s, d);
         setText(terrOwned, fmtCount(num(d.surface && d.surface.ownedCount)));
         setText(terrPeak, fmtCount(num(s.run.tPeak)));

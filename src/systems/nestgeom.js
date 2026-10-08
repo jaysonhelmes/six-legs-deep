@@ -3,7 +3,7 @@
 // Contract: ARCHITECTURE §8.2 (nestgeom.js), §5 (d.nest typed arrays), DESIGN §7.1–§7.9.
 // Pure helpers: render and the pacing bot may call every export; nothing here mutates the state.
 
-import { GRID, CELL } from '../data/balance.js';
+import { GRID, CELL, setActiveNestCols, validCols } from '../data/balance.js';
 import { LAYER_ORDER, LAYERS, DIG, GEOM } from '../data/strata.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { DRAINAGE } from '../data/soilFeatures.js';
@@ -12,9 +12,50 @@ import { TRAITS } from '../data/bloodline.js';
 import { FEDERATION } from '../data/federation.js';
 import { BOONS, EDICTS, HARDSHIP } from '../data/prestige.js';
 
-const COLS = GRID.cols;
 const ROWS = GRID.rows;
-const NCELLS = COLS * ROWS;
+/**
+ * C215: the active nest width and cell count (live bindings: importers see the current values). A nest is 40 columns
+ * unless its run started wider (s.run.nest.cols); syncCols(s) makes the active width that nest's before any work on it.
+ */
+let COLS = GRID.cols;
+let NCELLS = COLS * ROWS;
+
+/**
+ * C215: set the active nest width (GRID.cols / mainCol / royal follow). Anything invalid means the base 40.
+ * @param {number} n
+ * @returns {number} the width now active
+ */
+export function useCols(n) {
+  const c = setActiveNestCols(n);
+  if (c !== COLS) {
+    COLS = c;
+    NCELLS = COLS * ROWS;
+  }
+  return c;
+}
+
+/**
+ * C215: the width of a nest object: its cols field when valid, else its cell count / rows when that is a valid
+ * width, else the base 40.
+ * @param {Object|null} nest s.run.nest
+ * @returns {number}
+ */
+export function colsOfNest(nest) {
+  if (nest && validCols(nest.cols)) return nest.cols;
+  const n = nest && Array.isArray(nest.cells) ? nest.cells.length / ROWS : 0;
+  return validCols(n) ? n : GRID.baseCols;
+}
+
+/**
+ * C215: make the active width the one of the state's nest (cheap when it already is). Called by getGeom (so every
+ * geometry query), nest derive / tick and each nest render frame.
+ * @param {import('../core/types.js').State} s
+ * @returns {number}
+ */
+export function syncCols(s) {
+  const n = colsOfNest(s && s.run && s.run.nest);
+  return n === COLS && GRID.cols === n ? n : useCols(n);
+}
 /**
  * C125: the top rows of every shaft (row 0 is the entrance cell on the surface, row 1 the cell right below it) stay
  * shaft: no chamber footprint may cover them. Deeper shaft cells may be covered; the shaft then passes through.
@@ -454,6 +495,7 @@ export function inRect(r, i) {
  * @returns {Object} out
  */
 export function buildGeom(s, out = {}) {
+  syncCols(s); // C215
   const nest = s.run.nest;
   const cells = nest.cells;
   const reuse = (k, Ctor, fill) => {
@@ -550,6 +592,7 @@ const GEO_MEMO = new WeakMap();
  * @returns {Object}
  */
 export function getGeom(s, d) {
+  syncCols(s);
   const nest = s.run.nest;
   const dn = d && d.nest;
   if (dn && dn._cells === nest.cells && dn.rev === nest.rev && dn.chamberAt && dn._shaft) return dn;
@@ -657,6 +700,24 @@ export function exposedTo(ch, row) {
   if (!ch || !(row > 0) || !(ch.h > 0)) return false;
   const above = Math.max(0, Math.min(ch.h, Math.ceil(row) - ch.y));
   return 2 * above > ch.h;
+}
+
+/**
+ * C213: how a rectangle sits against a frost row (the rule of exposedTo, in cells): { above, total, exposed,
+ * straddles }. above = cells with y < row; exposed = strictly more than half of the cells (exactly half is safe);
+ * straddles = some cells on each side of the line.
+ * @param {{ y: number, h: number, w?: number }} r
+ * @param {number} row
+ * @returns {{ above: number, total: number, exposed: boolean, straddles: boolean }}
+ */
+export function frostCells(r, row) {
+  const w = r && r.w > 0 ? r.w : 1;
+  const hgt = r && r.h > 0 ? r.h : 0;
+  const total = w * hgt;
+  if (!r || !(row > 0) || !(hgt > 0)) return { above: 0, total, exposed: false, straddles: false };
+  const rowsAbove = Math.max(0, Math.min(hgt, Math.ceil(row) - r.y));
+  const above = rowsAbove * w;
+  return { above, total, exposed: 2 * above > total, straddles: above > 0 && above < total };
 }
 
 // ------------------------------------------------------------------------------------------------------------------

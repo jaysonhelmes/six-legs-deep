@@ -226,6 +226,7 @@ T = 25 s × M_bt / (1 + min(4, (nurses + 1) / brood_slots)) / B_speed
 - A caste whose single egg costs more food than storage can ever hold above the egg reserve is skipped like a full berth: the queen lays the next caste by deficit, then minors, instead of stopping. A caste that storage can hold but cannot pay for yet still waits for the food (ARCHITECTURE §18 C71).
 - **Chitin reserve (player request, ARCHITECTURE §18 C104):** a slider under the caste targets, an absolute amount on a ladder 0, 1, 2, 3, 5, 10 … 10,000 chitin (default 0; per run, back to 0 after a prestige). Soldier and supermajor eggs spend only chitin **above** the reserve; at or below it they are skipped like a full berth (minors are laid instead; laying never blocks). Serrated Mandibles, Thick Cuticle and the Gate are not limited by it (the player spends those by hand).
 - **Chitin priority (player request, C104):** while chitin is needed — a soldier or supermajor egg is wanted by its target (below the target, with a free berth) but chitin < reserve + its chitin cost, or a reserve is set and chitin < reserve + the next soldier egg — unassigned foragers fill chitin-yielding trails (dead insects, termite swarms: any source with a chitin yield) up to saturation before the usual best-marginal order. Explicit per-trail assignments are untouched. The Map panel marks such trails "chitin priority".
+- **Upkeep on the rows (player request, C233):** each caste row reads "Upkeep 0.25 food/s each · 5.0 food/s for 20", and the Castes section shows "Army upkeep X food/s (Y% of all upkeep)", so a target below the cap has a visible payoff: less food upkeep and chitin kept for Adaptations and the Gate. "Keep berths filled" trades both for defence.
 - **UI copy:** "Larval diet decides caste" (Field Guide `fg_polymorphism`).
 
 ### 5.6 Colony scale
@@ -274,17 +275,18 @@ It multiplies housing, brood slots, berths, replete berths, hibernaculum capacit
 |---|---|---|---|
 | `forager` | Forager | Trail formula (§8.5): base `Y_src` food/s × modifiers | Assigned per trail on the Above map. Unassigned foragers fill the best unsaturated trail. With no trail at all: "loose foraging" at 0.1 food/s. |
 | `digger` | Digger | Dig work `W = diggers^0.85 × M_dig`, and soil = W | The exponent < 1 means a million-ant colony never digs the grid out in one tick. |
-| `nurse` | Nurse | Brood speed (§5.3) | Useful up to 4 per brood slot. Field Triage needs ≥ 5 nurses. |
+| `nurse` | Nurse | Brood speed (§5.3) | Useful up to 4 per brood slot. Field Triage needs ≥ 5 nurses. **Cap (C231):** `ceil(4 × brood_slots − 1)` nurses (the queen is the other one; never below 5 with Field Triage), in manual moves and automatic assignment alike; the row reads "N / cap" with a tooltip. Nurses past it changed nothing (brood speed, Brood Mites ≥ 1 per slot and Field Triage are all reached below it). |
 | `scout` | Scout | Exploration: the whole scout force produces `scouts^0.6` scout-seconds per second (diminishing, like digging; §8.3); +3 s raid warning each | Unlocks at 12 adults. Explores the nearest frontier, or flagged hexes at 3× priority. |
 | `herder` | Herder | 0.08 honeydew/s | Max 8 × colony level per aphid colony (×2 with `aphid_shepherding`). Uses a trail slot. |
-| `leafcutter` | Leafcutter | 0.3 leaves/s | Leaf-plant trails. Nothing in winter. |
+| `leafcutter` | Leafcutter | 0.3 leaves/s | Leaf-plant trails. Nothing in winter. Needs leaf storage: until a Fungus Garden is built the job holds no one (assigning is refused, leafcutters at work go back to foraging), since every leaf would be wasted (C238). |
 | `gardener` | Gardener | Turns 0.3 leaves/s into 0.1 fungus/s | Max 5 × Σ fungus garden levels × colony_scale. Without leaves it idles, and the garden shows a starvation icon. |
 | `idle` | Idle / militia | — | Joins nest defence via Mobilize (§9.9). |
 
 Soldiers are assigned as **garrison** (default), **escort** (per trail), or **war party** (a campaign in progress).
 
 ### 6.3 Job automation
-- **Manual (start):** +/− buttons and drag between job chips. New adults go to `forager`.
+- **Manual (start):** +/− buttons and drag between job chips. New adults go to `forager`. **Step (player request, C230):** "Per click 1 · 10 · 100 · Max"; the +/− buttons show the step ("+10", "−1", "+Max") and their tooltips say exactly what one click moves. A step larger than the minor workforce is greyed out and the largest step that fits applies; a new run (Flight, Hardship) starts at 1.
+- **Colony tab sections (player request, C229):** Brood, Castes and Jobs fold and unfold by clicking (or Enter on) their heading; the folded set is remembered per browser.
 - **`age_polyethism` research (60 insight, ~10–15 min into run 1):** preset ratio sliders. New adults and rebalancing follow the targets (young workers nurse, middle-aged dig, old forage, as flavour). This is deliberately cheap and early. Each job chip gets a target slider (step 5 %); in auto mode +/− nudge the target by 5 % instead of moving workers, and raising one past a 100 % total scales the others down. Every 5 s all workers are reassigned to the targets. A share a job cannot use (locked, or above the herder/gardener cap) is foraged. Turning auto on keeps the current split as the targets (ARCHITECTURE C94).
 - **`response_thresholds` research:** auto-assignment retargets the current bottleneck. For example: nurses up when `bn_brood_slots`/brood time binds, diggers up when the dig queue has more than 60 s of work, herders when honeydew is short for a pending purchase. The player's targets stay as set: the automation adds a bias to the bottleneck job, +5 % of the workforce per 5 s while the trigger holds and more workers help (up to +30 %, never past 50 % of workers, nurses never past 4 per brood slot), and −2.5 % per 5 s once it clears (ARCHITECTURE C94).
 - **`automaton_instincts` Bloodline trait (5 alates, run 2–3):** dig queue +2, and the job targets you last set carry into every new run; when `age_polyethism` / `response_thresholds` is known at run start (for example as Innate research), its mode starts switched on. (C166: it no longer makes both modes innate or grants the Adaptation autobuyer.)
@@ -305,9 +307,10 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 ## 7. The underground nest (the "Below" canvas, side-view cross-section)
 
 ### 7.1 Grid and strata
-- The grid is **40 columns × 80 rows**, drawn as one continuous cross-section that fills the canvas width: cells are at most 24 px and at least 16 rows stay visible; where the grid is narrower than the canvas, soil continues either side as decoration. A minimap strip shows the whole column.
+- The grid is **40 columns × 80 rows** (wider runs: see below), drawn as one continuous cross-section that fills the canvas width: cells are at most 24 px and at least 16 rows stay visible; where the grid is narrower than the canvas, soil continues either side as decoration. A minimap strip shows the whole column.
 - **Default view:** the sky down to the deepest chamber, with cells no smaller than about 13 px, and the Royal Chamber always in view. It is re-applied at every layout change until the player moves the camera, and at every run start. On a narrow canvas it zooms past the width so chambers stay big enough to tap. A "Queen ↓" chip appears when the Royal Chamber is scrolled away.
 - **Camera:** the wheel scrolls; Ctrl + wheel, trackpad or touch pinch, the `+` / `−` keys and on-canvas − / + buttons zoom (from the whole column down to ~40 px cells); once zoomed past the width, dragging pans sideways too. The crown button, `0` or `Home` re-frames the queen. (ARCHITECTURE §13.5, §13.7.)
+- **Wider nests (ARCHITECTURE §18 C215):** each Satellite Nest level (Federation) widens the nest of every run that starts afterwards by 4 columns on each side, up to 64 columns (three levels). The width is fixed for the whole run; the shaft and the Royal Chamber stay centred (in a 48-wide nest the main shaft is column 24). Blueprints saved in a nest of another width are recentred on the main shaft; what no longer fits is left out.
 - Row 0 is the soil surface. The main entrance shaft is column 20, rows 0–19, and is pre-dug.
 - The **Royal Chamber** is pre-dug at rows 20–21, columns 18–21. That puts it below the hard-winter frost line, so the queen is always safe. It reserves its full-size room, columns 13–21, rows 20–23 (C155), and nest generation keeps boulders and water pockets out of that area on either side.
 
@@ -333,6 +336,7 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
 - All work goes to the **first** job in the queue. The player reorders jobs by dragging the queue chips. Each chip shows work remaining and ETA (`work / W`).
 - **The queue keeps running offline.** Coming back to a newly finished chamber, which glows once, is a deliberate idle payoff.
 - **A\* preview:** placing a chamber that does not touch an open cell auto-routes a tunnel from the nearest open cell.
+- **Tunnels the player did not draw say who dug them (C214):** hovering a tunnel cell names its origin ("Dug by: a mole (Mole Tunnel event)", "access tunnel for the planned Granary", "auto-route to the Gallery", "your blueprint's saved tunnels", "the Nuptial Chamber's exit shaft", "the passage joining your queens' chambers"), and the event log records mole tunnels and blueprint tunnels as they appear.
   - The route is weighted by layer work, and stones are impassable.
   - The preview shows total work and ETA. The player can drag to redraw the route.
 - **Help Dig** (click on the active dig face): +5 work + 3% of `W` per click. Counts toward the 15 clicks/s cap.
@@ -354,11 +358,11 @@ Soldiers are assigned as **garrison** (default), **escort** (per trail), or **wa
    - The reserved rectangle must fit inside the nest, meet the chamber's depth rule (and a Shallow Soil limit) and hold no other chamber, no other reservation and no shaft entrance (the top two shaft rows). Stone, water and closed layers inside are allowed, but growth waits until they are cleared (Acid Excavation, draining or moving the pocket, the layer unlock); the ghost crosses them and counts them.
    - Reserved cells are drawn as works in progress (C154): the soil the chamber will grow into looks freshly excavated but unfinished (a lighter, sandy fresh-dug wash with pick marks and a faint construction hatch, timber props and, close up, a worker or two at the face), clearly unlike a finished cavity or a tunnel; brighter, with its dashed extent, while placing or when the chamber is hovered or selected. Clicking a reserved cell selects and inspects the chamber that owns it; hovering it says "Reserved for Gallery (L3 → full size at L8)". No other chamber may be placed in them, grow into them or reserve them, and no new tunnel may be queued through them (tunnels already there stay; auto-routes go around; draining a pocket inside may cross them).
    - Tint: **green** = valid; **amber** = valid with penalties; **red** = invalid, with the reason.
-   - The tooltip lists live modifiers: layer bonus, adjacency bonus or penalty, "frost-exposed in winter", "flood zone", "within raid reach (15 cells)", and for granaries the haul-distance effect on forage.
+   - The tooltip lists live modifiers: layer bonus, adjacency bonus or penalty, "frost-exposed in winter" with its cells ("4 of 6 cells above the frost line"; a footprint across the line that is safe says "Safe from frost: most cells below the frost line", and the frost row is drawn across the ghost; C213), "flood zone", "within raid reach (15 cells)", and for granaries the haul-distance effect on forage.
    - It also warns (amber) when the footprint would take the Royal Chamber's last room to grow to **L5**, which the Nuptial Flight requires: "Boxes in the Royal Chamber". The placement is still allowed. (With C137 / C155 the Royal Chamber starts with its full-size room reserved, which holds its L5 room, so this only applies to a Royal Chamber from an older save that had no free room.) The advisor never suggests such a spot unless nothing else fits, and an enlargement with no chosen direction grows away from the queen's room.
 2. Validity:
    - The footprint must be undug soil or existing tunnel. It must not overlap stone (unless `acid_excavation`), water or another chamber.
-   - **Hidden water (ARCHITECTURE §18 C173):** a water pocket nobody has found yet is plain soil as far as the player knows: it never shows (no tint, no cross, no gap in the reserved-room works, no detour in a drawn tunnel) and never refuses a ghost. When a placement, relocation, level-up or tunnel is confirmed and its footprint, reserved room, route or exit shaft hits one, **"You struck water!"**: the pocket is revealed and that action is not made this time; the player picks again with the pocket in view. Blueprint chambers strike water the same way and then move to the nearest valid spot nearby (or wait).
+   - **Hidden water (ARCHITECTURE §18 C173):** a water pocket nobody has found yet is plain soil as far as the player knows: it never shows (no tint, no cross, no gap in the reserved-room works, no detour in a drawn tunnel) and never refuses a ghost. When a placement, relocation, level-up or tunnel is confirmed and its footprint, reserved room, route or exit shaft hits one, **"You struck water!"**: the pocket is revealed and that action is not made this time; the player picks again with the pocket in view. Blueprint chambers strike water the same way and then move to the nearest valid spot nearby whose whole reserved room can be dug today (no closed layer such as Bedrock before Acid Excavation, no water or uncut stone) and that a tunnel can reach (C218), or wait.
    - **Shafts do not block chambers** (ARCHITECTURE §18 C125). A footprint may cover shaft cells (main, nuptial or satellite shaft) except a shaft's **top two rows** (row 0, the entrance cell on the surface, and row 1 right below it), which always stay shaft. The covered cells become part of the chamber and the shaft passes straight through it: the entrance stays connected, path distances (haul, raid reach) run through the cavity, and the nest view draws the shaft continuing inside the chamber as a faint passage. The same holds for relocation, enlargement and blueprint chambers. Demolishing or moving the chamber turns its cells back into tunnel, so the shaft is whole again.
    - It must satisfy the chamber's row rule. The Build panel lists each chamber's rule ("Depth 24 or deeper", "Must touch a root", "Needs its own exit shaft"), the ghost's refusal names the numbers ("Must be at depth 24 or deeper (you are at 17)"), and the limit row is drawn as a line while placing.
    - It must connect to an open cell, either directly or via the auto-route.
@@ -464,7 +468,8 @@ Layer × season modifiers are in §17.2, and the frost line rules are in §17.3.
 | Active dig face | **Help Dig**. |
 | Nursery | **Groom Brood**: each click adds 1% × that nursery's share of all brood slots to the development of every brood cohort in the colony (a nursery with 56% of the slots: +0.56% per click). Counts toward the 15 clicks/s cap; not allowed in the Claustral Founding hardship (ARCHITECTURE §18 C20). |
 | Queen | Status card. Counts toward the secret achievement `ach_queens_favorite`. |
-| Golden Pupa | Claim Frenzy or Windfall (§18.3). |
+| Golden Pupa | Claim Frenzy or Windfall (§18.3). It pulses gold in a Nursery (or the Royal Chamber while there is none) with a "Golden pupa: click" tag and a ring that empties over its 15 s (C217). |
+| House pip | The yellow house with "!" over the Royal Chamber while housing is full: its tooltip says eggs wait for room and to build or level Galleries; a click opens the Build tab (C216). |
 | Mold spot | Scrape it off (Mold Bloom event). |
 | Flood water | Bail: −5 s of flood time per click. |
 | Cache hint | Queue a tunnel to it. |
@@ -482,7 +487,8 @@ Layer × season modifiers are in §17.2, and the frost line rules are in §17.3.
 - Reared alates line the Nuptial Chamber, with wings visible.
 - Diggers carry soil pellets up the shaft and drop them on the Mound in the Above view.
 - **The dig face is worked visibly (C180):** wherever the first queued job digs (a tunnel, a new chamber, a chamber growing into its reserved room, a shaft), two workers stand at the face with their heads bobbing, the face cell is bitten out from their side as its work completes (so a room opens up cell by cell), two carriers walk soil pellets back along the passage and a small spoil heap sits at their feet. Under reduced motion the crew stands still.
-- An overloaded Midden darkens. The frost line is a crisp blue-white edge moving down the rows.
+- An overloaded Midden darkens. The frost line is a crisp blue-white edge moving down the rows. In winter a frost-exposed chamber (more than half its cells above the line; exactly half is safe) wears an icy dashed outline and a small ❄ badge, and its tooltip counts the cells (C213).
+- The queen's abdomen glows softly with each batch of eggs (toned down, none under reduced motion, C217).
 - Chambers look more impressive as they level (C159): L1–2 keep their plain set dressing; L3–6 add wall carvings, supports and more of their contents; L7+ add an ornate trim along the vault, glowing wall lamps, an emblem and more contents again. Every chamber type has its own colours, support material and floor items.
 
 ---
@@ -546,9 +552,9 @@ The player sees these effects: hovering a revealed hex says what its ground does
 | `flower_patch` | 2 per map, ring 3–6 | 0.55 food + 0.005 honeydew | 20 | ∞ | Summer ×1.5. Winter 0. Drought ×0.3. |
 | `dead_insect` | random: 1 per 3 min (max 2 at once), ring 3–8 | 0.6 food + 0.01 chitin | 20 | max(150, 90 s food) | Despawns when empty or after 6 min. |
 | `leaf_plant` | 4 per map, ring 2–8 on leaf litter | 0.3 leaves (leafcutters) | 20 | ∞ | Spring ×1.25, summer ×1.5, autumn ×1.25, winter 0. Drought ×0.5. |
-| `aphid_colony` | 3 per map, ring 3–7 on tree roots | 0.08 honeydew per herder | 8 × level (level 1–3) | ∞ | +1 level per 6 min while ≥ 50% herded. Winter 0. Target of Ladybug events. With `aphid_shepherding` it can be moved to an owned plant hex. |
+| `aphid_colony` | 3 per map, ring 3–7 on tree roots | 0.08 honeydew per herder | 8 × level (level 1–3) | ∞ | +1 level per 6 min while ≥ 50% herded. Winter 0. Target of Ladybug events. With `aphid_shepherding` it can be moved to an owned plant hex: right-click it (or its Map-tab card) → "Move aphid colony…", then click a tinted hex (C237). |
 | `prey_caterpillar` / `prey_cricket` / `prey_beetle` | random: 1 per 6 min, ring 4–10 | hunted | — | One-shot: 60 s food + 15·r chitin (cricket ×2, beetle ×4) | Hunting party AP ≥ 50·r / 200·r / 800·r. Despawns after 5 min. |
-| `fallen_fruit` | event, ring 3–6 | 2 food | 30 | max(500, 180 s food) | After 4 min it rots at −1% stock/s. |
+| `fallen_fruit` | event, ring 3–6 | 2 food | 30 | max(500, 180 s food) | After 4 min it rots at −1% stock/s. Lands only on a revealed hex a trail can reach (C221). |
 | `picnic_spill` | event, ring 6–12 | 5 food | 60 | max(2,000, 600 s food) | Contested: −30% yield unless ≥ 1 escort per 10 foragers. |
 | `termite_mound` | 1 per map, ring 9–12 (visible after `sun_compass`) | raid only | — | Per raid: 120 s food + 50·r chitin; 5 min cooldown | Neutral defender, AP 28,300. |
 | `lycaenid_caterpillar` | `lycaenid_clients`; 1–2 per map, ring 3–6 | — | — | 0.3 × ring honeydew/s (× honeydew multipliers) | Milked by a trail that carries no workers (it uses a slot) and pays only while ≥ 5 escort soldiers are on it (real ant–butterfly mutualism). |
@@ -647,17 +653,20 @@ Early on, far sources are roughly neutral and worth visiting only for their stoc
 - +0.5% to all surface yields per owned hex (additive group, max +100%).
 - Sources on owned hexes ×1.25.
 - Trails entirely inside owned land cannot be raided.
-- `t_peak` feeds the Alate formula (§13.2).
+- `t_peak` feeds the Alate formula (§13.2). It counts **permanent** land only (auto radius, claims, conquests, tournament wins): trail-held hexes (Trunk Trails) are temporary and do not raise it, so they cannot be farmed for alates by drawing long trails; claim them to keep them (C222).
 
 **Borders.**
+- **Rival land never covers an entrance** (main, nuptial exit, satellite, outpost) **or its auto-claim radius**, at any Mound level; the rival keeps only its own nest hex there (C224). The auto radius grows with the Mound and used to lose to older rival land, which could leave an outpost inside enemy territory.
 - Rival territory radius is the per-rival value in the §9.2 table (2 or 3; elder colonies 3). Bosses use 3, and each Argentine Front nest uses 3. (An earlier `1 + ceil(tier/2)` formula disagreed with the table for tiers 4–6; the table wins.)
 - Owned hexes adjacent to rival land are **border hexes**. Trails through them are raid targets at ×2 chance.
 - Fire ants creep: they gain 1 unowned hex every 3 min (not in winter).
 - Border hexes are where Ritual Tournaments happen (§9.7).
 
-### 8.7 Mound (surface soil sink)
-- **Unlock:** soil ≥ 300 for the first time (levels 1–5). Levels 6+ need `mound_building`.
-- **Cost:** `300 × 1.9^(L−1)` soil (L1 300, L5 3,910, L10 96,800, L20 5.9e7).
+### 8.7 Mound (grows with the colony; ARCHITECTURE §18 C220)
+- **Unlock:** soil ≥ 300 for the first time; from then on it grows by itself. Levels 6+ need `mound_building` (the Mound waits at L5 until then and catches up at once when the research lands).
+- **Growth (no purchase):** `value = 4·log10(1 + A/100) + 2.5·log10(1 + C/20) + 1·log10(1 + D/200)`, level = `floor(value)`, where A = the run's peak adult count, C = the summed levels of the active chambers, D = cells dug this run. Every term is logarithmic, so each further level needs more colony than the last (diminishing returns); the level never goes down within a run. It replaces the old soil purchase (`300 × 1.9^(L−1)` soil): soil was a sink nobody wanted to feed by hand, and the Mound now simply tracks how big and built-out the colony is. Saves from before keep their level as a floor.
+- Typical run-1 levels (pacing bot, seed 1): L1 ≈ 4 min (≈ 80 adults), L3 ≈ 6 min, L5 ≈ 10 min, then it waits for Mound Building (≈ 24 min: straight to L7), L8 ≈ 28 min, L9 ≈ 80 min (≈ 2,100 adults). Later runs: about L15 at 10⁵ adults, L20 at 10⁶. The old bot bought L9 at ~42 min and L10 at ~62 min; levels 1–6 now come earlier and 9–10 later.
+- The Build tab shows the level and a bar to the next one; the Mound autobuyer is gone (its saved switch is ignored).
 - **Per level:**
   - +5% home AP.
   - −3% winter forage penalty, relative (max −30%).
@@ -666,7 +675,8 @@ Early on, far sources are roughly neutral and worth visiting only for their stoc
   - Levels 3, 6 and 9: +1 trail slot each.
   - Every 5 levels: +1 auto-claim radius.
   - From L5, Footstep events cannot hit the 7 hexes of the main entrance.
-- The mound sprite visibly rises, and dug soil pellets land on it.
+  - As the auto-claim radius grows, the territory round every entrance widens over the run (rival land never covers it, §8.6).
+- The mound sprite rises smoothly with the growth value (level + progress to the next), and dug soil pellets land on it.
 
 ### 8.8 Outposts, satellites and escorts
 - **Outpost:** a conquered rival mound. It is a trail origin, gives +1 trail slot, and auto-claims radius 1 (+1 per 5 Mound levels, like every entrance, §8.6).
@@ -676,7 +686,7 @@ Early on, far sources are roughly neutral and worth visiting only for their stoc
 - **Escorts:** soldiers assigned to a trail.
   - They remove the rival-territory yield penalty and the picnic contest at 1 escort per 10 workers.
   - They defend that trail against raids, ×1.5 AP with `phalanx`.
-  - 5 escorts are needed to milk a Lycaenid caterpillar.
+  - Exactly 5 escorts milk a Lycaenid caterpillar; a Lycaenid trail holds at most 5 (more add nothing, so the stepper and the menu stop at 5 and the command refuses more; C236).
 
 ### 8.9 Map generation (per run, seeded)
 1. Terrain from seeded value noise, using the shares in §8.2.
@@ -694,7 +704,7 @@ Early on, far sources are roughly neutral and worth visiting only for their stoc
 |---|---|
 | Source hex | Hand-forage: `+click value` food (§10). Open source info. |
 | Drag from an origin | Draw a trail (even when an event object such as a myrmecophile guest sits on the entrance: a drag draws, a plain click hits the object; C110). Drag a trail's waypoints to reroute. Dropping on a rival nest, prey or the termite mound opens the war-party chooser (sliders, live odds, Launch). |
-| Trail | Select: +/− workers, escorts, Mark, Rally, delete. Right-click a Lycaenid trail or its caterpillar: "Add escort (+1) · Escorts N/5", "Add escorts (+5)" (C185). |
+| Trail | Select: +/− workers, escorts, Mark, Rally, delete. Right-click a Lycaenid trail or its caterpillar: "Add escort (+1) · Escorts N/5", "Add escorts up to 5" (C185, capped at 5 by C236). Right-click an aphid colony with Aphid Shepherding: "Move aphid colony…" arms a tool that tints the owned flower / leaf hexes it may move to (C237). |
 | Hex | Info. Claim (or start a channel). Flag for scouting. Place a satellite or tournament where allowed. While the satellite tool is active, valid hexes are tinted green and the rest greyed out, and hovering a hex says why it fails (for example "Too close to an entrance: 1 hex away, satellites need 3+"). |
 | Rival nest | War panel: Raid / Assault / Tournament / Bribe, with the live odds preview (§9.5). |
 | Prey / termite mound | Hunt or raid panel with preview. |
@@ -760,8 +770,8 @@ Boss AP values are tuning knobs. The pacing bot (§28) checks that each boss is 
 |---|---|---|---|---|
 | `raid` | 40% of current defenders, no home bonus | A war party (soldiers/supermajors) | Food = 30 s × √tier of food income (min 50·tier). Chitin = 0.5 × tier per enemy killed. The rival loses the killed soldiers. | Party destroyed |
 | `assault` | 100% of defenders with home bonus ×1.25 (×1.5 carpenter) | War party | **Conquest:** nest destroyed; all its hexes become yours; insight 25 × tier (× M_insight); food 120 s × √tier; chitin as for a raid; captured pupae become `5 × tier²` minors (they need housing; overflow is lost); the nest becomes an **outpost**; a `harvester_stash` spawns | Party destroyed |
-| `tournament` (STRETCH) | Display contest on a border hex (§9.7) | `ritual_tournaments` | Hex flips to you, no casualties | Withdraw, 3 min cooldown |
-| `bribe` | — | 2 × rival AP in honeydew | 5 min truce: no raids or tournaments from that rival. Cooldown 10 min. | — |
+| `tournament` (STRETCH) | Display contest on a border hex (§9.7) | `ritual_tournaments` | Hex flips to you, no casualties, a prize (insight + chitin) and their next raid 3 min later (C226) | Withdraw, 90 s cooldown |
+| `bribe` | — | 2 × rival AP in honeydew | 5 min truce: no raids or tournaments from that rival. Cooldown 10 min. Both timers run in real time, offline and in a hidden tab too, and the truce's time left shows on the map and in the War tab (C225). | — |
 | `hunt` (prey) | Prey defender `AP = 50·r / 200·r / 800·r` | War party | Prey reward (§8.4) | Party destroyed |
 
 - War parties march 1 hex per 2 s along the shortest passable route.
@@ -783,6 +793,7 @@ Boss AP values are tuning knobs. The pacing bot (§28) checks that each boss is 
 - The winner keeps `s = √(1 − (AP_lose / AP_win)²)` of every group. The engaged losing force is destroyed.
 - Win chance = `P(f₁·AP₁ > f₂·AP₂)`, evaluated on a deterministic 64×64 grid over both fortunes.
 - **Preview text:** "Victory 92% · expected losses 12–15 soldiers · loot ≈ 4.2K food, 30 chitin".
+- **Enemy strength, one name per figure (C228):** the map tooltip and the Map tab's rival row show **Nest strength** = AP of *all* the rival's soldiers with no home bonus (with "a raid faces ≈ 40% of it"); the War tab's preview shows what *this* party would face: "your power A vs B they field (raid: 40% of their defenders)" or "(assault: all defenders + home bonus)", which also includes swarm, acid volley, propaganda and the supermajor / Siege Tactics reductions. They used to be two unlabelled "power" numbers that differed by ×0.4 to ×1.4.
 - **Test invariant:** for homogeneous forces, the stepped simulation's winner survivors fall within 5% of `s`; mixed forces within 10%. In the square law, aimed-fire attrition `dn_B/dt = −0.2·ATK_A·n_A/HP_B` gives exactly this `s`.
 - **Worked example:** 17 soldiers (AP 152) assault Black Garden Ants at base strength. The defender's AP is 101 × 1.25 = 126. `s = √(1 − (126/152)²) = 0.56`, so about 9–10 soldiers survive. Without the home bonus (a raid engaging 40% = AP 40), `s = 0.96`.
 
@@ -802,7 +813,7 @@ Boss AP values are tuning knobs. The pacing bot (§28) checks that each boss is 
 ### 9.7 Ritual Tournaments (from B; STRETCH, cut-list #2)
 - **Where:** a border hex adjacent to a rival.
 - **Your display:** `Σ committed count × size` (minor 1, soldier 3, supermajor 10). Committed ants stop working for the 20 s display. Minors come from idle workers first, then foragers, who return to foraging afterwards (C101).
-- **Rival display:** `3 × current soldiers × (1 + 0.2 × (tier − 1))`.
+- **Rival display:** `1.5 × current soldiers × (1 + 0.2 × (tier − 1))` (C226; was 3×, which asked for most of a mid-game colony's minors for one hex).
 - **Outcomes:**
 
 | Ratio (yours ÷ rival) | Result |
@@ -811,7 +822,9 @@ Boss AP values are tuning knobs. The pacing bot (§28) checks that each boss is 
 | ≤ 1/1.5 | You withdraw. |
 | In between | Choose **escalate** (a raid-sized battle on that hex: 25% of defenders, no home bonus) or **withdraw**. |
 
-- Each rival allows one tournament per 3 min.
+- Each rival allows one tournament per 90 s (C226; was 3 min).
+- **A win also pays (C226):** insight = max(10 × tier, 30 s × √tier of insight income) and chitin = max(3 × tier, 20 s × √tier of chitin income), and that rival's next raid comes 3 min later. Still no casualties.
+- **The preview says what will happen:** "Win: the hex flips to you, no losses" / "Close: escalate to a fight or withdraw" / "Too small: you would withdraw", the display against the ratio needed ("Display 120 vs 80 = ×1.50 (win at ×1.5)"), how much display is missing, and the prize.
 - This gives peaceful players, and the `pacifist` Hardship, a real way to expand.
 
 ### 9.8 Tactical actions during a battle (from D)
@@ -825,7 +838,7 @@ Boss AP values are tuning knobs. The pacing bot (§28) checks that each boss is 
 
 ### 9.9 Battle presentation
 - A **battle bubble** opens on the hex: two clusters of up to 40 sprites per side, in proportion to the surviving counts. Ants lunge, and sprites are removed in proportion to casualties.
-- Corpses stay 5 s, then become **chitin glints** that haulers carry home along the trail.
+- Corpses stay 5 s, then become **chitin glints** that haulers carry home along the trail. They stand for real loot: the war party's chitin (battleEnd `loot`), and since C227 a repelled raid also pays the chitin of the raiders killed (0.5 × tier per kill, raidResult `loot`), so the toast can state what came home.
 - A captured nest hex turns your colour with a ripple, and the rival's trails fade out over 10 s.
 
 ### 9.10 Rival raids on you: across both views (from D)
@@ -1105,7 +1118,7 @@ All of the following are required:
 1. `royal_chamber` L5.
 2. `nuptial_preparation` researched.
 3. A `nuptial_chamber` built, including its exit shaft (the second entrance).
-4. `f_run ≥ 1.7e8`. This guarantees at least 13 alates (the formula is anchored at 1e8 → 10, §13.2).
+4. `f_run ≥ 1.85e8`. This guarantees at least 13 alates (the formula is anchored at 1e8 → 10, §13.2).
 
 The **Prestige tab** appears when `f_run ≥ 2e7` or `nuptial_preparation` is researched, whichever comes first. ("Visible" would be ambiguous, because locked research nodes are always shown greyed.) It shows a requirements checklist and the live projection.
 
@@ -1121,7 +1134,7 @@ alates = floor( SC_alates( 10 × √(f_run / 1e8) × (1 + t_peak/400) × (1 + 0.
 | Situation | f_run | t_peak | reared | W | Alates |
 |---|---|---|---|---|---|
 | Formula anchor | 1e8 | 20 | 0 | 1.0 | **10** |
-| Flight gate (§13.1) | 1.7e8 | 0 | 0 | 1.0 | **13** |
+| Flight gate (§13.1) | 1.85e8 | 0 | 0 | 1.0 | **13** |
 | Run 1, bot ~45 min (human ~55–65), winter | 1.3e8 | 175 | 25 | 1.0 | **24** |
 | Run 1, bot ~60 min (human ~75), summer | 2.1e8 | 200 | 25 | 1.25 | **40** |
 | Run 1, bot ~90 min | 4.5e8 | 215 | 25 | 1.0 | **48** |
@@ -1130,7 +1143,7 @@ alates = floor( SC_alates( 10 × √(f_run / 1e8) × (1 + t_peak/400) × (1 + 0.
 
 Rows exclude Bloodline and achievement multipliers (`wide_wings`, `A_bonus`) and Deep Vault.
 
-Run-1 rows are medians of the balance simulation (Balance Verification). Conquests and pheromone claims put `t_peak` near 150–220 hexes in run 1, which is why the divisor is 400.
+Run-1 rows are medians of the balance simulation (Balance Verification). Conquests and pheromone claims put `t_peak` near 150–220 hexes in run 1, which is why the divisor is 400. `t_peak` counts permanent land only; trail-held (Trunk Trails) hexes are excluded (§8.6, C222).
 
 - **The Flight button** shows the projected alates and "+X/min".
 - **The Alates/min meter** (from C) shows `projected ÷ run minutes`. It records the peak, and once the current rate falls below 97% of the peak it glows: "Peak reached 3 min ago: a good time to fly."
@@ -1170,6 +1183,7 @@ Run-1 rows are medians of the balance simulation (Balance Verification). Conques
 - **Effect:** each reared alate gives +2% flight alates, additive (25 reared = +50%; 50 with `royal_court` = +100%). The game words it "Each reared alate gives +2% more alates on your next flight (+2% each, additive: 25 reared = +50%)" (C146).
 - They are visible: winged sprites line the chamber, and the count shows on the flight button.
 - This creates an active 5–10 minute "finishing" phase before each prestige, which automation later handles.
+- **Queue (player request, ARCHITECTURE §18 C232):** "Rear 1" / "Rear 5" add to a queue; nothing is paid when queueing, each egg is paid as the queen lays it. **Cancel queued** empties the queue for free (eggs already laid keep growing). The Flight view shows what queueing 1 and 5 more would cost (food + the rising honeydew, continuing after the alates already laid and queued), on the buttons' tooltips and in a "Queue 1 · Queue 5" line.
 
 ### 13.6 Ceremony, landing site and Founding Boon (from C and D)
 1. **Ceremony.** The Above canvas zooms out, and up to 120 alate sprites spiral out of the `nuptial_entrance`. The alate counter ticks up, and the weather bonus flashes if any.
@@ -1516,14 +1530,14 @@ The judges flagged a hard rule: every prestige passive is **polynomial in a life
 ### 18.2 Event table (both views)
 | id | Type | Condition | Above / Below presentation | Choices → outcomes |
 |---|---|---|---|---|
-| `ev_fallen_fruit` | + | Not winter. Weight ×2 in summer. | A fruit thuds onto a ring 3–6 hex | Spawns `fallen_fruit` (§8.4). Draw a trail before it rots. |
+| `ev_fallen_fruit` | + | Not winter. Weight ×2 in summer. | A fruit thuds onto a ring 3–6 hex | Spawns `fallen_fruit` (§8.4) on a **revealed hex a trail can reach** (off rival land when possible; any revealed reachable hex from ring 2 when the band has none; no event when nothing qualifies). Draw a trail before it rots. Picnic spills and termite swarms follow the same rule (C221). |
 | `ev_picnic_spill` | + | Summer or autumn; ≥ 20 min; weight 3 | A blanket appears at ring 6–12 | Spawns `picnic_spill`. Rival foragers contest it. Mass Recruit. |
 | `ev_termite_swarm` | + | Within 2 min after a rainstorm (50%) | Winged termites over 2 hexes | Those hexes yield ×10 food plus 0.05 chitin per forager/s for 45 s. Mass Recruit (20 pheromone). |
 | `ev_seed_mast_year` | + | Autumn; max once per year; weight 5 | Seed patches glow gold | Seed patches ×3 for the season |
 | `ev_pheromone_bloom` | + | Weight 6 | The Scent Library glows | Insight ×2 for 90 s |
 | `ev_lost_scout_returns` | + | ≥ 1 scout | A scout trots in | Reveals 3 frontier hexes, + max(30, 120 s) insight |
 | `ev_queens_vigor` | + | — | The queen glows | Lay ×3 for 60 s |
-| `ev_rival_mating_flight` | + | Summer; a rival exists | Winged rival alates fill the sky | All rivals AP ×0.7 for 3 min (your window to attack). Clicking a flying alate gives 2 s of food each (max 30). |
+| `ev_rival_mating_flight` | + | Summer; a rival exists | Winged rival alates fill the sky | All rivals AP ×0.7 for 3 min (your window to attack). Clicking a flying alate gives 2 s of food each (max 30), shown as a floating "+X food" with the food icon like a hand-foraged crumb (C223; every floating gain on both maps carries its resource icon). |
 | `ev_rival_queen_dies` | + | A rival exists | The rival nest dims | That rival AP ×0.5 for 5 min |
 | `ev_flight_day` | + | Summer; `nuptial_preparation` owned; weight 2 | Warm still air shimmers | Flight `W` = 1.5 for 3 min. Prompts "Fly now?" if the Flight is available. |
 | `ev_golden_aphid` | + | Spring or summer; an aphid colony is herded | A golden aphid on the aphid hex | Click within 15 s: honeydew ×7 for 60 s |
@@ -1811,47 +1825,52 @@ The torpor floor (from B) is a backstop. If any code path would reduce adults of
 **Rules (from C):**
 - A panel, resource or tab exists only once it is relevant.
 - Reveals are queued, so no two happen within 30 s. The queue runs in the order of the table below, so a core reveal that comes due behind a backlog goes ahead of later rows. Each reveal slides in with a soft chime, and its first item is preselected and glowing.
+- **New-player pacing (ARCHITECTURE §18 C202).** During the first 20 minutes of the first run, only the **core loop** (crumb → workers → jobs → Gallery → trail → research: the Colony panel, Diggers, Build, Scouts, trail slots, Research, Map, plus Golden Beetle, Chitin, Rivals and raid warnings, which announce something already on screen) keeps the 30 s spacing. Every other reveal waits **50 s** after the previous one. A reveal the colony is stuck on right now counts as core (Granary while the food store is full, Nursery while brood slots bind, Royal Chamber level-ups while the lay rate binds).
+- **Reveal gates.** Some reveals wait until the player has used what came before. The feature is unlocked for play on time, but it is only shown once the gate holds. Adaptations, Granary, Nursery and Royal Chamber level-ups wait for the first Gallery. Egg reserve, Achievements, Midden, Season dial, Mound, Random events, Rivals, the Climate overlay and the Gate wait for the **core loop**: a chamber placed, a second trail drawn (or a hex claimed), and a research bought. Scent Library waits for Research, and Potent Trails for trail slots. If the player skips a step, the gates open on their own (Gallery gates at 10:00, the others at 15:00). Later runs are not gated. While a gate holds the queue, the ribbon names the missing step ("Next: Granary · place your first Gallery"), but only once that step's feature is on screen.
+- **One callout per new feature.** The first time a panel or feature is revealed, a one-line "what this is / what to do" card appears under the HUD (§25.6 rule 10).
 - The **Next-unlock ribbon** always shows the nearest upcoming reveal and its ETA. Adult-count and first-hatch ETAs include the brood still growing and the development time of new eggs. When nothing timed is within 2 minutes, it names the next step and its condition instead (for example "Next: Research · reveal your first hex"; ARCHITECTURE §18 C86).
 - A newly revealed panel never takes over the open tab. Its tab slides in with a "new" dot, and the onboarding glow alone points the way (§25.6).
 
 | Feature | Reveal condition | Typical time in run 1 |
 |---|---|---|
-| Above canvas, crumb glow, Food counter. Below inset (30% height) showing the queen and her first egg. | New game | 0:00 |
-| Colony panel (brood pipeline, Forager chip); `quick_dispatch`, `strong_mandibles`, `royal_feeding` | First worker | 0:15 |
-| Digger job, Soil, `digging_claws` | 3 adults | ~0:30 |
-| Build panel, Gallery blueprint. The Below view grows to full size. Bottleneck badge. | Housing full for the first time | ~0:50 |
-| Granary | Food earned ≥ 120 or food cap reached | ~1:00 |
-| Nursery | 8 adults (not "brood slots full": the 3 starting slots fill at ~0:08) | ~1:00 |
-| Scout job; fog frontier shimmer | 12 adults | ~1:30 |
-| Trail-slot indicator; ghost-ant demo of trail drawing | Crumb saturated (n > c) | ~2:00 |
-| Insight; Research tab showing 3 nodes | First hex revealed | ~2:15 |
-| Royal Chamber level-up | 20 adults | ~2:30 |
-| Egg reserve slider | First time a purchase is unaffordable because eggs keep spending food, once the Build panel is open | ~2–4 min |
-| Scent Library | 30 adults | ~3:00 |
-| Achievements tab and Next Goals tracker | 3 achievements earned | ~3:30 |
-| `potent_trails` | 40 adults | ~4:00 |
+| Above canvas, crumb glow, Food counter. Below inset (30% height, labelled "Your nest: the queen and her eggs" with an **Expand** button) showing the queen and her first egg. | New game | 0:00 |
+| Colony panel (brood pipeline, Forager chip) | First worker | 0:15 |
+| Digger job, Soil | 3 adults (core: 30 s after the Colony panel) | ~0:45 |
+| Build panel, Gallery blueprint. The Below view grows to full size with the callout "Your nest is full, so the queen stops laying. Build a Gallery for room." Bottleneck badge. Gallery demo (labelled) while housing stays full. | Housing full for the first time (core) | ~1:00–1:15 |
+| Scout job; fog frontier shimmer | 12 adults (core) | ~1:45 |
+| Trail-slot indicator; ghost-ant demo of trail drawing | Crumb saturated (n > c) (core) | ~2:15 |
+| Insight; Research tab showing 3 nodes | First hex revealed (core) | ~2:45 |
+| Adaptations tab: `quick_dispatch`, `strong_mandibles`, `royal_feeding` (and `digging_claws` once a digger works) | First worker; shown after the first Gallery is placed | ~3:30 |
+| Granary | Food earned ≥ 120 or food cap reached; shown after the first Gallery (at once while the food store is full) | ~2–4 min |
+| Nursery | 8 adults; shown after the first Gallery (at once while brood slots bind) | ~2–5 min |
+| Map tab | Second trail or first claim (core) | when it happens |
+| Royal Chamber level-up | 20 adults; shown after the first Gallery | ~4–6 min |
 | Golden Beetle | 5:00 elapsed in the first run | 5:00 |
 | Chitin | First chitin gained (dead insect) | ~5 min |
-| Midden | 120 adults | ~5:30 |
-| Season dial | 5:30 elapsed (first summer at 6:00) | 5:30 |
-| Pheromone meter, Mark, hex claiming | `scent_marking` | ~6 min |
-| Mound | Soil ≥ 300 for the first time | ~7 min |
-| Random events | Scripted `ev_fallen_fruit` | ~8:00 |
+| Pheromone meter, Mark, hex claiming | `scent_marking` (bought by the player, shown at once) | ~6 min |
+| Egg reserve slider | First time a purchase is unaffordable because eggs keep spending food, once the Build panel is open; shown after the core loop | ~6–9 min |
+| Scent Library | 30 adults; shown after Research | ~6–10 min |
+| Achievements tab and Next Goals tracker | 3 achievements earned; shown after the core loop | ~7–12 min |
+| `potent_trails` | 40 adults; shown after trail slots | ~8–13 min |
+| Midden | 120 adults; shown after the core loop | ~10–15 min |
+| Season dial | 5:30 elapsed (first summer at 6:00); shown after the core loop | ~8–16 min |
+| Mound | Soil ≥ 300 for the first time; shown after the core loop | ~10–17 min |
+| Random events | Scripted `ev_fallen_fruit` (the fruit itself still lands at ~8:00); shown after the core loop | ~10–18 min |
 | Soldiers, Barracks, caste targets, War panel | `polymorphism` | ~12–15 min |
-| Rival panel, territory borders | First rival nest revealed | ~8–12 min |
+| Rival panel, territory borders | First rival nest revealed; shown after the core loop | ~8–12 min |
 | Job ratio presets (auto jobs) | `age_polyethism` | ~9–11 min |
 | Herders, Honeydew, Root Aphid Pen, Queen's Feast | `aphid_husbandry` | ~10–12 min |
-| Climate overlay, Winter Stores gauge | Autumn of year 0 | 12:00 |
+| Climate overlay, Winter Stores gauge | Autumn of year 0; shown after the core loop | 12:00 or a little later |
 | Prestige tab (Flight checklist and projection) | `f_run ≥ 2e7` or `nuptial_preparation` researched | ~16–20 min (bot ~13–17) |
 | Rally | `recruitment_pheromones` | ~12–15 min |
 | Raid warnings | First rival becomes eligible (§9.10) | ≥ 15 min |
 | Frost line | First winter | 18:00 |
-| Gate | First raid warning, or 25:00 | ~18–25 min |
+| Gate | First raid warning, or 25:00; shown after the core loop | ~18–25 min |
 | Leafcutters | `leafcutting` | ~16–25 min |
 | Hibernaculum | `overwintering` | ~30–40 min |
 | Nuptial Chamber and exit shaft | `nuptial_preparation` | ~20–44 min (the bot rushes it at ~20) |
 | Fungus widget, Fungus Garden, Nutrition ring | `fungiculture` | ~45–50 min |
-| Flight button active | All of §13.1 (gated by `f_run ≥ 1.7e8`) | ~50–75 min (bot ~42–55) |
+| Flight button active | All of §13.1 (gated by `f_run ≥ 1.85e8`) | ~50–75 min (bot ~42–55) |
 | Bloodline tab | First Flight | ~60–90 min |
 | Hardships | 150 lifetime alates | ~2.5–3 h |
 | Supercolony teaser (greyed Federation tab, daughter-colony trails) | 1,000 lifetime alates | ~3–4 h |
@@ -1868,24 +1887,18 @@ The torpor floor (from B) is a backstop. If any code path would reduce adults of
 ### 24.1 Run 1 beat script (first 30 minutes; target times for a human)
 | Time | What the player sees and does | Unlock | Teaches |
 |---|---|---|---|
-| 0:00 | The crumb by the entrance pulses. The Below inset shows the queen beside her first egg (laid from the 5 starting food). Each click sends an ant out and back: +1 food. | Food | Clicking |
-| 0:15 | The first nanitic hatches and walks to the crumb. "+0.5/s" appears. | Colony panel, 3 Adaptations | Ants earn while you watch |
-| 0:30 | "Dig" chip appears. Diggers carry pellets up the shaft. | Digger, Soil | Jobs |
-| 0:50 | "House full" pip on the Royal Chamber. A dotted Gallery outline appears in the topsoil, and the Below view grows to full size. | Build, Gallery, bottleneck badge | Placing and digging |
-| 1:00 | The food bar flashes at 150. A Granary ghost appears, with the hint "shallow = faster hauling". | Granary | Storage and haul |
-| 1:20 | Eggs wait for space. A Nursery ghost glows next to the queen (+15%). | Nursery | Slots and adjacency |
-| 1:30 | Scout chip; the fog edge shimmers. | Scout | Exploration |
-| 2:00 | The crumb saturates. Scent particles drift toward a seed patch 2 hexes out, and a ghost ant demonstrates dragging a trail. | Trails | Capacity and distance |
-| 2:15 | First hex revealed → insight. The Research tab opens with Trail Memory, Coordinated Digging and Brood Care. | Research | Second currency |
-| 2:30 | Royal Chamber level-up. | Royal upgrades | Lay-rate constraint |
-| 3:00 | 30 adults: Scent Library. | Scent Library | Insight economy |
-| 3:30 | Three achievement toasts; Next Goals tracker. | Achievements | Guidance |
-| 4:00 | Potent Trails. | Potent Trails | Multiplicative upgrades |
+| 0:00 | The crumb by the entrance pulses. The Below inset, labelled "Your nest", shows the queen beside her first egg (laid from the 5 starting food); its Expand button opens the full nest view early. Each click sends an ant out and back: +1 food. | Food | Clicking |
+| 0:15 | The first nanitic hatches and walks to the crumb. "+0.5/s" appears. The Colony tab arrives alone, with its callout. | Colony panel | Ants earn while you watch |
+| 0:45 | "Dig" chip appears, with a callout. Diggers carry pellets up the shaft. | Digger, Soil | Jobs |
+| 1:00–1:15 | "House full" pip on the Royal Chamber. The Below view grows to full size with the callout "Your nest is full… Build a Gallery for room." While housing stays full, a ghost ant carries a dashed Gallery outline to a good spot, labelled "Nest full: pick Gallery in the Build tab, then click here", and the Build tab glows. | Build, Gallery, bottleneck badge | Placing and digging |
+| 1:45 | Scout chip; the fog edge shimmers. | Scout | Exploration |
+| 2:15 | The crumb saturates. Scent particles drift toward a seed patch 2 hexes out, and a ghost ant demonstrates dragging a trail. | Trails | Capacity and distance |
+| 2:45 | First hex revealed → insight. The Research tab opens with Trail Memory, Coordinated Digging and Brood Care. | Research | Second currency |
+| 2–5 min | Once the first Gallery is placed, about one every 50 s: the Adaptations tab, the Granary (sooner if the food bar is full at 150), the Nursery (sooner if eggs wait for slots), Royal Chamber level-ups (clicking the queen now opens her inspect panel). | Adaptations, Granary, Nursery, Royal upgrades | Storage, slots, lay rate |
 | 5:00 | A Golden Beetle scuttles across a hex. A dead insect appears and gives the first chitin. | Golden Beetle, Chitin | Active play |
-| 5:30 | Midden blueprint (its hygiene zone is drawn red near nurseries). | Midden | Spatial planning |
-| 6:00 | Summer: the map turns gold, forage ×1.3. Scent Marking → Pheromone, Mark, claims. | Seasons, Pheromone | Rhythm; active meter |
-| 7:00 | The Mound rises at the entrance. | Mound | Soil sink |
-| 8:00 | A strawberry thuds onto the map (scripted positive event). | Events | Jackpots |
+| 6:00 | Summer: the map turns gold, forage ×1.3. Scent Marking → Pheromone, Mark, claims. | Pheromone | Active meter |
+| 6–15 min | Once the core loop is done (a chamber, a second trail, a research), about one every 50 s: Egg reserve, Scent Library, Achievements and Next Goals, Potent Trails, Midden, Season dial, Mound, Random events. Each has its one-line callout. | Achievements, Midden, Seasons, Mound, Events | Guidance; spatial planning; rhythm; soil sink |
+| 8:00 | A strawberry thuds onto the map (scripted positive event; the event system is named later, with the core loop done). | — | Jackpots |
 | 9:00 | Black Garden Ants revealed at ring 4: rival panel and territory borders appear. | Rivals | Threat |
 | 10:00 | Age Polyethism: jobs automate by ratio. | Auto jobs | Automation |
 | 11:00 | Aphid Husbandry: herders, honeydew. A Root Aphid Pen must touch a root growing down from a surface plant. | Honeydew | Views linked by roots |
@@ -1947,7 +1960,7 @@ The first calibration pass (which excluded combat, events, honeydew, fungus and 
 | **Wide-short** (≥ 1280 wide, < 820 tall) | Side by side (D): Below on the left (~30%), Above in the middle (~45%), panels on the right. |
 | **Medium** (768–1279) | One canvas area with tabs **Above / Below** and a **Split** toggle that stacks both at reduced size. Panels open in a right-hand drawer that docks beside the canvas while open (the canvas narrows instead of being covered), and the resource rail becomes a top bar. |
 | **Narrow** (< 768) | A single full-width canvas with 16 px gutters and view tabs. Panels are a bottom sheet (peek / half / full). The resource bar scrolls horizontally inside itself, never the page. The panel tab row scrolls sideways too, with fade edges where there is more; icon buttons show their name on hover or focus (C197). |
-| **First load** (all sizes, from C) | Above fills the canvas area and Below is a 30% inset showing the queen. Below animates to its full slot at the first housing cap (~0:50). |
+| **First load** (all sizes, from C) | Above fills the canvas area and Below is a 30% inset showing the queen, labelled "Your nest: the queen and her eggs" with an **Expand** button that opens the full view early (C203). Below animates to its full slot at the first housing cap (~1:00), with a callout explaining why. When that happens in a view that hides the nest (the narrow default), the view switches to show the nest, unless the player has chosen a view. |
 
 ```
 ┌────────────┬──────────────────────────────────────────┬──────────────────────┐
@@ -1985,7 +1998,7 @@ The first calibration pass (which excluded combat, events, honeydew, fungus and 
 | Build | Chamber list (locked items greyed with their unlock condition), dig queue chips, Mound, blueprint save/load | First housing cap |
 | Map | Trails list (workers, strength, yield, escorts, Mark/Rally), territory and claim cost, rivals list and war panel, hunts | Second trail or first claim (after trail slots are revealed) |
 | Research | One branch at a time (no "All" view; opens the first branch with something available, then the last one viewed, remembered per browser; each branch button counts its available nodes), Innate badges, refinements, "Hide completed" toggle (remembered per browser) (C144) | First insight |
-| Prestige | Sub-tabs: Flight (checklist, alate rearing, projection, "What increases flight alates" with the current value of every factor, C146) · Bloodline · Hardships · Supercolony · Federation · Edicts · Speciation · Genome · Species, each revealed per §23 | `f_run ≥ 2e7` or `nuptial_preparation` researched |
+| Prestige | Sub-tabs: Flight (checklist, alate rearing, projection, "What increases flight alates" with the current value of every factor, C146; the weather row explains Flight Day inline: a summer event once Nuptial Preparation is researched, ×1.5 alates for 3 min, C232; alate rearing has Cancel queued and the queue price, C232) · Bloodline · Hardships · Supercolony · Federation · Edicts · Speciation · Genome · Species, each revealed per §23 | `f_run ≥ 2e7` or `nuptial_preparation` researched |
 | Achievements | Recently earned (last 8, with time of play since), Next Goals ("Name — requirement"), list with every requirement, secret placeholders (C145) | 3 achievements |
 | Field Guide | Entries by category | First entry (new game) |
 | Stats | Resources over the last 60 s: per resource, where it came from (trails by source type, clicks, events, loot, passive chambers …) and what used it (eggs, upkeep, chambers, Adaptations, research, spoilage, wasted at the cap …) with bars (C191); the Event log button; run and lifetime statistics: largest battle, deepest tunnel, longest trail, fastest flight, per-layer timings | Always |
@@ -2024,7 +2037,7 @@ Camera controls on the canvas the player clicked last: wheel (Above: zoom; Below
 ### 25.6 Onboarding rules (from C)
 1. **One glow at a time.** Only the next intended action pulses. A newly revealed tab gets a quiet "new" dot and never switches the open panel, so the glow is the only thing that moves.
    - **Opening (0:00):** until the first gameplay panel appears, the panel column holds a small welcome card (title, one line of story, "Click the glowing crumb to gather food." with an arrow toward the map), not a reference tab. After three clicks it shows a "First worker" progress bar with a countdown. Nothing on it pulses, so the crumb is the only glow. On medium and narrow screens, whose panels start closed, the same line sits over the map until the third click.
-2. **Ghost-ant demo** after 8 s of hesitation, showing the gesture (a trail drag, a chamber drop).
+2. **Ghost-ant demo** after 8 s of hesitation, showing the gesture (a trail drag, a chamber drop). The chamber demo appears only when the Gallery is revealed, housing is full and no Gallery is placed. It carries a label ("Nest full: pick Gallery in the Build tab, then click here") while the Build tab glows, and it disappears once the Gallery is placed (C203).
 3. **Diegetic hints:**
    - scent particles drift toward the best unclaimed source;
    - a "house full" pip;
@@ -2037,6 +2050,8 @@ Camera controls on the canvas the player clicked last: wheel (Above: zoom; Below
 7. **Advisor pulse:** in the first hour, if nothing useful will be affordable within 120 s, the limiting chamber or resource pulses.
 8. **Readable walls:** war panels show win chance and "what would raise it". No wall in run 1 should need more than ~10 min of waiting.
 9. **Next Goals tracker:** the 3 nearest achievements with progress bars.
+10. **Feature callouts (C204).** The first reveal of a panel or feature shows a one-line "what this is / what to do" card under the HUD (for example "Diggers carry soil up and dig new rooms. Give one ant the Digger job."). Only one shows at a time. A newer reveal replaces it, "Got it" dismisses it, and it fades after 45 s. Each callout is shown once per colony. The copy never names a feature the player has not seen yet.
+11. **Nothing opens by itself.** A click on the queen or the Royal Chamber does not open the Build → Inspect panel until Royal Chamber level-ups are revealed, because before that there is nothing to do there. Other chambers still open their inspect view on click (C203). The advisor pulse (rule 7) never points at an unrevealed chamber; it falls back to the Food counter.
 
 ### 25.7 Overlays
 | Overlay | Shows |
@@ -2056,6 +2071,13 @@ Camera controls on the canvas the player clicked last: wheel (Above: zoom; Below
 - **Names:** the colony and queen can be named. The queen sprite grows with Royal Chamber level.
 - **Cosmetics** from achievements: palettes, mound skins and flags, trail colours, a crown, a ladybug pet, a winged cursor. The winged cursor applies across the whole game window, not only the two views; clickable things show a gold pointer version of it, and text fields keep the text cursor (C164).
 - **Statistics page** (§25.3).
+
+### 25.9 Sound (ARCHITECTURE C234–C235)
+- **Procedural and quiet.** Every sound is synthesised in the browser (short oscillator and noise envelopes, no audio files). Volumes are gentle; the loudest sound peaks well under full scale.
+- **What makes a sound.** *Actions:* a soft tick for hand-foraging and other clicks, a two-note chime for purchases, a rising three-note chime for chamber level-ups and research, a dull thud when a chamber is placed, a scrape for digging, a swish for drawing a trail, a low double drum for a war party, a soft buzz for a refused action, and a barely-there tick on a tab switch. *Alerts:* a chime when an event card appears (a falling two-note warning for a harmful event), a two-tone alarm for a raid warning, a rising or falling phrase for a battle won or lost, a sparkle for an achievement, the reveal chime for an unlock, a short flourish for Nuptial Flight, Supercolony, Speciation and the ending, and a glittering arpeggio when the golden beetle (or a pupa gift) appears. *Ambience:* a soft pad at each season change and a low chime when a chamber is finished.
+- **Never a machine gun.** At most 8 sounds per second; the same sound is never repeated within 60 ms (longer for most: the click tick 70 ms, the alarm 2 s); spam-clicking past the click cap is silent; automation never makes action sounds.
+- **Settings → Sound:** sound effects on/off, volume, and separate Actions / Alerts / Ambience switches, with a Test button. These are remembered per browser, not in the save, and default to on at half volume.
+- **Browser rules:** sound starts after the first click or key press (browsers block audio before that), pauses while the tab is hidden, and stays quiet for a moment after the tab returns so the catch-up does not burst. Without Web Audio the game is simply silent.
 
 ---
 
@@ -2144,7 +2166,7 @@ Expected size: about 13–15k lines (core ~6k, view ~3k, UI ~2.5k, tests ~2.5k).
 2. `sc()` is continuous and monotonic at each threshold.
 3. `E(N)` matches the §5.2 table, including `E(200) = 111.8`.
 4. **A new game hatches its first worker within 15–30 s with zero input.**
-5. Prestige thresholds: base `f_run = 1e8` → 10 alates (formula anchor; the Flight gate `f_run = 1.7e8` gives 13); 5,000 → 3 kinship; 1,000 (the Speciation gate) → 20 genes. Worked examples in §13–15 match to ±1.
+5. Prestige thresholds: base `f_run = 1e8` → 10 alates (formula anchor; the Flight gate `f_run = 1.85e8` gives 13); 5,000 → 3 kinship; 1,000 (the Speciation gate) → 20 genes. Worked examples in §13–15 match to ±1.
 6. Lanchester: stepped vs closed form within 5% (homogeneous) and 10% (mixed). The preview is deterministic and does not advance `state.rng`.
 7. Offline vs online within 2% (1 h, events off, 100% efficiency).
 8. Saves: round trip deep-equal; each migration has a fixture; a corrupted checksum is rejected.
@@ -2175,7 +2197,7 @@ Expected size: about 13–15k lines (core ~6k, view ~3k, UI ~2.5k, tests ~2.5k).
 | Lever | Controls |
 |---|---|
 | Gallery growth 1.30, housing 10/level | Mid-run population curve |
-| Flight gate 1.7e8 (formula anchor 1e8), exponent 0.5, `t_peak` divisor 400; Prestige tab 2e7 | First Flight timing and payoff growth; when the bot starts its Nuptial Preparation rush |
+| Flight gate 1.85e8 (formula anchor 1e8), exponent 0.5, `t_peak` divisor 400; Prestige tab 2e7 | First Flight timing and payoff growth; when the bot starts its Nuptial Preparation rush |
 | Scent Library 0.05/s (growth 2.0), research costs, insight per hex (0.75 × ring), scout exponent 0.6 | Research cadence |
 | Lineage 0.05 per alate up to 100, then `6√(A/100)` (food only) | Run-2+ speed-up and cycle-1 stability |
 | Alates-per-flight softcap 3e4 | Layer-2 stability (kinship blow-up guard) |
@@ -2528,6 +2550,18 @@ The lay rate starts the window at 3.6e4 eggs/s (it was 9.6e7) and the bot lifts 
 
 **Stability (§16).** The lay change removes a colony_scale factor from a stat whose f_run elasticity is small, so it only lowers loop exponents; the meta-model is unchanged (`eLay` 0.25; at 0.4 `prestige_contractive` still passes with a largest exponent of 0.615 and the ending at 6.2 weeks). The Archive is linear in its level against a ×1.6 geometric cost in insight, which is not a prestige currency and is softcapped, and it resets each era: a bounded constant factor, not a loop. `prestige_contractive` passes (largest exponent 0.617, layer 3); the ending is at 7.32 weeks. Stored values: the Archive cost reports MAX past 1e280 (L ≈ 1,350); the chitin cap ≤ (500 + stores) × colony_scale, clamped at 1e295 like every stat.
 
+### Feedback pass 7, map and combat (ARCHITECTURE §18 C220–C228, C236–C238)
+
+Measured with the pacing bot on the last commit plus only this pass's map and combat files (other passes' work in progress excluded), before → after:
+
+| Run | First conquest | Flight available | Alates at 90 min (shadow) | First Supercolony |
+|---|---|---|---|---|
+| seed 1, dt 0.1 | 12:34 → 12:52 | 40:08 → 48:31 | 115 → 82 | — |
+| seed 2, dt 0.1 | 12:49 → 12:22 | 39:04 → 39:47 | 89 → 71 | — |
+| seed 1, dt 1, 12 h | 12:57 → 13:00 | 40:22 → 44:43 | 78 → 78 | 4:31 → 5:18 |
+
+Every check still passes. The difference is almost all the Mound (C220): the old bot bought levels at twice their soil cost, reaching L9 at ~42 min and L10 (auto radius 3) at ~62 min; the growing Mound reaches L5 sooner (≈ 10 min) but L9 only at ≈ 80 min and L10 not in run 1, so mid-run trail slots and the wider home radius (and the t_peak it adds) come later. Excluding trail-held hexes from t_peak (C222) changes nothing for the bot, which holds no trail-only land in run 1; for a player with Trunk Trails it removes up to a few dozen hexes from t_peak (≈ +5–10 % alates when they were counted). Tournament prizes and defence chitin are small (tens to hundreds of insight / chitin) and the bot does not use tournaments.
+
 ### Open issues for the shipped pacing bot
 1. **Flight availability is bimodal.** It lands either before the first hard winter (42–48 min, forage ×0.3) or just after it, depending on the seed. With the shipped bot it is 41–45 or 51–56 min (Pacing-bot pass).
 2. **Later cycles start with fast runs.** The first runs of cycle 2+ are 8–12 min speed runs before settling at 20–60 min. That is acceptable with Auto-Flight, but a human may prefer a minimum run length.
@@ -2535,3 +2569,17 @@ The lay rate starts the window at 3.6e4 eggs/s (it was 9.6e7) and the bot lifts 
 4. **Untested here:** the active/idle ratio (§18.4) and offline efficiency. Random events are on in the shipped bot (Pacing-bot pass).
 
 *End of document.*
+
+### Feedback pass 7: explanations and search (ARCHITECTURE §18 C207–C211)
+Rules restated for players, each checked against the code (no numbers changed):
+- **Raid vs assault (§9.4):** a raid fights 40 % of the defenders with no home bonus and loots food (30 s of income × √tier) and kill chitin; the nest survives. An assault fights every defender at home (×1.25, less with supermajors) and a win conquers the nest: its land, an outpost and the spoils. The war-party form says this under the action buttons; won battles name the loot carried home (the glints after a battle are only the visual).
+- **Trails (§8.5):** per-worker yield = richness (1 + 0.35 × (length − 1)) × distance efficiency (1 ÷ (1 + (length − 1) ÷ navigation)) × strength (1 + S ÷ 100) × other factors. At the base navigation of 3 richness and efficiency roughly cancel, so long trails only pay more per worker once navigation rises (Tandem Running +1, Long Legs +0.25 a level, …). Length counts ground costs plus the haul to storage for main-entrance trails. Strength tends to 100 × w ÷ (w + 15 × length), so long trails need more workers to stay strong. Free workers go a batch at a time to the best marginal yield, unsaturated trails first, chitin trails first while chitin is short; pinned workers stay put.
+- **Territory (§8.6):** +0.5 % forager output per owned hex (up to +100 %, in the same additive group as Strong Mandibles — not other surface yields), owned sources ×1.25, fully-owned trails cannot be raided, peak territory +0.25 % Flight alates per hex, and border hexes make a crossing trail twice as likely to be the trail-raid target.
+- **Bonus stacking:** "+X %" bonuses add within their group, then "×Y" multiply the total (Manual: "How bonuses stack").
+- **Flight Day:** a rare summer event (needs Nuptial Preparation): 3 minutes of Flight weather ×1.5 instead of summer's ×1.25.
+- **Honeydew cap:** 50 + 10 % of the food cap; honeydew is not stored in Granaries but Granaries raise its cap.
+- **Frost exposure (§17):** a chamber is exposed when more than half of its rows are above the frost line. **Barracks:** "within 12 path cells" is the walk through tunnels to the nearest entrance shaft (the inspect panel shows it); "home AP" is Army Power when defending the nest.
+- **Search:** the Research tab searches names and effects across branches; Manual search ranks title > heading > body and whole words > prefixes > substrings, boosts entries about things you have now, and highlights the words.
+
+### Feedback pass 7: Flight gate re-centre
+With the Mound growing on its own and the new reveal pacing, seed 7 reached the Flight gate at 37:21 (below the 38-min floor). `FLIGHT.fRunMin` 1.7e8 → **1.85e8** (still 13 alates at the gate). Flight available, seeds 1–8 (dt 0.1, `--strict`): 40:21, 48:15, 51:27, 50:55, 50:11, 50:30, 39:28, 52:15 — all checks pass on every seed. First Supercolony (seed 1, 12 h, dt 1): 4:59 with 9 kinship.
