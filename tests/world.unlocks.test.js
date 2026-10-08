@@ -14,7 +14,7 @@ const broodT = (d) => BROOD.baseSec * d.stats.mbt / Math.max(1, d.stats.nurseTer
 
 /** §11 P / Q flags per key. */
 const FLAGS = {
-  panel_colony: 'yy', adapt_basic: 'yn', job_digger: 'yy', adapt_digging_claws: 'yn', panel_build: 'yy', chamber_gallery: 'yn',
+  panel_colony: 'yy', adapt_basic: 'yy', job_digger: 'yy', adapt_digging_claws: 'yn', panel_build: 'yy', chamber_gallery: 'yn',
   chamber_granary: 'yy', chamber_nursery: 'yy', job_scout: 'yy', trail_slots: 'yy', panel_research: 'yy', royal_levelup: 'yy',
   egg_reserve: 'yy', chamber_scent_library: 'yy', panel_achievements: 'yy', adapt_potent_trails: 'yy', golden_beetle: 'yy', res_chitin: 'yy',
   chamber_midden: 'yy', season_dial: 'yy', res_pheromone: 'nn', ability_mark: 'nn', hex_claim: 'nn', mound: 'yy', events: 'yy',
@@ -22,7 +22,7 @@ const FLAGS = {
   res_honeydew: 'nn', chamber_root_aphid_pen: 'nn', adapt_honeydew: 'nn', climate_overlay: 'yy', panel_prestige: 'yy', ability_rally: 'nn',
   raid_warnings: 'yy', frost_line: 'yy', chamber_gate: 'yy', job_leafcutter: 'nn', chamber_hibernaculum: 'nn', chamber_nuptial_chamber: 'nn',
   alate_rearing: 'nn', fungus_widget: 'nn', chamber_fungus_garden: 'nn', job_gardener: 'nn', res_fungus: 'nn', chamber_thermal_chimney: 'nn',
-  chamber_repletion_hall: 'nn', caste_replete: 'nn', chamber_deep_vault: 'nn', chamber_water_well: 'ny', caste_supermajor: 'nn', chamber_war_hall: 'nn',
+  chamber_repletion_hall: 'nn', caste_replete: 'nn', chamber_deep_vault: 'nn', chamber_water_well: 'ny', caste_supermajor: 'nn', chamber_war_hall: 'nn', chamber_carapace_store: 'ny', chamber_carapace_workshop: 'nn',
   adapt_long_legs: 'nn', ability_frenzy: 'nn', panel_map: 'yy', flight_button: 'ny', tab_bloodline: 'yy', tab_hardships: 'yy',
   tab_federation_teaser: 'yy', tab_federation: 'yy', tab_edicts: 'yy', tab_genome_teaser: 'yy', tab_genome: 'yy', tab_guide: 'yn',
   tab_stats: 'yn', tab_settings: 'yn',
@@ -64,7 +64,8 @@ test('queued reveals are spaced ≥ 30 s apart while gameplay unlocks happen at 
     assert.equal(unlocks.isUnlocked(s, k), true, k + ' unlocked on the first tick');
   }
   assert.ok(first.some((x) => x.key === 'panel_colony'), 'the first queued reveal is immediate');
-  const all = first.concat(...Array.from({ length: 400 }, () => tick(s, d, 1)));
+  // C202: the gated reveals open on their own at 10 / 15 min of the first run when the player skips the step.
+  const all = first.concat(...Array.from({ length: 1400 }, () => tick(s, d, 1)));
   const queued = all.filter((x) => def(x.key).queued);
   assert.ok(queued.length >= 8, 'several queued reveals (' + queued.length + ')');
   for (let i = 1; i < queued.length; i++) assert.ok(queued[i].at - queued[i - 1].at >= REVEAL.gapSec - 1e-9, queued[i].key);
@@ -87,7 +88,7 @@ test('reveal spacing holds with dt = 0.1 and with large offline steps', () => {
   }
 });
 
-test('the same-tick non-queued reveal (adapt_basic) never delays its queued parent (panel_colony)', () => {
+test('the same-tick non-queued reveal (chamber_gallery) never delays its queued parent (panel_build)', () => {
   const s = newState();
   const d = makeDerived();
   const t0 = tick(s, d, 0.1);
@@ -96,8 +97,18 @@ test('the same-tick non-queued reveal (adapt_basic) never delays its queued pare
   for (let i = 0; i < 150; i++) tick(s, d, 0.1);
   s.run.stats.hatched = 1;
   const keys = tick(s, d, 0.1).map((x) => x.key);
-  assert.deepEqual(keys, ['panel_colony', 'adapt_basic']);
+  // C202: the Colony panel arrives alone; the Adaptations tab is unlocked for gameplay but its reveal waits.
+  assert.deepEqual(keys, ['panel_colony']);
   assert.equal(unlocks.isRevealed(s, 'panel_colony'), true);
+  assert.equal(unlocks.isUnlocked(s, 'adapt_basic'), true);
+  assert.equal(unlocks.isRevealed(s, 'adapt_basic'), false);
+  s.run.unlocked.panel_build = true;
+  s.meta.reveal.queue.unshift('panel_build');
+  for (let i = 0; i < 300; i++) {
+    const k = tick(s, d, 0.1).map((x) => x.key);
+    if (k.includes('panel_build')) { assert.deepEqual(k, ['panel_build', 'chamber_gallery']); return; }
+  }
+  assert.fail('panel_build never revealed');
 });
 
 test('purchase-triggered (non-queued) keys reveal immediately and restart the gap', () => {
@@ -273,7 +284,8 @@ test('next-unlock ribbon: the reveal queue head first, else the measurable key c
   assert.ok(Math.abs(n.eta - (2 + broodT(d))) < 1e-9, '1 adult at 0.5/s plus one brood time: ' + n.eta);
   s.run.colony.adults.minor = 3;
   s.run.stats.hatched = 3;
-  tick(s, d, 1);   // panel_colony revealed, job_digger queued
+  s.meta.reveal.lastAt = s.meta.simTime;   // a reveal just happened (the Colony panel)
+  tick(s, d, 1);   // job_digger queued behind the gap
   n = d.progress.nextUnlock;
   assert.equal(n.key, 'job_digger');
   assert.equal(n.frac, 1);
@@ -289,29 +301,29 @@ test('ticks are JSON-safe and robust to an empty derived cache', () => {
   assert.ok(Number.isFinite(d.progress._unl.eggFood));
 });
 
-test('a flag child (adapt_basic) is unlocked with its parent but revealed only once the parent is revealed', () => {
+test('a flag child (chamber_gallery) is unlocked with its parent but revealed only once the parent is revealed', () => {
   const s = newState();
-  const d = makeDerived();
+  const d = makeDerived({ stats: { housing: 1 } });
   tick(s, d, 1);
   s.run.research.scent_marking = 1;   // a purchase reveal restarts the gap at simTime 1 …
   s.run.surface.revealed[30] = 1;      // … and panel_research is queued
   tick(s, d, 1);
-  s.run.stats.hatched = 1;             // panel_colony (queued) + adapt_basic (non-queued) at simTime 2
+  s.run.colony.adults.minor = 1;       // housing full: panel_build (queued) + chamber_gallery (non-queued) at simTime 2
   const keys = tick(s, d, 1).map((x) => x.key);
-  assert.equal(unlocks.isUnlocked(s, 'adapt_basic'), true);
-  assert.ok(!keys.includes('adapt_basic'), 'not announced before the Colony panel');
-  assert.equal(Object.prototype.hasOwnProperty.call(s.meta.seen, 'adapt_basic'), false);
+  assert.equal(unlocks.isUnlocked(s, 'chamber_gallery'), true);
+  assert.ok(!keys.includes('chamber_gallery'), 'not announced before the Build panel');
+  assert.equal(Object.prototype.hasOwnProperty.call(s.meta.seen, 'chamber_gallery'), false);
   const later = [];
   for (let i = 0; i < 90; i++) later.push(...tick(s, d, 1));
   const at = (k) => later.find((x) => x.key === k).at;
-  assert.equal(at('adapt_basic'), at('panel_colony'), 'revealed in the same tick as its parent');
+  assert.equal(at('chamber_gallery'), at('panel_build'), 'revealed in the same tick as its parent');
 });
 
 test('next-unlock ribbon: an { adults } ETA is unknown (−1, shown as %) while housing blocks laying or the colony is Hungry (C57)', () => {
   const s = newState();
   const d = makeDerived({ stats: { layRate: 0.5, housing: 10 } });
   // Everything nearer is already seen, and the timed keys (run-time conditions) are out of the way.
-  for (const k of ['panel_colony', 'job_digger', 'panel_build', 'chamber_granary', 'chamber_nursery', 'golden_beetle', 'season_dial', 'chamber_gate']) { s.run.unlocked[k] = true; s.meta.seen[k] = true; }
+  for (const k of ['panel_colony', 'adapt_basic', 'job_digger', 'panel_build', 'chamber_granary', 'chamber_nursery', 'golden_beetle', 'season_dial', 'chamber_gate']) { s.run.unlocked[k] = true; s.meta.seen[k] = true; }
   s.run.colony.adults.minor = 10;   // housing full: no egg can be laid
   tick(s, d, 1);
   let n = d.progress.nextUnlock;
@@ -329,6 +341,12 @@ test('next-unlock ribbon: an { adults } ETA is unknown (−1, shown as %) while 
 test('the reveal queue runs in schedule order: a core key that unlocks behind a backlog goes first (C63)', () => {
   const s = newState();
   const d = makeDerived();
+  // C202: the core loop is done (a chamber, a claim, a research), so the gated reveals (Nursery, Mound) can pop.
+  s.run.nest.chambers.push({ uid: 99, type: 'gallery', x: 0, y: 0, w: 1, h: 1, level: 1 });
+  s.run.surface.claims = 1;
+  s.run.research.trail_memory = 1;
+  s.meta.seen.panel_research = true;
+  s.run.unlocked.panel_research = true;
   s.run.stats.hatched = 1;
   tick(s, d, 1);                       // panel_colony revealed: the next reveal waits for the 30 s gap
   s.run.res.soil = 1e9;
@@ -340,8 +358,8 @@ test('the reveal queue runs in schedule order: a core key that unlocks behind a 
   for (const k of ['mound', 'job_digger', 'chamber_nursery', 'job_scout']) assert.ok(q.includes(k), k + ' queued: ' + q);
   for (let i = 1; i < q.length; i++) assert.ok(at(q[i - 1]) < at(q[i]), 'queue in schedule order: ' + q.join(', '));
   const order = [];
-  for (let i = 0; i < 200; i++) order.push(...tick(s, d, 1).map((x) => x.key));
-  assert.ok(order.indexOf('job_scout') < order.indexOf('mound'), order.join(', '));
+  for (let i = 0; i < 600; i++) order.push(...tick(s, d, 1).map((x) => x.key));
+  assert.ok(order.indexOf('job_scout') >= 0 && order.indexOf('job_scout') < order.indexOf('mound'), order.join(', '));
 });
 
 test('egg_reserve waits for the Build panel; panel_map waits for trail slots (C63)', () => {

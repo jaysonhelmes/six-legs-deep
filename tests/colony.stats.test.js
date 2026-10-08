@@ -13,6 +13,8 @@ import { FEDERATION } from '../src/data/federation.js';
 import { GENOME, SIGNATURES } from '../src/data/genome.js';
 import { EDICTS, HARDSHIPS } from '../src/data/prestige.js';
 import { CASTES } from '../src/data/castes.js';
+import { LAY } from '../src/data/economy.js';
+import { ADAPTATIONS } from '../src/data/adaptations.js';
 
 /** Relative closeness. */
 function near(a, b, rel = 1e-9, msg = '') {
@@ -100,7 +102,7 @@ test('recompute: neutral derived gives the documented starting stats', () => {
   assert.equal(st.digW, 0);
 });
 
-test('colony scale multiplies housing, brood slots, berths, replete berths, gardener slots and lay rate (not alate cells)', () => {
+test('colony scale multiplies housing, brood slots, berths, replete berths, gardener slots and the chitin cap (not alate cells, not lay rate: C198)', () => {
   const { s, d, env } = setup();
   d.meta.colonyScale = 4;
   Object.assign(d.nest.agg, { housingBase: 30, berthsBase: 8, repleteBerthsBase: 5, gardenerSlots: 10, alateCells: 15,
@@ -114,7 +116,8 @@ test('colony scale multiplies housing, brood slots, berths, replete berths, gard
   assert.equal(st.repleteBerths, 20);
   assert.equal(st.gardenerSlots, 40, 'gardener slots × colony_scale (DESIGN §6.2, balance pass)');
   assert.equal(st.alateCells, 15);
-  near(st.layRate, 0.25 * 4);
+  near(st.layRate, 0.25, 1e-9, 'C198: colony scale no longer multiplies the lay rate');
+  near(st.chitinCap, 500 * 4, 1e-9, 'C199: chitin cap × colony scale');
 });
 
 test('housing multipliers: gallery_arches and compact_galleries', () => {
@@ -155,7 +158,7 @@ test('pheromone cap and regen: 50 + 50·pheromone_glands + 5 × mound; (0.5 + 0.
   near(d.stats.pheromoneRegen, (0.5 + 0.05 * 10) * fxv(RESEARCH, 'pheromone_glands', 'regen', 1));
 });
 
-test('lay rate: royal_feeding, Royal Chamber levels (×1.15 each), polygyny terms add, M_lay stack, hungry 0, claustral RF 0', () => {
+test('lay rate: royal_feeding, Royal Chamber levels (×1.15 to highFrom, ×perRCHigh above), queens add + court, M_lay stack, hungry 0, claustral RF 0', () => {
   const { s, d, env } = setup();
   d.season.mods.lay = 1;
   s.run.adaptations.royal_feeding = 2;
@@ -164,7 +167,10 @@ test('lay rate: royal_feeding, Royal Chamber levels (×1.15 each), polygyny term
   near(d.stats.layRate, (0.2 + 0.1) * 1.15 ** 2);
   d.nest.agg.royal = [3, 1];
   recompute(s, d, env);
-  near(d.stats.layRate, (0.2 + 0.1) * (1.15 ** 2 + 1));
+  near(d.stats.layRate, (0.2 + 0.1) * (1.15 ** 2 + 1) * (1 + LAY.courtPer), 1e-9, 'two queens: terms add, × the court');
+  d.nest.agg.royal = [LAY.highFrom + 4];
+  recompute(s, d, env);
+  near(d.stats.layRate, (0.2 + 0.1) * 1.15 ** (LAY.highFrom - 1) * LAY.perRCHigh ** 4, 1e-9, 'levels above highFrom grow ×perRCHigh');
   d.nest.agg.royal = [1];
   s.run.adaptations = { queens_feast: 2 };
   s.run.research.royal_pheromones = 1;
@@ -175,7 +181,8 @@ test('lay rate: royal_feeding, Royal Chamber levels (×1.15 each), polygyny term
   s.meta.achievements.ach_thousand_strong = 10;
   s.meta.achievements.ach_royal_ascent = 20;
   recompute(s, d, env);
-  const mLay = fxv(RESEARCH, 'royal_pheromones', 'lay', 1) * fxv(RESEARCH, 'spermathecal_reserve', 'lay', 1) * 1.25 ** 2 * 3 * 3
+  const mLay = fxv(RESEARCH, 'royal_pheromones', 'lay', 1) * fxv(RESEARCH, 'spermathecal_reserve', 'lay', 1)
+    * ADAPTATIONS.queens_feast.fx.lay ** 2 * 3 * 3
     * REFINEMENT.mult * 1.02 * 1.05;
   near(d.stats.layRate, 0.2 * mLay);
   s.run.colony.hungry = true;

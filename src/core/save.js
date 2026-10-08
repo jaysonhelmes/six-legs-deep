@@ -1,7 +1,7 @@
 // Save codec: RLE packing of the big arrays, FNV-1a checksum, UTF-8 base64, the SLD1 export string (same format as the
 // local save), and a try/catch storage wrapper. Owner: WP1. Contract: ARCHITECTURE §7.13 (DESIGN §22).
 
-import { SAVE, GRID, HEX } from '../data/balance.js';
+import { SAVE, GRID, HEX, validCols } from '../data/balance.js';
 import { SCHEMA_VERSION } from './state.js';
 import { migrate, fillDefaults } from './migrations.js';
 import { guardAll } from './guard.js';
@@ -237,7 +237,11 @@ function validState(st) {
   if (!st || typeof st !== 'object' || Array.isArray(st)) return false;
   for (const k of ['meta', 'era', 'cycle', 'run']) if (!st[k] || typeof st[k] !== 'object' || Array.isArray(st[k])) return false;
   const run = st.run;
-  if (!run.nest || !Array.isArray(run.nest.cells) || run.nest.cells.length !== GRID.cols * GRID.rows) return false;
+  // C215: a nest is 40 columns unless it says it is wider (cols, an even 40–64)
+  if (!run.nest || !Array.isArray(run.nest.cells)) return false;
+  if (run.nest.cols !== undefined && !validCols(run.nest.cols)) return false;
+  const cols = validCols(run.nest.cols) ? run.nest.cols : GRID.baseCols;
+  if (run.nest.cells.length !== cols * GRID.rows) return false;
   if (!run.surface) return false;
   for (const k of ['terrain', 'revealed', 'claimed', 'conquered']) {
     if (!Array.isArray(run.surface[k]) || run.surface[k].length !== HEX.count) return false;

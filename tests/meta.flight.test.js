@@ -188,7 +188,8 @@ test('strata keep the last 12 records and daughters the last 8', () => {
   assert.equal(s.cycle.daughters.length, 8);
   assert.equal(s.cycle.daughters[7].alates, s.meta.pending.alates);
   // C130: each record also carries the Colony History metadata (no hardship key on a normal run, no date while meta.lastSeen is 0)
-  for (const r of s.meta.strata) assert.deepEqual(Object.keys(r).sort(), ['at', 'cells', 'dur', 'gain', 'kind', 'n', 'peak', 'sp']);
+  // C219: plus the chambers drawn in the gallery (ch) when the nest has any with a level
+  for (const r of s.meta.strata) assert.deepEqual(Object.keys(r).filter((k) => k !== 'ch').sort(), ['at', 'cells', 'dur', 'gain', 'kind', 'n', 'peak', 'sp']);
 });
 
 test('flight stats: fastest flight and first flight time', () => {
@@ -265,11 +266,18 @@ test('startRun: C39 carry of job / caste targets with automaton_instincts / auto
   s.cycle.traits.automaton_instincts = 1;
   startRun(s, d, { seed: 3 });
   assert.deepEqual(s.run.colony.jobTargets, jt);
-  assert.equal(s.run.colony.autoJobs, true);
-  assert.equal(s.run.colony.thresholdJobs, true);
+  assert.equal(s.run.colony.autoJobs, false, 'C166: Automaton Instincts no longer makes automatic jobs innate');
+  assert.equal(s.run.colony.thresholdJobs, false);
+  s.era.innate.age_polyethism = true;
+  startRun(s, d, { seed: 3 });
+  assert.equal(s.run.colony.autoJobs, true, 'C166: auto jobs start on when Age Polyethism is known (Innate)');
+  assert.equal(s.run.colony.thresholdJobs, false);
+  delete s.era.innate.age_polyethism;
   assert.deepEqual(s.run.colony.casteGoals, zeros, 'caste presets need automated_brood');
   s.era.federation.automated_brood = 1;
   startRun(s, d, { seed: 3 });
+  assert.equal(s.run.colony.autoJobs, true, 'Automated Brood: automatic jobs innate');
+  assert.equal(s.run.colony.thresholdJobs, true);
   assert.deepEqual(s.run.colony.casteGoals, { soldier: 20, supermajor: 4, replete: 7 });
   assert.deepEqual(s.run.colony.casteFill, { soldier: true, supermajor: false, replete: false });
   assert.deepEqual(s.run.colony.casteTouched, { soldier: true, supermajor: true, replete: true });

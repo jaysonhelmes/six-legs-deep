@@ -30,6 +30,8 @@ test('setAutomation validation codes', () => {
   assert.equal(v({ autoSuper: { on: true } }), 'locked');
   assert.equal(v({ autobuy: { on: false } }), null, 'turning off is always allowed');
   s.cycle.traits.automaton_instincts = 1;
+  assert.equal(v({ autobuy: { on: true } }), 'locked', 'C166: Automaton Instincts no longer grants an autobuyer');
+  s.era.federation.autobuyers = 1;
   assert.equal(v({ autobuy: { on: true } }), null);
   s.era.federation.auto_flight = 1;
   assert.equal(v({ autoFlight: { on: true, mode: 'alates', alates: 50 } }), null);
@@ -71,7 +73,7 @@ function fakeSteps(log, succeed) {
   return { adaptations: mk('adaptations'), chambers: mk('chambers'), mound: mk('mound') };
 }
 
-test('autobuyer pass: priority order, one purchase per pass, gating by autobuyers / automaton_instincts', () => {
+test('autobuyer pass: priority order, one purchase per pass, gating by the Federation autobuyers node only', () => {
   const s = newState(1);
   const d = makeDerived();
   const env = fakeEnv();
@@ -92,7 +94,7 @@ test('autobuyer pass: priority order, one purchase per pass, gating by autobuyer
   s.cycle.traits.automaton_instincts = 1;
   s.meta.automation.autobuy.chambers = true;
   autobuyPass(s, d, env, fakeSteps(log, []));
-  assert.deepEqual(log, ['adaptations'], 'automaton_instincts grants only the Adaptation autobuyer');
+  assert.deepEqual(log, [], 'C166: automaton_instincts grants no autobuyer');
   log = [];
   s.meta.automation.autobuy.priority = 'garbage';
   s.era.federation.autobuyers = 1;
@@ -112,7 +114,7 @@ function flyReady() {
   return { s, d };
 }
 
-test('Auto-Flight: flies and lands (option 0, first boon) when the condition holds, online only', () => {
+test('Auto-Flight: flies and lands (scored landing pick) when the condition holds, online only', () => {
   const { s, d } = flyReady();
   s.era.federation.auto_flight = 1;
   Object.assign(s.meta.automation.autoFlight, { on: true, mode: 'alates', alates: 50 });
@@ -132,7 +134,7 @@ test('Auto-Flight: flies and lands (option 0, first boon) when the condition hol
   assert.deepEqual(env.events.map((e) => e.type), ['flightComplete', 'runStarted']);
 });
 
-test('Auto-Flight modes: minutes and peak', () => {
+test('Auto-Flight modes: minutes (the peak mode has its own C166 tests in meta.feedback6)', () => {
   let x = flyReady();
   x.s.era.federation.auto_flight = 1;
   Object.assign(x.s.meta.automation.autoFlight, { on: true, mode: 'minutes', minutes: 30 });
@@ -142,13 +144,6 @@ test('Auto-Flight modes: minutes and peak', () => {
   x.s.run.time = 1800.95;
   tick(x.s, x.d, 0.1, fakeEnv());
   assert.equal(x.s.meta.counters.flights, 1);
-  x = flyReady();
-  x.s.era.federation.auto_flight = 1;
-  Object.assign(x.s.meta.automation.autoFlight, { on: true, mode: 'peak' });
-  x.s.run.time = 599.95;
-  x.s.run.prestige.peakRate = 1e9;
-  tick(x.s, x.d, 0.1, fakeEnv());
-  assert.equal(x.s.meta.counters.flights, 1, 'the rate fell below 97 % of the recorded peak');
 });
 
 test('Auto-Supercolony keeps the current edict', () => {

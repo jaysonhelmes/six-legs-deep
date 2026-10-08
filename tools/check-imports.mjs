@@ -3,14 +3,14 @@
 // dynamic import()s of literal paths, including the literal module paths main.js hands to its tryImport loader) and
 // verifies that every imported file exists, every named import is exported by its module, and every `ns.member` used
 // through `import * as ns` is exported. No module is executed, so browser-only code is checked too. Owner: integration.
-// Usage: node tools/check-imports.mjs [entry ...]   (default entry: src/main.js; also used for tools/*.mjs)
+// Usage: node tools/check-imports.mjs [entry ...]   (default entry: src/boot.js, which loads src/main.js; also used for tools/*.mjs)
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const entries = process.argv.slice(2).length ? process.argv.slice(2) : ['src/main.js'];
+const entries = process.argv.slice(2).length ? process.argv.slice(2) : ['src/boot.js'];
 
 /** Remove comments and the contents of template/regular strings that could hold fake `import` text. */
 function stripComments(src) {

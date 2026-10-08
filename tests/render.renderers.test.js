@@ -821,3 +821,39 @@ test('C154 / C156: a reserved cell picks its chamber (no grooming), water inside
   frames([nest], 3);
   assert.deepEqual(stats.bad, []);
 });
+
+test('C215 / C216: a wider nest renders and picks with its own width; the house pip is a target; back to 40 after', async () => {
+  const { generateNest } = await import('../src/systems/nestgen.js');
+  const game = makeGame(11);
+  const ui = makeUI();
+  game.s.run.nest = generateNest(11, { cols: 56 });
+  const nest = createNestRenderer(makeCanvas(800, 600), { game, ui, bus: game.bus });
+  stats.bad.length = 0;
+  frames([nest], 4);
+  assert.deepEqual(stats.bad, []);
+  assert.equal(nest.getView().cols, 56);
+  const W = 56;
+  const at = (i) => {
+    const v = nest.getView();
+    return nest.pick(v.ox + ((i % W) + 0.5) * v.cell, v.oy + (Math.floor(i / W) + 0.5) * v.cell);
+  };
+  assert.deepEqual(at(10 * W + 28), { view: 'nest', kind: 'shaft', i: 10 * W + 28 });
+  assert.deepEqual(at(20 * W + 29), { view: 'nest', kind: 'chamber', id: 1 });
+  const far = 30 * W + 53;
+  game.s.run.nest.cells[far] = CELL.SOIL;
+  assert.deepEqual(at(far), { view: 'nest', kind: 'cell', i: far });
+  // housing full: the yellow pip over the Royal Chamber is a target of its own
+  game.s.run.colony.adults.minor = 10;
+  game.d.stats.housing = 10;
+  frames([nest], 1);
+  const v = nest.getView();
+  const r = game.s.run.nest.chambers.find((c) => c.uid === 1);
+  const px = v.ox + (r.x + r.w) * v.cell - v.cell * 0.5;
+  const py = v.oy + r.y * v.cell - v.cell * 0.1;
+  assert.deepEqual(nest.pick(px, py), { view: 'nest', kind: 'housePip' });
+  // a 40-wide state again
+  game.s = createState({ seed: 3 });
+  frames([nest], 2);
+  assert.equal(nest.getView().cols, 40);
+  assert.deepEqual(stats.bad, []);
+});

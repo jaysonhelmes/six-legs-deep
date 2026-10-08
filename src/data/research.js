@@ -121,5 +121,13 @@ export const RESEARCH_ORDER = f([
 /** Refinements (DESIGN §11.7): `<branch>_refinement` level L costs base × growth^L insight; each level × mult main output. */
 export const REFINEMENT = f({ base: 10000, growth: 2.5, mult: 1.10 });
 
+/**
+ * Archive (DESIGN §11.7, ARCHITECTURE §18 C200; player decision): a permanent insight sink, one track per branch, kept in
+ * the era (survives Flights and Supercolonies, resets at Speciation). Level L costs base × growth^L insight and the
+ * track gives × (1 + per × L) to the branch's main output (additive per level, so it stays polynomial: DESIGN §16).
+ * Buyable once the branch is complete in the current run, or once the track has a level.
+ */
+export const ARCHIVE = f({ base: 25000, growth: 1.6, per: 0.01 });
+
 /** Innate research (DESIGN §11.7): a node owned at the end of `runs` runs becomes Innate (runsAncestral with ancestral_memory). */
 export const INNATE = f({ runs: 3, runsAncestral: 2 });

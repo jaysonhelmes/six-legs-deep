@@ -14,6 +14,10 @@
 // ARCH-R: the reveal queue is ordered by schedule position (UNLOCKS order), not by arrival: a waiting key pops before
 //   later-scheduled keys that unlocked earlier (C63). The 30 s spacing is unchanged.
 // ARCH-R: `panel_achievements` ("3 achievements earned") uses the condition extension { achievements: n }.
+// C202 (new-player pacing): a queued key may be `core` (keeps the 30 s gap) or carry a reveal-only `gate`. During the
+//   opening of the first run the other queued reveals wait REVEAL.openingGapSec; a gated key stays in the queue
+//   (unlocked for gameplay) until its gate holds, and the keys behind it may pop first. The pop picks, in schedule
+//   order, the first queued key whose gate holds and whose gap has passed (revealGap).
 // ARCH-R: custom `eggsBlockPurchase` = some unlocked food purchase (Adaptation level or chamber placement, via the [q]
 //   cost queries) costs more than stored food but less than stored food + the food eggs used in the last ~30 s.
 
@@ -123,8 +127,22 @@ function cheapestFoodPurchase(s, d) {
   return best;
 }
 
+/** C202: seconds of the first run after which the reveal gates open on their own (a player who skips a step). */
+const GATE_FALLBACK = Object.freeze({ galleryPlaced: 600, coreLoop: 900 });
+
+/** True when some chamber other than the Royal Chamber has been placed (built or still being dug). */
+function anyChamberPlaced(s) {
+  return s.run.nest.chambers.some((c) => c && c.type !== 'royal_chamber');
+}
+
 /** Named predicates of the §11 condition language. */
 const CUSTOM = {
+  // C202 reveal gates. Later runs (run.index ≥ 1) and long first runs pass them at once.
+  galleryPlaced: (s) => num(s.run.index) > 0 || num(s.run.time) >= GATE_FALLBACK.galleryPlaced || anyChamberPlaced(s),
+  coreLoop(s) {
+    if (num(s.run.index) > 0 || num(s.run.time) >= GATE_FALLBACK.coreLoop) return true;
+    return coreLoopMissing(s) === null;
+  },
   housingFull(s, d) {
     const h = d && d.stats ? num(d.stats.housing) : 0;
     return h > 0 && num(s.run.colony.adults.minor) + broodTotal(s) >= h;
@@ -194,6 +212,29 @@ const CUSTOM = {
   secondTrailOrClaim: (s) => s.run.surface.trails.length >= 2 || num(s.run.surface.claims) >= 1,
 };
 
+/**
+ * C202: the first core-loop step still missing (the ribbon names it while a gated reveal waits), or null when the
+ * player has placed a chamber, drawn a second trail (or claimed a hex) and bought a research.
+ * @param {import('../core/types.js').State} s
+ * @returns {'chamber'|'trail'|'research'|null}
+ */
+export function coreLoopMissing(s) {
+  if (!anyChamberPlaced(s)) return 'chamber';
+  if (!(s.run.surface.trails.length >= 2 || num(s.run.surface.claims) >= 1)) return 'trail';
+  if (!(Object.keys(s.run.research || {}).length > 0)) return 'research';
+  return null;
+}
+
+/** Ribbon hint while a gated reveal waits (C202). */
+const GATE_HINTS = Object.freeze({
+  galleryPlaced: 'Place your first Gallery.',
+  chamber: 'Place your first Gallery.',
+  trail: 'Draw a second trail to a food source.',
+  research: 'Buy your first research.',
+});
+/** The reveal each gate hint talks about: the hint is only named once that feature is on screen (C202, rule 5). */
+const GATE_HINT_AFTER = Object.freeze({ galleryPlaced: 'panel_build', chamber: 'panel_build', trail: 'trail_slots', research: 'panel_research' });
+
 /** Compare a value with a { gte } / { eq } leaf. */
 function cmp(v, c) {
   if (Object.prototype.hasOwnProperty.call(c, 'eq')) return v === c.eq;
@@ -226,6 +267,7 @@ export function evalCond(s, d, cond) {
     return num(s.run.time) >= cond.runTime;
   }
   if (cond.achievements !== undefined) return Object.keys(s.meta.achievements).length >= cond.achievements;
+  if (cond.seen !== undefined) return has(s.meta.seen, cond.seen);
   if (cond.custom !== undefined) {
     const fn = CUSTOM[cond.custom];
     return !!(fn && fn(s, d));
@@ -268,6 +310,45 @@ export function onRunStart(s, d) {
   // their conditions hold again in this run.
   const rv = s.meta.reveal;
   if (rv && Array.isArray(rv.queue)) rv.queue = rv.queue.filter((k) => !!s.run.unlocked[k] && !has(s.meta.seen, k));
+}
+
+/**
+ * C202: the gap a queued key needs after the last reveal: REVEAL.gapSec, or REVEAL.openingGapSec for a key that is
+ * not `core` during the opening of the first run (run.index 0, run.time < REVEAL.openingSec). An `urgent` key counts as
+ * core while its bottleneck is the colony's (run.bottleneck.id).
+ * @param {import('../core/types.js').State} s
+ * @param {string} key
+ * @returns {number}
+ */
+export function revealGap(s, key) {
+  const def = BY_KEY.get(key);
+  const opening = num(s.run.index) === 0 && num(s.run.time) < num(REVEAL.openingSec);
+  if (!opening || (def && def.core)) return REVEAL.gapSec;
+  if (def && def.urgent && s.run.bottleneck && s.run.bottleneck.id === def.urgent) return REVEAL.gapSec;
+  return Math.max(REVEAL.gapSec, num(REVEAL.openingGapSec));
+}
+
+/** C202: true when a queued key's reveal gate holds (no gate = always). */
+function gateOpen(s, d, key) {
+  const def = BY_KEY.get(key);
+  return !def || !def.gate || evalCond(s, d, def.gate);
+}
+
+/**
+ * C202: the queued key that reveals next and when: the first key in queue (schedule) order whose gate holds, at
+ * lastAt + its gap; a later key with a shorter (core) gap goes first when it is due sooner. null when every queued
+ * key is still gated.
+ * @returns {{ key: string, at: number } | null}
+ */
+function nextPop(s, d) {
+  const rv = s.meta.reveal;
+  let best = null;
+  for (const key of rv.queue) {
+    if (!gateOpen(s, d, key)) continue;
+    const at = num(rv.lastAt) + revealGap(s, key);
+    if (!best || at < best.at) best = { key, at };
+  }
+  return best;
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -458,16 +539,28 @@ function earlierReveal(a, b) {
 function computeNext(s, d) {
   const rv = s.meta.reveal;
   const now = num(s.meta.simTime);
-  if (rv.queue.length) {
-    const key = rv.queue[0];
+  const pop = rv.queue.length ? nextPop(s, d) : null;
+  if (pop) {
+    const def = BY_KEY.get(pop.key);
+    return { key: pop.key, label: def ? def.label : pop.key, frac: 1, eta: Math.max(0, pop.at - now) };
+  }
+  // C202: every queued key waits for its gate: name the first one with the step it waits for, unless a timed reveal
+  // is close.
+  let gated = null;
+  for (const key of rv.queue) {
     const def = BY_KEY.get(key);
-    return { key, label: def ? def.label : key, frac: 1, eta: Math.max(0, num(rv.lastAt) + REVEAL.gapSec - now) };
+    const g = def && def.gate ? def.gate : null;
+    const step = g && g.custom === 'coreLoop' ? coreLoopMissing(s) : g && g.custom ? g.custom : null;
+    if (!step || !GATE_HINTS[step] || !has(s.meta.seen, GATE_HINT_AFTER[step])) continue;
+    gated = { key, label: def ? def.label : key, frac: 0, eta: -1, hint: GATE_HINTS[step] };
+    break;
   }
   const cache = {};
   let timed = null;
   let pending = null;
   for (const def of UNLOCKS) {
     if (!def.queued || s.run.unlocked[def.key] || has(s.meta.seen, def.key)) continue;
+    if (def.gate && !evalCond(s, d, def.gate)) continue;   // C202: it would only wait in the queue
     const m = measure(s, d, def.cond, cache);
     if (!m) continue;
     const c = { key: def.key, label: def.label, frac: m.frac, eta: m.eta };
@@ -475,6 +568,7 @@ function computeNext(s, d) {
     else if (!pending) pending = c;
   }
   if (timed && timed.eta <= PENDING_AFTER_SEC) return timed;
+  if (gated) return gated;
   if (pending && (!timed || ORDER.get(pending.key) < ORDER.get(timed.key))) return pending;
   return timed || pending;
 }
@@ -520,13 +614,16 @@ export function tick(s, d, dt, env) {
   }
 
   // One queued reveal per gap. Keys already seen, or not unlocked in this run (a stale entry from an earlier run or an
-  // old save, F7), are dropped instead of revealed.
+  // old save, F7), are dropped instead of revealed. C202: gated keys wait; non-core keys wait the opening gap.
   if (rv.queue.some((k) => has(seen, k) || !un[k])) rv.queue = rv.queue.filter((k) => !has(seen, k) && !!un[k]);
   if (rv.queue.length && now - num(rv.lastAt) >= REVEAL.gapSec) {
-    const key = rv.queue.shift();
-    seen[key] = true;
-    rv.lastAt = now;
-    emit('unlock', { key });
+    const pop = nextPop(s, d);
+    if (pop && now >= pop.at) {
+      rv.queue.splice(rv.queue.indexOf(pop.key), 1);
+      seen[pop.key] = true;
+      rv.lastAt = now;
+      emit('unlock', { key: pop.key });
+    }
   }
 
   // Purchase-triggered (non-queued) reveals happen at once — after the keys they hang off (`flag`) are revealed.

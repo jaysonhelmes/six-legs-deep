@@ -42,7 +42,7 @@ import { SITES, EDICTS, HARDSHIPS } from '../data/prestige.js';
 import { HEX, CLAMP_MAX, COST_MAX } from '../data/balance.js';
 import { hexIndex, hexQR, ringOf, neighbors, hexDist, hexPath, lineHexes, countInRadius } from '../core/hex.js';
 import { randInt, randRange, expSample, shuffle } from '../core/rng.js';
-import { canAfford, spend, scaleCost } from '../core/wallet.js';
+import { canAfford, spend, scaleCost, incomeSeconds } from '../core/wallet.js';
 import { addEffect, hasEffect, effectMult } from '../core/effects.js';
 import { clampNum, lvl } from '../core/math.js';
 import * as combat from './combat.js';
@@ -206,7 +206,23 @@ export function rivalLand(s, rival) {
   // C95: a hex the player holds (claimed or conquered) is never rival land, whatever the disc covers
   const S = s.run.surface;
   if (S && S.claimed && S.conquered) for (const h of Array.from(set)) if (S.claimed[h] || S.conquered[h]) set.delete(h);
+  // C224: nor is any entrance (main, nuptial exit, satellite, outpost) or its auto-claim radius — that radius grows with
+  // the Mound and used to lose to older rival land drawn first. The rival's own nest hex always stays its own.
+  if (S && Array.isArray(S.entrances) && S.entrances.length) {
+    const autoR = TERRITORY.autoBase + Math.floor(Math.max(0, num(S.mound)) / TERRITORY.autoPerMound);
+    for (const e of S.entrances) {
+      if (!e || !isHex(e.hex) || hexDist(e.hex, rival.hex) > autoR + num(rival.radius) + 1 + extraReach(rival)) continue;
+      for (const h of disc(e.hex, autoR, mapR)) if (h !== rival.hex) set.delete(h);
+    }
+  }
   return Array.from(set).sort((a, b) => a - b);
+}
+
+/** Farthest an extra (crept) hex lies beyond the rival's disc, for the entrance pre-filter in rivalLand. */
+function extraReach(rival) {
+  let m = 0;
+  if (Array.isArray(rival.extra)) for (const h of rival.extra) if (isHex(h)) m = Math.max(m, hexDist(h, rival.hex) - num(rival.radius));
+  return m;
 }
 
 /** Uint8Array mask of hexes within `dist` of the rival's land (WP5 internal: raids.js). */
@@ -586,6 +602,29 @@ export function bakeFoe(s, d, rival, n, { home = 1, yourCount = 0, assault = fal
   return { n: clampNum(n), atk: clampNum(atk), hp: clampNum(hp) };
 }
 
+/**
+ * [q] C228: a rival's strength as the UI shows it, so the map and the War tab agree. `nest` = all its defenders
+ * (d.combat.rivalAP: every soldier, no home bonus) — "Nest strength"; `raid` = what a raid would face
+ * (ACTIONS.raid.engage of the defenders, no home bonus); `assault` = what an assault would face (every defender × the
+ * nest's base home bonus, before supermajor / Siege Tactics reductions). The war preview's foeAP is the exact figure
+ * for the chosen army (it adds swarm, acid volley and those reductions).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {import('../core/types.js').Rival} rival
+ * @returns {{ nest: number, raid: number, assault: number, raidShare: number, home: number }}
+ */
+export function rivalPower(s, d, rival) {
+  if (!rival || typeof rival !== 'object') return { nest: 0, raid: 0, assault: 0, raidShare: ACTIONS.raid.engage, home: 1 };
+  const home = combat.baseHome(rival);
+  return {
+    nest: combat.rivalAP(s, d, rival),
+    raid: combat.rivalAP(s, d, rival, { engage: ACTIONS.raid.engage }),
+    assault: combat.rivalAP(s, d, rival, { engage: ACTIONS.assault.engage, defending: true, home }),
+    raidShare: ACTIONS.raid.engage,
+    home,
+  };
+}
+
 /** Neutral defender (prey, termite mound) of the given AP: one unit with ATK = HP = AP. */
 function neutralFoe(ap) {
   const a = clampNum(num(ap));
@@ -891,6 +930,25 @@ function tournamentReason(s, d, rivalUid, hex, minor, soldier, supermajor) {
   return null;
 }
 
+/**
+ * [q] C226: what a won tournament against this rival pays (ACTIONS.tournament.prize): insight = max(minPerTier × tier,
+ * insightSec × √tier s of insight income), chitin likewise from chitin income. Amounts before caps.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {import('../core/types.js').Rival} r
+ * @returns {{ insight: number, chitin: number, raidDelay: number }}
+ */
+export function tournamentPrize(s, d, r) {
+  const P = ACTIONS.tournament.prize || {};
+  const tier = Math.max(1, num(r && r.tier, 1));
+  const rt = Math.sqrt(tier);
+  return {
+    insight: clampNum(incomeSeconds(d, 'insight', num(P.insightSec) * rt, num(P.insightMinPerTier) * tier)),
+    chitin: clampNum(incomeSeconds(d, 'chitin', num(P.chitinSec) * rt, num(P.chitinMinPerTier) * tier)),
+    raidDelay: num(ACTIONS.tournament.raidDelaySec),
+  };
+}
+
 /** Tournament preview: win from the display ratio (linear between the withdraw and win ratios). */
 function previewTournament(s, d, rivalUid, a, res) {
   const r = aliveRival(s, rivalUid);
@@ -910,9 +968,20 @@ function previewTournament(s, d, rivalUid, a, res) {
   res.foeAP = theirs;
   res.win = ratio >= win ? 1 : ratio <= loseAt ? 0 : (ratio - loseAt) / (win - loseAt);
   res.survivors = { soldier: a.soldier, supermajor: a.supermajor };
+  // C226: the expected outcome in plain terms: ratio, the ratio needed, the display still missing, and the prize
+  res.ratio = clampNum(ratio);
+  res.winAt = win;
+  res.loseAt = loseAt;
+  res.outcome = ratio >= win ? 'win' : ratio <= loseAt ? 'withdraw' : 'contest';
+  res.needDisplay = clampNum(Math.ceil(Math.max(0, theirs * win - mine)));
+  const prize = tournamentPrize(s, d, r);
+  res.loot = { food: 0, chitin: prize.chitin, insight: prize.insight, minors: 0 };
+  res.raidDelay = prize.raidDelay;
   if (res.win < 1) {
-    const need = Math.ceil(Math.max(0, theirs * win - mine) / ACTIONS.tournament.size.soldier);
-    if (need > 0) res.raise.push({ key: 'soldiers', text: `About ${need} more soldiers to win outright` });
+    const Z = ACTIONS.tournament.size;
+    const needMinors = Math.ceil(res.needDisplay / Z.minor);
+    const need = Math.ceil(res.needDisplay / Z.soldier);
+    if (needMinors > 0) res.raise.push({ key: 'minors', text: `About ${needMinors} more minors (or ${need} more soldiers) to win outright` });
   }
   return res;
 }
@@ -924,17 +993,23 @@ function endTournament(s, d, b, env, result) {
   const idx = war.battles.indexOf(b);
   if (idx >= 0) war.battles.splice(idx, 1);
   combat.recomputeMilitia(s);
+  let prize = null;
   if (result === 'win') {
     const r = rivalByUid(s, b.rival);
     surface.grantHex(s, d, b.hex);
     if (r) {
       if (!r.lost.includes(b.hex)) r.lost.push(b.hex);
       r.n = clampNum(r.n - r.n * ACTIONS.tournament.flipLoss);
+      // C226: a won contest also pays a prize and cools the rival's aggression (its next raid comes later)
+      const p = tournamentPrize(s, d, r);
+      const got = combat.grantReward(s, d, { insight: p.insight, chitin: p.chitin }, env);
+      if (r.alive) r.raidIn = clampNum(num(r.raidIn) + p.raidDelay);
+      prize = { insight: num(got.insight), chitin: num(got.chitin), raidDelay: r.alive ? p.raidDelay : 0 };
     }
     s.meta.counters.tournamentsWon++;
     surface.touch(s);
   }
-  if (env) env.emit('tournamentEnd', { uid: b.uid, rival: b.rival, hex: b.hex, result, ratio: b.odds });
+  if (env) env.emit('tournamentEnd', { uid: b.uid, rival: b.rival, hex: b.hex, result, ratio: b.odds, prize });
 }
 
 /** Advance tournaments: resolve after the display, default to withdraw after the choice window. */
@@ -989,7 +1064,7 @@ function secure(s, d, r, env) {
   const oneShot = num(d && d.stats && d.stats.insight && d.stats.insight.oneShot, 1);
   let minors = REWARDS.capturedPerTier2 * r.tier * r.tier * m;
   if (r.traits.includes('brood_raiders')) minors += TRAITS.brood_raiders.returnMult * num(r.stolen);
-  combat.grantReward(s, d, { foodSec: REWARDS.conquestFoodSec * Math.sqrt(r.tier) * m,
+  const loot = combat.grantReward(s, d, { foodSec: REWARDS.conquestFoodSec * Math.sqrt(r.tier) * m,
     insight: REWARDS.conquestInsightPerTier * r.tier * oneShot * m, minors }, env);
   r.stolen = 0;
   const RV = s.run.rivals;
@@ -1000,7 +1075,28 @@ function secure(s, d, r, env) {
   s.meta.counters.conquests++;
   s.run.stats.conquests++;
   surface.touch(s);
-  if (env) env.emit('conquest', { uid: r.uid, rivalType: r.type, tier: r.tier });
+  if (env) env.emit('conquest', { uid: r.uid, rivalType: r.type, tier: r.tier, loot });   // C207: loot = the spoils granted
+}
+
+/**
+ * C186: a fallen rival's raids still in their warning are called off at once (like a bribe), not when the warning ends
+ * (the C90 check in raids.beginFight stays as the fallback): the raid leaves war.raids (its chip and arrow go), waiting
+ * guards go home, and raidResult { win: true, calledOff: 'fallen' } reports it ("Raid called off — their nest has
+ * fallen"). The raiders died with their nest. A raid already fighting finishes (C90).
+ */
+function callOffRaids(s, r, env) {
+  const war = s.run.war;
+  const raids = war.raids;
+  for (let i = raids.length - 1; i >= 0; i--) {
+    const raid = raids[i];
+    if (!raid || raid.rival !== r.uid || raid.phase !== 'warning') continue;
+    raids.splice(i, 1);
+    for (const p of war.parties) if (p.kind === 'guard' && p.target && p.target.uid === raid.uid && p.state === 'out') p.state = 'home';
+    if (env) {
+      env.emit('raidResult', { uid: raid.uid, win: true, foodLost: 0, broodLost: 0, workersLost: 0, target: { ...raid.target }, rival: r.uid,
+        calledOff: 'fallen', loot: { food: 0, chitin: 0 } });
+    }
+  }
 }
 
 /** A rival nest falls to an assault (DESIGN §9.4): kill chitin now, spoils now or when the whole Front has fallen. */
@@ -1008,15 +1104,17 @@ function conquer(s, d, r, kills, env) {
   r.alive = false;
   r.n = 0;
   r.fallenAt = num(s.run.time);
+  callOffRaids(s, r, env);
   const m = conquestMult(s);
-  combat.grantReward(s, d, { chitin: REWARDS.chitinPerKillTier * r.tier * kills * m }, env);
+  const loot = combat.grantReward(s, d, { chitin: REWARDS.chitinPerKillTier * r.tier * kills * m }, env);
   if (r.type === 'great_rival' && r.group) {
     const group = s.run.rivals.list.filter((x) => x.type === r.type && x.group === r.group);
     surface.touch(s);
     if (group.every((x) => !x.alive)) for (const x of group) secure(s, d, x, env);
-    return;
+    return loot;
   }
   secure(s, d, r, env);
+  return loot;
 }
 
 /** C77: the fields a conquered non-boss rival keeps. */
@@ -1172,7 +1270,8 @@ function resolveEnded(s, d, env) {
     if (e.kind === 'raid' && r) {
       r.n = clampNum(r.n - kills);
       if (e.win) {
-        combat.grantReward(s, d, { foodSec: REWARDS.raidFoodSec * Math.sqrt(r.tier), foodMin: REWARDS.raidFoodMinPerTier * r.tier,
+        // C207: the raid's loot rides on its battleEnd event (toast / event log: "Loot carried home: …")
+        e.loot = combat.grantReward(s, d, { foodSec: REWARDS.raidFoodSec * Math.sqrt(r.tier), foodMin: REWARDS.raidFoodMinPerTier * r.tier,
           chitin: REWARDS.chitinPerKillTier * r.tier * kills }, env);
       }
     } else if (e.kind === 'assault' && r) {
@@ -1180,7 +1279,7 @@ function resolveEnded(s, d, env) {
         const conv = RESEARCH.propaganda_pheromones.fx.convert * kills;
         if (conv > 0) population.addAdults(s, d, 'minor', conv, { capped: true });
       }
-      if (e.win && r.alive) conquer(s, d, r, kills, env);
+      if (e.win && r.alive) e.loot = conquer(s, d, r, kills, env);   // C207: kill chitin (spoils ride on `conquest`)
       else r.n = clampNum(r.n - kills);
     } else if (e.kind === 'escalate' && r) {
       r.n = clampNum(r.n - kills);
@@ -1322,10 +1421,15 @@ export function tick(s, d, dt, env) {
       r.sighted = true;
       if (env) env.emit('rivalSighted', { uid: r.uid, rivalType: r.type });
     }
+    // C225: the truce and the bribe / tournament cooldowns are wall-clock timers: they run offline and during a
+    // hidden-tab catch-up too (they used to freeze with the rest of the rival there, so a truce bought before leaving
+    // the tab never ran out). Rival growth, creep and raids stay frozen offline.
+    if (dt > 0) {
+      r.truce = clampNum(num(r.truce) - dt);
+      r.bribeCd = clampNum(num(r.bribeCd) - dt);
+      r.tourCd = clampNum(num(r.tourCd) - dt);
+    }
     if (!live) continue;
-    r.truce = clampNum(r.truce - dt);
-    r.bribeCd = clampNum(r.bribeCd - dt);
-    r.tourCd = clampNum(r.tourCd - dt);
     if (winter) continue;
     if (!isBoss(r)) {
       const rate = d.season && d.season.id === 'summer' ? GROWTH.perMinSummer : GROWTH.perMin;
@@ -1532,7 +1636,8 @@ export const handlers = {
         raids.splice(i, 1);
         r.n = clampNum(r.n + raid.raiders);
         for (const p of s.run.war.parties) if (p.kind === 'guard' && p.target.uid === raid.uid) p.state = 'home';
-        env.emit('raidResult', { uid: raid.uid, win: true, foodLost: 0, broodLost: 0, workersLost: 0, target: raid.target, rival: r.uid });
+        env.emit('raidResult', { uid: raid.uid, win: true, foodLost: 0, broodLost: 0, workersLost: 0, target: raid.target, rival: r.uid,
+          calledOff: 'truce', loot: { food: 0, chitin: 0 } });
       }
     },
   },

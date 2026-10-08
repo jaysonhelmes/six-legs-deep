@@ -41,7 +41,7 @@ export const ADAPTATIONS = deepFreeze({
   sweet_tooth: { id: 'sweet_tooth', name: 'Sweet Tooth', cost: { base: { food: 500, honeydew: 10 }, growth: 1.9 },
     unlock: 'adapt_honeydew', fx: { honeydew: 1.15 } },
   queens_feast: { id: 'queens_feast', name: "Queen's Feast", cost: { base: { honeydew: 50 }, growth: 3.0 }, unlock: 'adapt_honeydew',
-    fx: { lay: 1.25 } },
+    fx: { lay: 1.10 } },
   long_legs: { id: 'long_legs', name: 'Long Legs', cost: { base: { food: 1000 }, growth: 3.0 }, unlock: 'adapt_long_legs',
     fx: { dNav: 0.25 } },
 });

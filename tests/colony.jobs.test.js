@@ -184,6 +184,7 @@ test('auto mode: every 5 s jobs = targets × available minors; locked / capped s
 test('C94: auto mode converges existing workers to the targets (not only newborns) and undoes manual moves', () => {
   const { s, d } = setup(200);
   unlockAll(s);
+  d.stats.broodSlots = 20;                                // C231: room for 40 useful nurses (cap 4 × 20 − 1)
   s.run.colony.autoJobs = true;
   s.run.colony.jobTargets = { forager: 0.3, digger: 0.4, nurse: 0.2, scout: 0.1, herder: 0, leafcutter: 0, gardener: 0 };
   runJobs(s, d, 5.1);

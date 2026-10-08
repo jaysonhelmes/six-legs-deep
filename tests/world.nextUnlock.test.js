@@ -63,7 +63,7 @@ test('the Build panel (housing full) has an ETA: each egg laid fills a place at 
 
 test('player-driven steps are named (eta −1) when nothing timed is within two minutes', () => {
   const { s, d } = world();
-  seen(s, 'panel_colony', 'job_digger', 'panel_build', 'chamber_granary', 'chamber_nursery', 'golden_beetle', 'season_dial', 'chamber_gate');
+  seen(s, 'panel_colony', 'adapt_basic', 'job_digger', 'panel_build', 'chamber_granary', 'chamber_nursery', 'golden_beetle', 'season_dial', 'chamber_gate');
   seen(s, 'job_scout');
   s.run.colony.adults.minor = 13;
   d.stats.housing = 13;               // housing full: no adult ETA (Royal Chamber upgrades at 20 adults is unknown)
@@ -77,8 +77,12 @@ test('player-driven steps are named (eta −1) when nothing timed is within two 
 
 test('season reveals (Climate overlay in autumn of year 0) get a clock ETA', () => {
   const { s, d } = world();
-  seen(s, 'panel_colony', 'job_digger', 'panel_build', 'chamber_granary', 'chamber_nursery', 'job_scout', 'trail_slots', 'panel_research',
+  seen(s, 'panel_colony', 'adapt_basic', 'job_digger', 'panel_build', 'chamber_granary', 'chamber_nursery', 'job_scout', 'trail_slots', 'panel_research',
     'royal_levelup', 'chamber_scent_library', 'adapt_potent_trails', 'golden_beetle', 'season_dial', 'chamber_midden', 'mound', 'events', 'panel_rivals');
+  // C202: the climate overlay is gated on the core loop (a chamber, a claim, a research)
+  s.run.nest.chambers.push({ uid: 50, type: 'gallery', x: 0, y: 0, w: 1, h: 1, level: 1 });
+  s.run.surface.claims = 1;
+  s.run.research.trail_memory = 1;
   d.stats.layRate = 0;
   d.season.index = 1;
   d.season.toNext = 100;

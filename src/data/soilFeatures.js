@@ -9,8 +9,16 @@ const freeze = (o) => {
 /** Root lines: 6–10 vertical lines from row 1 down to a row in 6..25. */
 export const ROOTS = freeze({ min: 6, max: 10, yMin: 6, yMax: 25 });
 
-/** Stones: 4–8 boulders of 3×3 cells, entirely within rows 8–55. */
-export const STONES = freeze({ min: 4, max: 8, size: 3, yMin: 8, yMax: 55 });
+/**
+ * Stones: 4–8 boulders, entirely within rows 8–55. C181: each boulder draws a shape by weight — a pebble (1×1), a bar
+ * (2×1, either way up), a block (2×2), a slab (2×3, either way up), an L (3 or 4 cells, any turn), a blob (blobMin–blobMax
+ * cells grown from one cell) or the classic size × size boulder — from its own seeded stream (nestgen). Gameplay is the
+ * same for every shape (acid_excavation digs stone).
+ */
+export const STONES = freeze({
+  min: 4, max: 8, size: 3, yMin: 8, yMax: 55, blobMin: 3, blobMax: 6,
+  shapes: { pebble: 2, bar: 3, block: 2, slab: 2, ell: 3, blob: 4, boulder: 1 },
+});
 
 /**
  * Caches: 8–12 single cells in rows 5–60, kind drawn by weight; one amber bead per map in bedrock.

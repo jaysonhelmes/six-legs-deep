@@ -10,6 +10,7 @@ import { doFlight, strataSilhouette } from '../src/systems/prestige.js';
 import { decodeRle } from '../src/render/nestRenderer.js';
 import { SAVE, GRID, CELL } from '../src/data/balance.js';
 import { RESET } from '../src/data/prestige.js';
+import { HISTORY_CHAMBERS_MAX } from '../src/data/chambers.js';
 import { fakeEnv } from './helpers.js';
 
 const N = GRID.cols * GRID.rows;
@@ -69,7 +70,8 @@ test('F26: a late-game save that rotates 12 worst-case nests through the Strata 
   assert.ok(str.length <= SAVE.targetBytes, 'save is ' + str.length + ' bytes (target ≤ ' + SAVE.targetBytes + '; fixture was ' + before + ')');
   const strataBytes = JSON.stringify(s.meta.strata).length;
   // C130: + ~70 B of run metadata per record (run number, species, duration, peak, gain, date) for Colony History
-  assert.ok(strataBytes <= RESET.strataMax * (Math.ceil(N / 6) + 160), 'strata ' + strataBytes + ' B');
+  // C219: + the chambers (type, rectangle, level; at most HISTORY_CHAMBERS_MAX, ≤ 14 characters each) for the gallery drawing
+  assert.ok(strataBytes <= RESET.strataMax * (Math.ceil(N / 6) + 160 + HISTORY_CHAMBERS_MAX * 14), 'strata ' + strataBytes + ' B');
   const r = fromExportString(str);
   assert.equal(r.ok, true, r.error);
   assert.deepEqual(r.state.meta.strata, s.meta.strata);

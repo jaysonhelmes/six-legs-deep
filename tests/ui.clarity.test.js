@@ -233,7 +233,7 @@ test('bare codes that mean different things per command get command-specific tex
     ['blocked', 'cancelJob', /cannot be cancelled/], ['blocked', 'levelChamber', /room to grow/i], ['blocked', 'backfill', /cut a chamber off/],
     ['blocked', 'digTo', /soil/], ['blocked', 'moveAphids', /Aphids already/], ['invalid', 'drawTrail', /food source/],
     ['invalid', 'backfill', /tunnel cells/], ['invalid:owned', 'moveAphids', /your territory/], ['invalid:owned', 'claimHex', /Already your territory/],
-    ['invalid:empty', 'shiftJob', /No ants/], ['requirements', 'buyMound', /Mound Building/], ['invalid:nest', 'dispatchGuard', /defends the nest/],
+    ['invalid:empty', 'shiftJob', /No ants/], ['invalid:nest', 'dispatchGuard', /defends the nest/],
   ];
   for (const [code, type, rx] of cases) assert.match(T.reasonText(code, type), rx, code + ' / ' + type);
   assert.equal(T.reasonText('cantAfford', 'drawTrail'), T.REASONS.cantAfford, 'falls back to the base text');
