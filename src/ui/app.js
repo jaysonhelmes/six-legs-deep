@@ -40,6 +40,8 @@ import * as achievementsPanel from './panels/achievements.js';
 import * as guidePanel from './panels/guide.js';
 import * as statsPanel from './panels/stats.js';
 import * as settingsPanel from './panels/settings.js';
+import { enhanceFolds, foldTools, unfoldFor } from './panels/common.js';
+import { createQuestBook, createQuestChip } from './questbook.js';
 import { LOOP, GRID } from '../data/balance.js';
 import { RESET } from '../data/prestige.js';
 import { EVENTS } from '../data/events.js';
@@ -367,6 +369,11 @@ export function mountUI(root, game, opts = {}) {
 
   const tooltips = createTooltips(tooltipEl, root, { game });
   const hud = createHud({ rail, hudTop, flowStrip, overlayBar }, { game, ui: uistate, bridge });
+  // C283: the Quest book (over the stage) and its HUD chip (before the next-unlock ribbon)
+  const questBook = createQuestBook(stage, { game, hudTop, openTab: (tab, sub) => openTab(tab, sub) });
+  const questChip = createQuestChip({ game, book: questBook });
+  hudTop.insertBefore(questChip.el, hudTop.querySelector('.unlock-ribbon') || null);
+  offs.push(() => questBook.destroy());
   // C150: the version at the foot of the rail (wide-tall; the top-bar layouts hide it, Settings → Save has it everywhere)
   const railVersion = h('button', { type: 'button', class: 'rail-version', text: versionLabel(CURRENT_VERSION),
     dataset: { tip: 'Patch notes: what changed in each update.' }, attrs: { 'aria-label': 'Patch notes, version ' + CURRENT_VERSION },
@@ -573,13 +580,39 @@ export function mountUI(root, game, opts = {}) {
     refresh(true);
   }
 
+  // C280: every panel section folds by its heading; a "Collapse all / Expand all" bar heads each panel
+  const foldBars = {};
+  const foldGlow = {};
+  function syncFolds(id, glow) {
+    const host = panelHosts[id];
+    if (!host) return;
+    const folds = enhanceFolds(host, id);
+    let bar = foldBars[id];
+    if (!bar) {
+      bar = foldBars[id] = foldTools();
+      const first = host.firstChild;
+      const sub = first && typeof first.querySelector === 'function' ? first.querySelector('.subtabs') : null;
+      if (sub && sub.parentNode === first) first.insertBefore(bar.el, sub.nextSibling);
+      else host.insertBefore(bar.el, first || null);
+    }
+    bar.sync(folds, host);
+    // an onboarding glow inside a folded section opens it (once per glow)
+    if (glow && foldGlow[id] !== glow) {
+      const g = host.querySelector('.glow');
+      if (g) {
+        foldGlow[id] = glow;
+        unfoldFor(g);
+      }
+    }
+  }
+
   function ensurePanel(id) {
     if (panelInst[id]) return panelInst[id];
     const host = h('div', { class: 'panel-host', dataset: { tab: id }, role: 'tabpanel' });
     panelBody.appendChild(host);
     panelHosts[id] = host;
     try {
-      panelInst[id] = PANELS[id].createPanel(host, { game, ui: uistate, bridge, dialogs, appRoot: root });
+      panelInst[id] = PANELS[id].createPanel(host, { game, ui: uistate, bridge, dialogs, appRoot: root, questBook });
     } catch (err) {
       console.error('[ui] panel failed to build:', id, err);
       host.appendChild(h('p', { class: 'note warn', text: 'This panel could not be shown.' }));
@@ -1389,12 +1422,17 @@ export function mountUI(root, game, opts = {}) {
           console.error('[ui] panel update failed:', st.tab, err);
         }
       }
+      try { syncFolds(st.tab, st.glow); } catch (err) { if (!panelErr.has('folds')) { panelErr.add('folds'); console.error('[ui] folds failed', err); } }
     }
     show(panels, vis.length > 0);
 
     try { watchFront(s); } catch (err) { if (!panelErr.has('front')) { panelErr.add('front'); console.error('[ui] front watch failed', err); } }
     // HUD and friends
     try { hud.update(s, d); } catch (err) { if (!panelErr.has('hud')) { panelErr.add('hud'); console.error('[ui] hud failed', err); } }
+    try {
+      questChip.update(s, d);
+      questBook.update();
+    } catch (err) { if (!panelErr.has('quests')) { panelErr.add('quests'); console.error('[ui] quest book failed', err); } }
     tooltips.refresh();
     eventCard.update(s);
     modals.update(s, d);

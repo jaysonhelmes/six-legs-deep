@@ -225,14 +225,16 @@ test('C209: research search matches names and effects across branches, best name
   box.value = 'frost';
   box.dispatchEvent(new FEvent('input'));
   p.update(s, d);
-  const ids = host.querySelectorAll('.tech-node').map((n) => n.dataset.id).filter(Boolean);
+  const ids = host.querySelectorAll('.tech-search .tech-node').map((n) => n.dataset.id).filter(Boolean);
   assert.deepEqual(ids, frost, 'results from every branch, in rank order');
-  const tag = host.querySelector('.tech-node[data-id="thermoregulation"] .tech-branch-tag');
+  const tag = host.querySelector('.tech-search .tech-node[data-id="thermoregulation"] .tech-branch-tag');
   assert.ok(tag && !tag.hidden && tag.textContent.length > 0, 'branch tag on results');
   box.value = '';
   box.dispatchEvent(new FEvent('input'));
   p.update(s, d);
-  assert.ok(host.querySelectorAll('.tech-node').length > ids.length, 'branch view back');
+  assert.ok(host.querySelector('.tech-search').hidden, 'results hidden again');
+  assert.equal(host.querySelector('.tech-branches').hidden, false, 'branch sections back (C281)');
+  assert.ok(host.querySelectorAll('.tech-branch .tech-node').length > ids.length, 'branch view back');
   p.destroy();
 });
 

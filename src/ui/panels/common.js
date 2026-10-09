@@ -227,31 +227,96 @@ export function writeCollapsed(id, folded, store = browserStore()) {
   } catch { /* storage blocked: this session only */ }
 }
 
+/** C280: how long (ms) a fold or unfold slides. */
+export const FOLD_MS = 220;
+
+/** True when motion should be skipped: the game's Reduced motion setting or the browser's prefers-reduced-motion. */
+function reducedMotion(el) {
+  try {
+    if (el && typeof el.closest === 'function' && el.closest('[data-reduced-motion="true"]')) return true;
+    const w = typeof window !== 'undefined' ? window : null;
+    return !!(w && typeof w.matchMedia === 'function' && w.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch {
+    return true;
+  }
+}
+
+/** Element height in px (0 without layout, e.g. in tests). */
+function heightOf(el) {
+  try {
+    const r = el.getBoundingClientRect();
+    return r && Number.isFinite(r.height) ? r.height : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Is el shown (no `hidden` element between it and stop)? */
+function shownWithin(el, stop) {
+  for (let n = el; n && n !== stop; n = n.parentNode) if (n.hidden) return false;
+  return true;
+}
+
 /**
- * C229: make a panel section foldable by its heading. Clicking the heading (or Enter / Space on it) toggles the class
- * `collapsed` on the section (CSS hides everything but the heading) and remembers it per browser under `id`.
- * The heading gets a chevron, role="button", tabindex 0 and aria-expanded. Clicks on buttons / inputs inside the
- * heading do not toggle. Returns { set(folded), folded() }.
+ * C229 / C280: make a panel section foldable by its heading. Clicking the heading (or Enter / Space on it) toggles the
+ * class `collapsed` on the section (CSS hides everything but the heading row) and remembers it per browser under `id`.
+ * The heading gets role="button", tabindex 0, aria-expanded and a CSS chevron (no DOM node, so panels may keep
+ * rewriting the heading's text). The body slides open and shut (height animation; none with Reduced motion or the
+ * browser's prefers-reduced-motion). While folded the heading shows a one-line summary (setSummary, a data attribute
+ * read by CSS). ↑ / ↓ / Home / End move between the headings of the same panel. Clicks on buttons / inputs inside the
+ * heading do not toggle. Returns { set(folded, animate?), folded(), setSummary(text), id }; the section keeps it as
+ * `sec.__fold`.
  * @param {HTMLElement} sec
- * @param {HTMLElement} title the section's heading (a child of sec)
+ * @param {HTMLElement} title the section's heading (a child of sec, or of a heading row inside it)
  * @param {string} id storage id, e.g. 'colony:brood'
  * @param {{ store?: Storage|null }} [opts]
  */
 export function collapsible(sec, title, id, { store = browserStore() } = {}) {
+  if (sec.__fold) return sec.__fold;
   let folded = !!readCollapsed(store)[id];
-  const chev = h('span', { class: 'sec-chev', attrs: { 'aria-hidden': 'true' } });
-  title.insertBefore(chev, title.firstChild || null);
+  let anim = null;
   title.classList.add('sec-toggle');
+  sec.classList.add('fold');
+  sec.dataset.foldKey = id;
+  // the heading row: the title itself, or the row inside the section that holds it (CSS keeps it visible when folded)
+  let row = title;
+  while (row.parentNode && row.parentNode !== sec) row = row.parentNode;
+  if (row.parentNode === sec) row.classList.add('fold-head');
   title.setAttribute('role', 'button');
   title.setAttribute('tabindex', '0');
   const apply = () => {
     toggleClass(sec, 'collapsed', folded);
     title.setAttribute('aria-expanded', folded ? 'false' : 'true');
-    setText(chev, folded ? '▸' : '▾');
   };
-  const set = (v) => {
-    folded = !!v;
+  /** Slide between the heights before and after the class change (Web Animations; skipped without layout). */
+  const slide = (fold) => {
+    if (anim) { try { anim.cancel(); } catch { /* ignore */ } anim = null; }
+    if (typeof sec.animate !== 'function' || reducedMotion(sec)) { apply(); return; }
+    const from = heightOf(sec);
     apply();
+    const to = heightOf(sec);
+    if (!(from > 0) || !(to > 0) || Math.abs(from - to) < 2) return;
+    if (fold) toggleClass(sec, 'collapsed', false);   // keep the body visible while it slides shut
+    sec.classList.add('folding');
+    try {
+      anim = sec.animate([{ height: from + 'px' }, { height: to + 'px' }], { duration: FOLD_MS, easing: 'ease' });
+      const done = () => {
+        sec.classList.remove('folding');
+        apply();
+        anim = null;
+      };
+      anim.onfinish = done;
+      anim.oncancel = () => sec.classList.remove('folding');
+    } catch {
+      sec.classList.remove('folding');
+      apply();
+    }
+  };
+  const set = (v, animate = false) => {
+    const want = !!v;
+    if (want === folded) { apply(); return; }
+    folded = want;
+    if (animate) slide(folded); else apply();
     writeCollapsed(id, folded, store);
   };
   const interactive = (t) => {
@@ -261,17 +326,161 @@ export function collapsible(sec, title, id, { store = browserStore() } = {}) {
     }
     return false;
   };
+  /** Headings of the same panel (shown ones), for arrow-key moves. */
+  const siblings = () => {
+    let host = sec.parentNode;
+    for (let n = sec.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+      host = n;
+      if (n.classList && (n.classList.contains('panel-host') || n.classList.contains('panel'))) break;
+    }
+    return host && typeof host.querySelectorAll === 'function'
+      ? Array.from(host.querySelectorAll('.sec-toggle')).filter((t) => shownWithin(t, host)) : [];
+  };
   title.addEventListener('click', (ev) => {
     if (ev && interactive(ev.target)) return;
-    set(!folded);
+    set(!folded, true);
   });
   title.addEventListener('keydown', (ev) => {
-    if (!ev || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+    if (!ev) return;
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      if (interactive(ev.target)) return;
+      if (typeof ev.preventDefault === 'function') ev.preventDefault();
+      set(!folded, true);
+      return;
+    }
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp' && ev.key !== 'Home' && ev.key !== 'End') return;
+    const all = Array.from(siblings());
+    const i = all.indexOf(title);
+    if (i < 0 || !all.length) return;
+    const next = ev.key === 'ArrowDown' ? all[Math.min(all.length - 1, i + 1)] : ev.key === 'ArrowUp' ? all[Math.max(0, i - 1)]
+      : ev.key === 'Home' ? all[0] : all[all.length - 1];
     if (typeof ev.preventDefault === 'function') ev.preventDefault();
-    set(!folded);
+    if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+    if (next && typeof next.focus === 'function') {
+      next.focus();
+      if (typeof next.scrollIntoView === 'function') { try { next.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ } }
+    }
   });
   apply();
-  return { set, folded: () => folded };
+  const api = {
+    id,
+    set,
+    folded: () => folded,
+    /** One-line summary shown on the folded heading (empty: the heading keeps its own meta). */
+    setSummary(text) {
+      const t = text ? String(text) : '';
+      if ((title.dataset.foldSum || '') !== t) {
+        if (t) title.dataset.foldSum = t; else delete title.dataset.foldSum;
+      }
+    },
+  };
+  sec.__fold = api;
+  return api;
+}
+
+/** Slug of a heading's own first text ("Dig queue " → "dig-queue"). */
+function headSlug(title) {
+  let t = '';
+  for (const n of Array.from(title.childNodes || [])) {
+    if (n.nodeType === 3 && String(n.textContent).trim()) { t = String(n.textContent); break; }
+  }
+  if (!t) t = String(title.textContent || '');
+  return t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/** The heading of a panel section: a direct h3.sec-title, or one inside a direct heading row. */
+function headingOf(sec) {
+  for (const c of Array.from(sec.children || [])) {
+    if (c.classList && c.classList.contains('sec-title')) return { title: c, row: c };
+  }
+  for (const c of Array.from(sec.children || [])) {
+    const t = typeof c.querySelector === 'function' ? c.querySelector('.sec-title') : null;
+    if (t) return { title: t, row: c };
+  }
+  return null;
+}
+
+/**
+ * C280: make every panel section under `host` foldable (sections built later are picked up by the next call). The
+ * storage id is `prefix:` plus the section's data-fold-id, else the heading's first words (a heading that sits
+ * directly in the section), else the section's last class name;
+ * repeated ids get -2, -3 …. Sections already foldable (collapsible() called by the panel) are left alone.
+ * @param {HTMLElement} host
+ * @param {string} prefix the tab id
+ * @param {{ store?: Storage|null }} [opts]
+ * @returns {Array<Object>} the fold APIs of every foldable section under host, in document order
+ */
+export function enhanceFolds(host, prefix, { store = browserStore() } = {}) {
+  if (!host || typeof host.querySelectorAll !== 'function') return [];
+  const used = host.__foldIds || (host.__foldIds = new Set());
+  const out = [];
+  for (const sec of Array.from(host.querySelectorAll('section.sec'))) {
+    if (sec.__fold) { out.push(sec.__fold); continue; }
+    const hd = headingOf(sec);
+    if (!hd) continue;
+    // a heading inside a heading row (e.g. Build → Inspect) usually changes its text, so the section's class names it
+    let base = sec.dataset.foldId || (hd.row === hd.title ? headSlug(hd.title) : '');
+    if (!base) {
+      const cls = String(sec.className || '').split(/\s+/).filter((c) => c && c !== 'sec');
+      base = cls.length ? cls[cls.length - 1] : 'section';
+    }
+    let id = prefix + ':' + base;
+    for (let k = 2; used.has(id); k++) id = prefix + ':' + base + '-' + k;
+    used.add(id);
+    out.push(collapsible(sec, hd.title, id, { store }));
+  }
+  for (const f of out) used.add(f.id);
+  return out;
+}
+
+/**
+ * C280: the "N of M sections open · Collapse all · Expand all" bar at the top of a panel. sync(folds) counts the shown
+ * sections only (those of the current sub-tab view); the bar hides with fewer than two.
+ * @returns {{ el: HTMLElement, sync(folds: Object[], host: HTMLElement): void }}
+ */
+export function foldTools() {
+  const count = h('span', { class: 'fold-count', attrs: { 'aria-live': 'polite' } });
+  let cur = [];
+  const all = (fold) => { for (const f of cur) f.set(fold, true); sync(last.folds, last.host); };
+  const collapse = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Collapse all', on: { click: () => all(true) } });
+  const expand = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Expand all', on: { click: () => all(false) } });
+  const el = h('div', { class: 'fold-tools' }, count, h('span', { class: 'btn-row' }, collapse, expand));
+  const last = { folds: [], host: null };
+  function sync(folds, host) {
+    last.folds = folds;
+    last.host = host;
+    cur = folds.filter((f) => {
+      const sec = host && typeof host.querySelector === 'function' ? findSec(host, f.id) : null;
+      return sec ? shownWithin(sec, host) : false;
+    });
+    show(el, cur.length >= 2);
+    const open = cur.filter((f) => !f.folded()).length;
+    setText(count, open + ' of ' + cur.length + ' sections open');
+    setProp(collapse, 'disabled', open === 0);
+    setProp(expand, 'disabled', open === cur.length);
+  }
+  return { el, sync };
+}
+
+/** The section of a fold id under host. */
+function findSec(host, id) {
+  for (const sec of Array.from(host.querySelectorAll('section.sec'))) if (sec.__fold && sec.__fold.id === id) return sec;
+  return null;
+}
+
+/**
+ * C280: unfold the section holding el (a glow, a located row) so it can be seen. Returns true when it unfolded one.
+ * @param {HTMLElement|null} el
+ */
+export function unfoldFor(el) {
+  for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
+    if (n.__fold) {
+      if (!n.__fold.folded()) return false;
+      n.__fold.set(false, false);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Player text for a reason (re-exported for panels); type = the refused command, for command-specific copy. */

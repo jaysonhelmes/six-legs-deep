@@ -239,7 +239,7 @@ test('cancelling a growth reverts the footprint; relocation and shaft jobs canno
   assert.equal(run(s, d, { type: 'cancelJob', uid: s.run.nest.queue[0].uid }), 'blocked');
 });
 
-test('relocate: old cells become tunnel, chamber inactive until dug, work = 50 % of the new footprint (×0.75 architect)', () => {
+test('relocate (C271 build first): old room works until the new one is dug, then the move, then the old room is backfilled; work = 50 % (×0.75 architect)', () => {
   const { s, d } = setup({ digW: 1000 });
   run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 12 });
   stepNest(s, d, 1);
@@ -260,10 +260,15 @@ test('relocate: old cells become tunnel, chamber inactive until dug, work = 50 %
   assert.equal(s.meta.counters.relocations, 1);
   assert.equal(s.run.stats.relocations, 1);
   nest.derive(s, d);
-  assert.equal(d.nest.agg.housingBase, 10, 'inactive while relocating');
+  assert.ok(d.nest.agg.housingBase > 10, 'C271: still working while its new room is dug');
+  assert.equal(nest.relocationInfo(s, d, ch.uid).phase, 'dig');
+  assert.equal(nest.relocationInfo(s, d, ch.uid).working, true);
   d.stats.digW = 1000;
-  // C254: the new room is dug, but the old one is still being cleared (3 s + 0.5 s × 6 cells): still inactive
+  // C254 / C271: the new room is dug, then the contents move across (3 s + 0.5 s × 6 cells): inactive meanwhile
   let ev = stepNest(s, d, 1);
+  nest.derive(s, d);
+  assert.equal(d.nest.agg.housingBase, 10, 'inactive while the contents move');
+  assert.equal(nest.relocationInfo(s, d, ch.uid).phase, 'move');
   assert.equal(ch.status, 'relocating', 'the old room takes a while to clear');
   const ri = nest.relocationInfo(s, d, ch.uid);
   assert.equal(ri.clearing, true);
@@ -277,6 +282,15 @@ test('relocate: old cells become tunnel, chamber inactive until dug, work = 50 %
   assert.equal(nest.relocationInfo(s, d, ch.uid), null);
   assert.ok(ev.some((e) => e.type === 'chamberActivated' && e.uid === ch.uid));
   assert.equal(s.run.stats.chambersDone, 1, 'relocation does not count as a new chamber');
+  // C271: then the old room is backfilled (only its own cells, furthest from the entrance first), never cutting it off
+  const old = new Set(rectCells(21, 12, 3, 2));
+  assert.ok(s.run.nest.backfill.length > 0, 'old room queued for backfill');
+  for (const b of s.run.nest.backfill) assert.ok(old.has(b.i), 'only old-room cells');
+  stepNest(s, d, 12);
+  nest.derive(s, d);
+  assert.equal(s.run.nest.backfill.length, 0);
+  assert.ok(d.nest.entDist[rectCells(21, 15, 3, 2)[0]] >= 0, 'the moved chamber stays connected');
+  assert.ok(d.nest.agg.housingBase > 10);
 });
 
 test('demolish: refund 50 % of placement food, cells become tunnel; never the Royal Chamber', () => {
@@ -449,4 +463,21 @@ test('nuptial chamber: shaft job dug to row 0 opens a nuptial shaft and an entra
   assert.equal(d.nest.entDist[idx(rec.col, 0)], 0, 'second entrance seeds entDist');
   // Only one nuptial chamber
   assert.equal(nest.validatePlacement(s, d, 'nuptial_chamber', 5, 40).reason, 'max');
+});
+
+test('C271: a legacy relocation (v0.13 save: reloc without ph) keeps clearing alongside its dig, inactive, then activates', () => {
+  const { s, d } = setup({ digW: 1000 });
+  run(s, d, { type: 'placeChamber', chamber: 'gallery', x: 21, y: 12 });
+  stepNest(s, d, 1);
+  const ch = s.run.nest.chambers[1];
+  ch.status = 'relocating';
+  ch.reloc = { from: { x: 21, y: 9, w: 3, h: 2 }, cells: [], t: 0, dur: 2 };
+  nest.derive(s, d);
+  assert.equal(d.nest.agg.housingBase, 10, 'inactive');
+  assert.equal(nest.relocationInfo(s, d, ch.uid).phase, 'move');
+  stepNest(s, d, 1);
+  assert.equal(ch.status, 'relocating');
+  const ev = stepNest(s, d, 1.5);
+  assert.equal(ch.status, 'active');
+  assert.ok(ev.some((e) => e.type === 'chamberActivated' && e.uid === ch.uid));
 });

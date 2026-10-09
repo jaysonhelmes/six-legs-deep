@@ -60,9 +60,12 @@ function fail(P, reason) {
   return P;
 }
 
-/** Chamber is contributing: 'active' or 'growing' (at its current level). */
+/**
+ * Chamber is contributing: 'active' or 'growing' (at its current level), or (C271, build first) 'relocating' while its
+ * new room is still being dug (`reloc.ph === 'dig'`: the old room keeps working until the move itself).
+ */
 function contributes(ch) {
-  return ch.status === 'active' || ch.status === 'growing';
+  return ch.status === 'active' || ch.status === 'growing' || (ch.status === 'relocating' && !!ch.reloc && ch.reloc.ph === 'dig');
 }
 
 function findChamber(s, uid) {
@@ -555,7 +558,15 @@ function finishJob(s, d, job, env) {
     ch.target = ch.level;
     emit(env, 'chamberLeveled', { uid: ch.uid, level: ch.level });
   } else if (job.kind === 'relocate' && ch) {
-    if (ch.reloc) return; // C254: its old room is still being cleared; relocClearTick activates it
+    // C271: the new room is dug: the move starts now (the old room stops working); relocClearTick activates it when
+    // the move is done. A legacy reloc (no ph: cleared alongside the dig, C254) just waits for its clearing to end.
+    if (ch.reloc) {
+      if (ch.reloc.ph === 'dig') {
+        ch.reloc.ph = 'move';
+        ch.reloc.t = 0;
+      }
+      return;
+    }
     ch.status = 'active';
     emit(env, 'chamberActivated', { uid: ch.uid, chamberType: ch.type, level: ch.level });
     if (env && env.offline && d.offlineLog && Array.isArray(d.offlineLog.chambers)) d.offlineLog.chambers.push(ch.uid);
@@ -1002,15 +1013,22 @@ function backfillTick(s, d, geo, step, env) {
 }
 
 /**
- * C254: a relocated chamber's old room is cleared over ch.reloc.dur seconds (DIG.relocateClearBase + relocateClearPerCell
- * × its cells), its cells one after another ('relocCellCleared' { uid, i } as each goes, online only). The chamber stays
- * 'relocating' (inactive) until both the clearing and the dig of its new room are done; then it activates.
+ * C254 / C271 (build first): a relocation runs in three steps. 'dig' (ch.reloc.ph): the new room is dug while the old
+ * one keeps working (contributes); 'move': once the relocate job is done, the contents are carried across over
+ * ch.reloc.dur seconds (DIG.relocateClearBase + relocateClearPerCell × the old cells), the old cells one after another
+ * ('relocCellCleared' { uid, i } as each goes, online only), the chamber inactive meanwhile; then it activates and its
+ * old room is backfilled from its far end (backfillOldRoom). A legacy reloc (no ph) clears alongside the dig as in C254.
  */
 function relocClearTick(s, d, step, env) {
   const nest = s.run.nest;
   for (const ch of nest.chambers) {
     const R = ch && ch.reloc;
     if (!R) continue;
+    if (R.ph === 'dig') {
+      if (nest.queue.some((j) => j && j.kind === 'relocate' && j.chamber === ch.uid)) continue;
+      R.ph = 'move';
+      R.t = 0;
+    }
     const dur = Math.max(0.001, num(R.dur));
     const cells = Array.isArray(R.cells) ? R.cells : [];
     const before = Math.floor(Math.min(1, num(R.t) / dur) * cells.length);
@@ -1026,7 +1044,40 @@ function relocClearTick(s, d, step, env) {
       emit(env, 'chamberActivated', { uid: ch.uid, chamberType: ch.type, level: ch.level });
       if (env && env.offline && d.offlineLog && Array.isArray(d.offlineLog.chambers)) d.offlineLog.chambers.push(ch.uid);
     }
+    backfillOldRoom(s, d, cells);
   }
+}
+
+/**
+ * C271: after a move, the old room's cells (still plain tunnel) are queued for backfill, furthest from the entrance
+ * first, skipping any cell something now needs: a chamber or shaft took it, it is queued or already filling, a planned
+ * blueprint chamber covers it, or filling it would cut a chamber, queued job, planned chamber or shaft off (bulkCuts).
+ * Returns the number of cells queued.
+ */
+function backfillOldRoom(s, d, cells) {
+  if (!Array.isArray(cells) || !cells.length) return 0;
+  const nest = s.run.nest;
+  const geo = ensureGeom(s, d);
+  const planned = plannedChambers(s);
+  const inPlanned = new Uint8Array(N);
+  for (const p of planned) for (const c of G.rectCells(p.x, p.y, p.w, p.h)) inPlanned[c] = 1;
+  const key = (c) => (geo.entDist[c] >= 0 ? geo.entDist[c] : N + 1);
+  const cand = cells.filter((c) => isCell(c) && nest.cells[c] === CELL.TUNNEL && geo.chamberAt[c] < 0 && !geo._shaft[c]
+    && !geo._backfill[c] && !geo._queued[c] && !inPlanned[c]).sort((a, b) => key(b) - key(a) || b - a);
+  if (!cand.length) return 0;
+  const mask = new Uint8Array(N);
+  const out = [];
+  for (const c of cand) {
+    mask[c] = 1;
+    if (bulkCuts(s, geo, mask, planned)) mask[c] = 0;
+    else out.push(c);
+  }
+  const n = queueBackfill(s, geo, out);
+  if (n) {
+    nest.rev++;
+    rebuild(s, d);
+  }
+  return n;
 }
 
 /**
@@ -1054,8 +1105,10 @@ function autoBackfillTick(s, d, step, env) {
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number} uid
+ * C271: `phase` 'dig' | 'move' | null and `working` (the old room still contributes while the new one is dug); during
+ * 'dig' the clearing (the move) has not started yet (clearFrac 0, clearLeft = its full duration).
  * @returns {null | { clearing: boolean, clearFrac: number, clearLeft: number, digging: boolean, digFrac: number,
- *   from: { x: number, y: number, w: number, h: number } | null }}
+ *   from: { x: number, y: number, w: number, h: number } | null, phase: 'dig'|'move'|null, working: boolean }}
  */
 export function relocationInfo(s, d, uid) {
   const f = findChamber(s, uid);
@@ -1066,7 +1119,9 @@ export function relocationInfo(s, d, uid) {
   const cells = job ? job.cells.length : 0;
   return { clearing: !!R, clearFrac: R ? Math.min(1, num(R.t) / dur) : 1, clearLeft: R ? Math.max(0, dur - num(R.t)) : 0,
     digging: !!job, digFrac: job ? (cells > 0 ? Math.min(1, num(job.cur) / cells) : 1) : 1,
-    from: R && R.from ? { ...R.from } : null };
+    from: R && R.from ? { ...R.from } : null,
+    // C271: 'dig' (new room being dug, the old one still working), 'move' (contents carried across), null (legacy)
+    phase: R ? (R.ph === 'dig' ? 'dig' : 'move') : null, working: !!(R && R.ph === 'dig') };
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -1316,7 +1371,6 @@ export function tick(s, d, dt, env) {
     if (royalResStale(s)) upgradeRoyalRes(s, d);
   }
   if (nest.backfill.length && step > 0) backfillTick(s, d, geo, step, env);
-  if (step > 0) relocClearTick(s, d, step, env);
   if (step > 0) autoBackfillTick(s, d, step, env);
   const econDt = env && Number.isFinite(env.econDt) ? env.econDt : step;
   const eff = env && Number.isFinite(env.eff) ? env.eff : 1;
@@ -1328,6 +1382,8 @@ export function tick(s, d, dt, env) {
   const left = digWork(s, d, W, env, false, lim);
   nest.digAllow = Math.min(1, Math.max(0, allow - lim.n));
   if (left > 0) nest.maint = Math.min(CLAMP_MAX, num(nest.maint) + left);
+  // C271: after the dig, so a move whose new room was dug this tick starts at once
+  if (step > 0) relocClearTick(s, d, step, env);
   if (step > 0) growRoots(s, d, step);
   const g2 = ensureGeom(s, d);
   revealWater(s, g2);
@@ -2014,11 +2070,12 @@ function executeRelocation(s, d, P, env) {
   const ch = P.rel.ch;
   const nr = P.rect;
   markShaftPass(s, d, nr);
-  // C254: the old room is cleared over a short time (its cells, in reading order, are the renderer's to animate); the
-  // cells become tunnel at once so nothing loses its connection meanwhile.
+  // C254 / C271 (build first): the new room is dug first while the old one keeps working (ph 'dig'), then the contents
+  // move across (ph 'move', dur s), then the old room is backfilled. The old cells become tunnel at once so nothing
+  // loses its connection meanwhile (the renderer keeps drawing the old room from `from` until the move is over).
   const oldCells = G.rectCells(ch.x, ch.y, ch.w, ch.h);
   ch.reloc = { from: { x: ch.x, y: ch.y, w: ch.w, h: ch.h }, cells: oldCells.filter((c) => !G.inRect(nr, c)), t: 0,
-    dur: DIG.relocateClearBase + DIG.relocateClearPerCell * oldCells.length };
+    dur: DIG.relocateClearBase + DIG.relocateClearPerCell * oldCells.length, ph: 'dig' };
   for (const c of oldCells) {
     if (!G.inRect(nr, c) && nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
   }
@@ -4689,7 +4746,8 @@ function bulkCuts(s, geo, mask, planned) {
  * [q] Every open tunnel cell that can be backfilled without cutting anything off (C121, "Backfill all unneeded
  * tunnels"): not a chamber or shaft cell, not already backfilling, not inside a planned blueprint chamber, and, taken
  * together, keeping every chamber, queued job, planned blueprint chamber and entrance connected (bulkCuts). Greedy,
- * deepest path distance first (dead-end stubs go first).
+ * deepest path distance first (dead-end stubs go first). C290: a mole tunnel counts as unneeded like any other loose
+ * tunnel (so auto-backfill clears it), except the cell holding an uncollected mole cache, which waits for its click.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @returns {number[]} cell indices, ascending
@@ -4700,6 +4758,7 @@ export function unneededTunnels(s, d) {
   const planned = plannedChambers(s);
   const inPlanned = new Uint8Array(N);
   for (const p of planned) for (const c of G.rectCells(p.x, p.y, p.w, p.h)) inPlanned[c] = 1;
+  for (const o of (s.run.events && s.run.events.objects) || []) if (o && o.kind === 'mole_cache' && isCell(o.cell)) inPlanned[o.cell] = 1;
   const cand = [];
   for (let i = 0; i < N; i++) {
     if (cells[i] !== CELL.TUNNEL || geo.chamberAt[i] >= 0 || geo._shaft[i] || geo._backfill[i] || inPlanned[i]) continue;

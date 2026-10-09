@@ -70,9 +70,10 @@ function createAtlas() {
   /** @type {Map<string, { canvas: any, px: number } | null>} */
   const icons = new Map();
 
-  function strip(kind, carry, color, outline) {
+  function strip(kind, carry, color, outline, gaster = null) {
     const tint = TINTABLE.has(kind) ? antTint : null;
-    const key = `${kind}|${carry}|${color || ''}|${outline || ''}|${tint || ''}`;
+    const gas = gaster && TINTABLE.has(kind) ? gaster : null;
+    const key = `${kind}|${carry}|${color || ''}|${outline || ''}|${tint || ''}|${gas || ''}`;
     if (strips.has(key)) return strips.get(key);
     const k = KIND_SCALE[kind] || 1;
     const cell = Math.round(UNIT_PX * k);
@@ -98,7 +99,7 @@ function createAtlas() {
           else pg.translate(r * cell + cell / 2, fr * cell + cell / 2);
           pg.rotate((r * Math.PI * 2) / ROTATIONS);
           pg.scale(UNIT_PX, UNIT_PX);
-          paintAnt(pg, kind, carry, fr, color, tint);
+          paintAnt(pg, kind, carry, fr, color, tint, gas);
           pg.restore();
           if (useTmp) {
             const sg = sil.ctx;
@@ -120,6 +121,30 @@ function createAtlas() {
       out = { canvas: off.canvas, cell };
     }
     strips.set(key, out);
+    return out;
+  }
+
+  /** @type {Array<{ canvas: any, px: number } | null | undefined>} C263 flying-alate frames, built on first use */
+  const alateFrames = [];
+  function alateFrame(k) {
+    if (alateFrames[k] !== undefined) return alateFrames[k];
+    const px = 192;   // crisp up to the Above view's 2.75× zoom on 2× screens
+    const off = createOffscreen(px, px);
+    let out = null;
+    if (off.ctx && off.canvas) {
+      const g = off.ctx;
+      g.save();
+      g.translate(px / 2, px / 2);
+      g.scale(px, px);
+      try {
+        paintFlyingAlate(g, (k / ALATE_FRAMES) * Math.PI * 2 + Math.PI / 2);
+      } catch {
+        // a failing painter leaves a blank frame
+      }
+      g.restore();
+      out = { canvas: off.canvas, px };
+    }
+    alateFrames[k] = out;
     return out;
   }
 
@@ -160,11 +185,12 @@ function createAtlas() {
      * @param {number} unit
      * @param {string} [color] rival tint (kind 'rival'); body colour of the queen (golden queen cosmetic, C149)
      * @param {string} [outline] optional silhouette outline colour (Below view: keeps dark ants readable on dark soil)
+     * @param {string} [gaster] C262: job colour painted on the gaster (player kinds only; Above view)
      */
-    drawAnt(ctx, kind, carry, angle, frame, x, y, unit, color, outline) {
+    drawAnt(ctx, kind, carry, angle, frame, x, y, unit, color, outline, gaster) {
       const kn = typeof kind === 'number' ? KIND_NAMES[kind] || 'minor' : kind || 'minor';
       const cn = typeof carry === 'number' ? CARRY_CODES[carry] || 'none' : carry || 'none';
-      const st = strip(kn, cn, kn === 'rival' ? color || '#7a2a1a' : kn === 'queen' && color ? color : null, outline || null);
+      const st = strip(kn, cn, kn === 'rival' ? color || '#7a2a1a' : kn === 'queen' && color ? color : null, outline || null, gaster || null);
       const k = KIND_SCALE[kn] || 1;
       const size = unit * k;
       if (!st) {
@@ -197,6 +223,25 @@ function createAtlas() {
       }
       ctx.drawImage(ic.canvas, 0, 0, ic.px, ic.px, x - size / 2, y - size / 2, size, size);
     },
+    /**
+     * C263: draw a flying rival alate centred at (x, y), facing heading `angle` (radians), flap frame 0–3, CSS size
+     * `size` (the icon size); `squash` narrows the wingspan (a banking alate reads narrower from above).
+     * @param {CanvasRenderingContext2D} ctx
+     */
+    drawFlyingAlate(ctx, frame, x, y, size, angle, squash = 1) {
+      const fr = alateFrame(((frame | 0) % ALATE_FRAMES + ALATE_FRAMES) % ALATE_FRAMES);
+      if (!fr) {
+        const ic = icon('rival_alate');
+        if (ic) ctx.drawImage(ic.canvas, 0, 0, ic.px, ic.px, x - size / 2, y - size / 2, size, size);
+        return;
+      }
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      if (squash !== 1) ctx.scale(1, squash);
+      ctx.drawImage(fr.canvas, 0, 0, fr.px, fr.px, -size / 2, -size / 2, size, size);
+      ctx.restore();
+    },
     /** Pre-build the common strips (optional warm-up). */
     warm() {
       for (const k of ['minor', 'soldier', 'supermajor', 'replete', 'alate', 'golden']) strip(k, 'none', null, null);
@@ -221,14 +266,17 @@ function ell(g, x, y, rx, ry, rot = 0) {
  * @param {string} carry
  * @param {number} frame
  * @param {string|null} color
+ * @param {string|null} [tint] C149 cosmetic tint
+ * @param {string|null} [gaster] C262 job colour for the gaster (applied after the tint)
  */
-function paintAnt(g, kind, carry, frame, color, tint = null) {
+function paintAnt(g, kind, carry, frame, color, tint = null, gaster = null) {
   let pal = ANT[kind] || ANT.minor;
   if (kind === 'rival' && color) pal = { body: shade(color, -0.45), head: shade(color, -0.55), leg: shade(color, -0.7) };
   else if (kind === 'queen' && color) pal = { ...pal, body: shade(color, -0.15), head: shade(color, -0.25), gaster: color, leg: shade(color, -0.5) };
   if (tint && TINTABLE.has(kind)) {
     pal = { ...pal, body: mix(pal.body, tint, 0.5), head: mix(pal.head, tint, 0.45), gaster: mix(pal.gaster || pal.body, tint, 0.55) };
   }
+  if (gaster && TINTABLE.has(kind)) pal = { ...pal, gaster: shade(gaster, -0.08) };
   const k = KIND_SCALE[kind] || 1;
   g.save();
   g.scale(k, k);
@@ -1041,3 +1089,126 @@ const ICON_PAINTERS = {
     g.fill();
   },
 };
+
+// ----------------------------------------------------------------------------------------------------------------
+// C263: flying rival alate (Above view, ev_rival_mating_flight). Four pre-painted wing frames (spread → raised →
+// spread → lowered), icon units, facing +x; the body keeps the rival_alate icon's colours. Approved look:
+// previews/map-alates.html "Option A".
+// ----------------------------------------------------------------------------------------------------------------
+
+/** Flap frames per flying-alate strip. */
+export const ALATE_FRAMES = 4;
+const ALATE_BODY = Object.freeze({ gaster: '#7a2a1a', meso: '#6a2414', head: '#5a1e10', leg: '#3a140b' });
+
+/** One wing rooted at (rx, ry) along `ang`: a teardrop with a leading-edge vein and a dark pterostigma. */
+function alateWing(g, rx, ry, ang, len, wid, side, alpha, veins) {
+  g.save();
+  g.translate(rx, ry);
+  g.rotate(ang);
+  const s = side;
+  g.beginPath();
+  g.moveTo(0, 0);
+  g.bezierCurveTo(len * 0.25, -s * wid * 1.05, len * 0.75, -s * wid * 0.95, len, -s * wid * 0.15);
+  g.bezierCurveTo(len * 1.04, s * wid * 0.35, len * 0.7, s * wid * 0.62, len * 0.3, s * wid * 0.42);
+  g.quadraticCurveTo(len * 0.08, s * wid * 0.25, 0, 0);
+  g.closePath();
+  g.fillStyle = `rgba(232,242,255,${0.62 * alpha})`;
+  g.fill();
+  g.lineWidth = 0.007;
+  g.strokeStyle = `rgba(255,255,255,${0.6 * alpha})`;
+  g.stroke();
+  if (veins) {
+    g.strokeStyle = `rgba(110,70,50,${0.45 * alpha})`;
+    g.lineWidth = 0.008;
+    g.beginPath();
+    g.moveTo(0.01, 0);
+    g.quadraticCurveTo(len * 0.35, -s * wid * 0.62, len * 0.6, -s * wid * 0.62);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(len * 0.18, -s * wid * 0.25);
+    g.quadraticCurveTo(len * 0.45, s * wid * 0.05, len * 0.7, s * wid * 0.08);
+    g.stroke();
+    g.fillStyle = `rgba(70,35,22,${0.7 * alpha})`;
+    ell(g, len * 0.63, -s * wid * 0.66, len * 0.06, wid * 0.13, 0);
+    g.fill();
+  }
+  g.restore();
+}
+
+/** Wing pose at flap phase φ: sweep angle, apparent length (foreshortened at the top / bottom of the stroke), brightness. */
+function alateWingPose(phi, side, hind) {
+  const sweep = Math.PI / 2 + 0.32 + 0.62 * Math.sin(phi);
+  const e = Math.cos(phi);
+  const fore = 0.6 + 0.4 * Math.sqrt(Math.max(0, 1 - e * e));
+  return { ang: side * (sweep + (hind ? 0.28 : 0)), k: fore, alpha: 0.75 + 0.25 * e };
+}
+
+function alateFlyBody(g) {
+  g.lineCap = 'round';
+  g.strokeStyle = ALATE_BODY.leg;
+  g.lineWidth = 0.016;
+  for (let p = 0; p < 3; p++) {
+    for (const s of [-1, 1]) {
+      const ax = 0.1 - p * 0.03;
+      g.beginPath();
+      g.moveTo(ax, s * 0.02);
+      g.lineTo(ax - 0.03, s * (0.065 + p * 0.008));
+      g.lineTo(ax - 0.08 - p * 0.03, s * (0.07 + p * 0.012));
+      g.stroke();
+    }
+  }
+  g.fillStyle = ALATE_BODY.gaster;
+  ell(g, -0.11, 0, 0.125, 0.074);
+  g.fill();
+  g.strokeStyle = shade(ALATE_BODY.gaster, -0.3);
+  g.lineWidth = 0.008;
+  for (const dx of [-0.05, 0, 0.05]) {
+    g.beginPath();
+    g.arc(-0.11 + dx - 0.06, 0, 0.075, -0.75, 0.75);
+    g.stroke();
+  }
+  g.fillStyle = 'rgba(255,225,200,0.22)';
+  ell(g, -0.09, -0.03, 0.06, 0.02, -0.2);
+  g.fill();
+  g.fillStyle = ALATE_BODY.meso;
+  ell(g, 0, 0, 0.024, 0.022);
+  g.fill();
+  ell(g, 0.07, 0, 0.072, 0.05);
+  g.fill();
+  g.fillStyle = 'rgba(255,220,190,0.2)';
+  ell(g, 0.08, -0.018, 0.035, 0.015);
+  g.fill();
+  g.fillStyle = ALATE_BODY.head;
+  ell(g, 0.17, 0, 0.048, 0.046);
+  g.fill();
+  g.fillStyle = 'rgba(0,0,0,0.7)';
+  for (const s of [-1, 1]) {
+    ell(g, 0.178, s * 0.034, 0.016, 0.013);
+    g.fill();
+  }
+  g.strokeStyle = ALATE_BODY.leg;
+  g.lineWidth = 0.012;
+  for (const s of [-1, 1]) {
+    g.beginPath();
+    g.moveTo(0.2, s * 0.02);
+    g.lineTo(0.25, s * 0.07);
+    g.lineTo(0.31, s * 0.055);
+    g.stroke();
+  }
+}
+
+/** A flying alate at flap phase φ (icon units, facing +x): wings under the body at the bottom of the stroke, above at the top. */
+function paintFlyingAlate(g, phi) {
+  const drawSet = () => {
+    for (const hind of [true, false]) {
+      for (const s of [-1, 1]) {
+        const P = alateWingPose(phi - (hind ? 0.35 : 0), s, hind);
+        alateWing(g, hind ? 0.045 : 0.075, s * 0.03, P.ang, (hind ? 0.22 : 0.31) * P.k, hind ? 0.06 : 0.075, s, P.alpha, !hind);
+      }
+    }
+  };
+  const top = Math.cos(phi) > 0;
+  if (!top) drawSet();
+  alateFlyBody(g);
+  if (top) drawSet();
+}

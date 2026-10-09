@@ -47,6 +47,22 @@ export const SITE_MODS = freeze({ site_stony_ground: { stones: 2, caches: 2 }, s
 export const MOLE = freeze({ lenMin: 6, lenMax: 12, rowMin: 1, rowMax: 60, attempts: 60 });
 
 /**
+ * C290 treasure mole: the mole tunnel always ends at a free cache (an event object 'mole_cache' on the tunnel's last
+ * cell) the player clicks to collect. Kind drawn by weight with the main RNG when the mole digs; the reward is
+ * computed when collected: max(min, sec × smoothed gross income of res, capFrac × that resource's cap) — capFrac only
+ * for capped resources (food, chitin), so the find stays worth a click as the colony grows. Seeds may overflow the
+ * food cap (a one-shot reward, like a buried seed cache).
+ */
+export const MOLE_CACHE = freeze({
+  kinds: {
+    seed_cache:  { name: 'Seed cache', weight: 4, res: 'food', sec: 120, capFrac: 0.15, min: 60 },
+    fossil:      { name: 'Fossil', weight: 3, res: 'insight', sec: 120, capFrac: 0, min: 40 },
+    beetle_husk: { name: 'Beetle husk', weight: 3, res: 'chitin', sec: 90, capFrac: 0.15, min: 20 },
+  },
+  order: ['seed_cache', 'fossil', 'beetle_husk'],
+});
+
+/**
  * Generator constants (nestgen): placement tries per feature, the empty margin kept between boulders / water pockets
  * and the shaft, Royal Chambers and each other, and the tunnel gap between pre-dug Royal Chambers (fire ants).
  */

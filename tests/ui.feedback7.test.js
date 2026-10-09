@@ -70,7 +70,8 @@ function mountColony(s, d) {
   p.update(s, d);
   return { root, p, rejects, calls, refresh: () => p.update(s, d) };
 }
-const chip = (root, id) => root.querySelector('.job-chip[data-job="' + id + '"]');
+// C282: jobs are two-line rows (.job-row) with stacked +/− buttons (.jb-step.up / .jb-step.down)
+const chip = (root, id) => root.querySelector('.job-row[data-job="' + id + '"]');
 
 // ------------------------------------------------------------------------------------------------ C229
 test('C229: readCollapsed / writeCollapsed survive missing, broken and failing storage', () => {
@@ -104,7 +105,7 @@ test('C229: Colony sections fold by their heading (click or Enter) and stay fold
   title.click();
   assert.equal(jobs.classList.contains('collapsed'), true);
   assert.equal(title.getAttribute('aria-expanded'), 'false');
-  assert.match(title.textContent, /▸/);
+  assert.ok(jobs.classList.contains('fold'), 'C280: CSS chevron (the section is a fold)');
   assert.deepEqual(JSON.parse(store.getItem(common.COLLAPSE_KEY)), { 'colony:jobs': true });
   // a new panel (reload) starts folded
   const m2 = mountColony(s, d);
@@ -144,7 +145,8 @@ test('C230: job +/− show the step, steps above the workforce are greyed, and a
   assert.equal(seg('100').disabled, true);
   assert.equal(seg('max').disabled, false);
   const dig = chip(m.root, 'digger');
-  const [minus, plus] = dig.querySelectorAll('.job-btns button');
+  const minus = dig.querySelector('.jb-step.down');
+  const plus = dig.querySelector('.jb-step.up');
   assert.equal(plus.textContent, '+1');
   assert.equal(minus.textContent, '−1');
   assert.equal(plus.title, 'Move 1 forager to Digger');
@@ -231,7 +233,7 @@ test('C231: the nurse row shows "/ cap" with a tooltip; over-cap counts are flag
   m.refresh();
   assert.equal(cap.classList.contains('over'), true);
   assert.match(cap.title, /3 extra nurses do nothing/);
-  const plus = n.querySelectorAll('.job-btns button')[1];
+  const plus = n.querySelector('.jb-step.up');
   assert.match(plus.title, /Nurse cap reached/);
   plus.click();
   assert.deepEqual(m.rejects, ['max']);

@@ -248,7 +248,7 @@ test('C254: a relocation is never instant: the old room is cleared over time and
   assert.equal(d.nest.agg.housingBase, 10, 'its housing is gone while it moves (the Royal Chamber alone)');
   const rl = nest.relocationInfo(s, d, g.uid);
   const p = relocationProgress(rl);
-  assert.match(p.text, /Clearing the old room: .* left/);
+  assert.match(p.text, /(Clearing the old room|Moving in): .* left|Old room still working/);
   assert.ok(p.frac > 0 && p.frac < 1);
   const ev = stepNest(s, d, dur);
   assert.equal(g.status, 'active');

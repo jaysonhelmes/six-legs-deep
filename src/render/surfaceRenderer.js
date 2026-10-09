@@ -22,10 +22,11 @@ import { createSurfaceCamera } from './camera.js';
 import { drawIconAmbient, drawAmbientExtras, windStrength } from './ambient.js';
 import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, arcTable, pointAtArc, distToPolyline, trailCurve, pathObstacles, laneLayout, laneCurve, SQRT3 } from './geom.js';
 import {
-  terrainColor, SURFACE, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
+  terrainColor, SURFACE, CARRY_CODES, JOB_COLORS, mix, shade, rgba, hatchPattern, rivalColor,
   rivalPatternKind, seasonBlend, blendWash, blendWeather, anchorPattern,
 } from './palette.js';
 import { getAtlas } from './atlas.js';
+import { noise2, softShadow, paintSingleStones, paintLogChains } from './terrainArt.js';
 import * as cosmetics from './cosmetics.js';
 import { BUDGET, REALLOC_SEC, createPool, reconcile, allocAbove, KIND } from './sprites.js';
 import { createParticles, PK, MAX_PARTICLES } from './particles.js';
@@ -117,21 +118,6 @@ export function groundUnder(ter, i, n) {
     }
   }
   return best;
-}
-
-/** 2-D value noise in [0, 1] (deterministic). */
-function noise2(x, y, seed = 0) {
-  const xi = Math.floor(x);
-  const yi = Math.floor(y);
-  const xf = x - xi;
-  const yf = y - yi;
-  const u = xf * xf * (3 - 2 * xf);
-  const v = yf * yf * (3 - 2 * yf);
-  const a = hash01(xi * 73 + seed, yi * 37);
-  const b = hash01((xi + 1) * 73 + seed, yi * 37);
-  const c = hash01(xi * 73 + seed, (yi + 1) * 37);
-  const d = hash01((xi + 1) * 73 + seed, (yi + 1) * 37);
-  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
 }
 
 /**
@@ -244,7 +230,18 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
   // C223: a clicked event object that pays out (a caught rival alate, a fossil cache) shows its gain like a crumb
   sub('objectGain', (e) => {
     if (!e || !(e.hex >= 0) || !(Number(e.amount) > 0)) return;
-    const p = hexWorldPt(e.hex);
+    let p = hexWorldPt(e.hex);
+    if (e.kind === 'rival_alate') {
+      // C263: over the caught alate in flight (the one on that hex no longer in the object list)
+      const s = S();
+      const live = new Set(((s && s.run && s.run.events && s.run.events.objects) || []).map((o) => o && o.uid));
+      for (const [uid, f] of flyers) {
+        if (f.hex === e.hex && !live.has(uid)) {
+          p = { x: f.x, y: f.y - f.alt + 12 };
+          break;
+        }
+      }
+    }
     fxWorld.float(p.x + (Math.random() - 0.5) * 8, p.y - 12, `+${compactInt(Number(e.amount) || 0)} ${e.res || ''}`.trim(), '#fff3c4', e.res || null);
   });
   sub('hexRevealed', (e) => {
@@ -564,13 +561,15 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     const ter = surf.terrain || [];
     const stones = linkSet(ter, nMap, 'stone');
     const boulder = new Set(stones.hexes.filter((i) => stones.nb.get(i).some((h) => h >= 0)));
+    const singles = stones.hexes.filter((i) => !boulder.has(i));
     // C111: puddle and garden-path hexes sit on the ground around them (their dominant grass / sand / leaf-litter
     // neighbour); the pool / path is then drawn once over the union of linked hexes (paintPaths / paintPools).
-    // C135: so do linked stone hexes (one boulder over the union, paintBoulders) and every non-ground hex beyond the map
+    // C135: so do linked stone hexes (one boulder over the union, paintBoulders) and every non-ground hex beyond the map.
+    // C260 / C261: and lone stones (a rock cluster on the ground) and log hexes (one log per chain, paintLogChains)
     const under = new Map();
     for (let i = 0; i < n; i++) {
       const id = terrainId(ter[i]);
-      if (id === 'puddle' || id === 'garden_path' || boulder.has(i) || (i >= nMap && !GROUND_IDS.includes(id))) {
+      if (id === 'puddle' || id === 'garden_path' || id === 'stone' || id === 'log' || (i >= nMap && !GROUND_IDS.includes(id))) {
         under.set(i, groundUnder(ter, i, n));
       }
     }
@@ -592,7 +591,10 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
     paintPaths(g, season, linkSet(ter, nMap, 'garden_path'));
     paintPools(g, season, linkSet(ter, nMap, 'puddle'), under);
+    // C260: the rock and log passes come last and are not clipped, so they overhang neighbouring tiles naturally
     paintBoulders(g, season, { hexes: stones.hexes.filter((i) => boulder.has(i)), nb: stones.nb });
+    paintSingleStones(g, season, singles);
+    paintLogChains(g, season, linkSet(ter, nMap, 'log'));
   }
 
   /** C135: clip to the union of a set's hexes (corner radius SIZE: the fog / void hexes, 1.04 x SIZE, cover it). */
@@ -643,20 +645,23 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
   }
 
-  /** C135: boulders - adjacent stone hexes drawn as one shaded, cracked rock mass (single stones keep their own art). */
+  /**
+   * C135: boulders - adjacent stone hexes drawn as one shaded, cracked rock mass (lone stones: terrainArt).
+   * C260: painted unclipped in the last terrain pass, so the outline stays organic where it bulges past a hex edge
+   * (neighbouring tiles no longer cut it), on a soft ground shadow with a thin dark rim on the outer edge.
+   */
   function paintBoulders(g, season, set) {
     if (!set.hexes.length) return;
     const [base, detail] = terrainColor(season, 'stone');
     const mids = linkMids(set);
+    softShadow(g, (pad) => rockPath(g, set, 1, pad), SIZE * 0.07, SIZE * 0.12, 4, 0.09, 0.045);
     g.save();
-    clipToHexes(g, set.hexes);
-    // cast shadow (down-right), then the rock
-    g.save();
-    g.translate(SIZE * 0.08, SIZE * 0.14);
-    g.fillStyle = 'rgba(0,0,0,0.28)';
+    // the rim is stroked under the body fill, which hides it along the inner seams
+    g.strokeStyle = rgba(shade(base, -0.55), 0.6);
+    g.lineWidth = 2.6;
+    g.lineJoin = 'round';
     rockPath(g, set, 1, 0);
-    g.fill();
-    g.restore();
+    g.stroke();
     g.fillStyle = shade(base, -0.28);
     rockPath(g, set, 1, 0);
     g.fill();
@@ -1073,59 +1078,6 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         g.strokeStyle = rgba(shade(detail, 0.15), 0.6);
         g.lineWidth = 1;
         g.stroke();
-        break;
-      }
-      case 'stone': {
-        g.fillStyle = 'rgba(0,0,0,0.25)';
-        g.beginPath();
-        g.ellipse(x + 2, y + 4, SIZE * 0.62, SIZE * 0.42, 0, 0, Math.PI * 2);
-        g.fill();
-        g.fillStyle = base;
-        g.beginPath();
-        const pts = 7;
-        for (let k = 0; k < pts; k++) {
-          const ang = (k / pts) * 6.28;
-          const rr = SIZE * (0.55 + 0.15 * r(k));
-          const px = x + Math.cos(ang) * rr;
-          const py = y + Math.sin(ang) * rr * 0.8;
-          if (k === 0) g.moveTo(px, py);
-          else g.lineTo(px, py);
-        }
-        g.closePath();
-        g.fill();
-        g.fillStyle = 'rgba(255,255,255,0.22)';
-        g.beginPath();
-        g.ellipse(x - SIZE * 0.15, y - SIZE * 0.18, SIZE * 0.25, SIZE * 0.14, -0.4, 0, Math.PI * 2);
-        g.fill();
-        g.strokeStyle = 'rgba(50,50,55,0.4)';
-        g.lineWidth = 1;
-        g.beginPath();
-        g.moveTo(x - SIZE * 0.2, y + SIZE * 0.05);
-        g.lineTo(x + SIZE * 0.1, y + SIZE * 0.15);
-        g.stroke();
-        break;
-      }
-      case 'log': {
-        g.save();
-        g.translate(x, y);
-        g.rotate(r(3) * Math.PI);
-        g.fillStyle = 'rgba(0,0,0,0.25)';
-        g.fillRect(-SIZE * 0.85, -SIZE * 0.2, SIZE * 1.7, SIZE * 0.55);
-        g.fillStyle = base;
-        g.fillRect(-SIZE * 0.85, -SIZE * 0.3, SIZE * 1.7, SIZE * 0.55);
-        g.strokeStyle = shade(base, -0.3);
-        g.lineWidth = 1;
-        g.beginPath();
-        for (let k = 0; k < 4; k++) {
-          g.moveTo(-SIZE * 0.8, -SIZE * 0.2 + k * SIZE * 0.12);
-          g.lineTo(SIZE * 0.8, -SIZE * 0.2 + k * SIZE * 0.12);
-        }
-        g.stroke();
-        g.fillStyle = detail;
-        g.beginPath();
-        g.ellipse(SIZE * 0.85, -SIZE * 0.025, SIZE * 0.12, SIZE * 0.27, 0, 0, Math.PI * 2);
-        g.fill();
-        g.restore();
         break;
       }
       default:
@@ -2116,17 +2068,136 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     return ((s.run.events && s.run.events.objects) || []).filter((o) => o && o.hex >= 0 && o.kind !== 'mold' && OBJECT_ICON[o.kind]);
   }
 
-  function objectScreen(o) {
-    const p = hexToScreen(o.hex);
-    if (o.kind === 'rival_alate') {
-      return { x: p.x + Math.sin(time * 1.3 + o.uid) * 10 * curView.zoom, y: p.y - 10 * curView.zoom + Math.cos(time * 2.1 + o.uid) * 6 };
+  // C263: flying rival alates (ev_rival_mating_flight). Render-only flight state per object uid: a turn-rate-limited
+  // seek toward random points within ~2 hexes of the event's hex plus a slow wander term (curved, banking arcs), an
+  // altitude bob and a 4-frame wing flap (9 flaps/s); the body faces the flight direction, a soft shadow marks the
+  // ground point. Reduced motion: the alate hovers still over its hex, wings spread.
+  const ALATE_FLAP_HZ = 9;
+  const ALATE_MAX_TURN = 2.8;
+  /** @type {Map<number, any>} */
+  const flyers = new Map();
+
+  function wrapPi(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  }
+
+  function newFlyerTarget(f) {
+    const a = Math.random() * Math.PI * 2;
+    const r = SIZE * (0.35 + Math.random());
+    f.tx = f.hx + Math.cos(a) * r;
+    f.ty = f.hy + Math.sin(a) * r * 0.8;
+  }
+
+  function makeFlyer(o) {
+    const c = hexWorldPt(o.hex);
+    const k = hash01(o.uid, 5) * Math.PI * 2;
+    const f = { hex: o.hex, hx: c.x, hy: c.y, x: c.x + Math.cos(k) * 12, y: c.y + Math.sin(k) * 9, h: hash01(o.uid, 7) * Math.PI * 2,
+      roll: 0, turn: 0, tx: c.x, ty: c.y, alt: 10, flap: hash01(o.uid, 3), ph: hash01(o.uid, 9) * Math.PI * 2 };
+    newFlyerTarget(f);
+    return f;
+  }
+
+  function updateFlyers(s, dt) {
+    const seen = new Set();
+    for (const o of objectsList(s)) {
+      if (o.kind !== 'rival_alate') continue;
+      seen.add(o.uid);
+      let f = flyers.get(o.uid);
+      if (!f || f.hex !== o.hex) {
+        f = makeFlyer(o);
+        flyers.set(o.uid, f);
+      }
+      if (reduced) {
+        f.x = f.hx;
+        f.y = f.hy;
+        f.roll = 0;
+        f.alt = 10;
+        continue;
+      }
+      const dx = f.tx - f.x;
+      const dy = f.ty - f.y;
+      if (Math.hypot(dx, dy) < 7 || Math.hypot(f.x - f.hx, f.y - f.hy) > SIZE * 1.9) newFlyerTarget(f);
+      const want = Math.atan2(f.ty - f.y, f.tx - f.x) + 0.55 * Math.sin(time * 0.9 + f.ph);
+      const turn = clamp(wrapPi(want - f.h) * 2.4, -ALATE_MAX_TURN, ALATE_MAX_TURN);
+      f.turn += (turn - f.turn) * Math.min(1, dt * 6);
+      f.h = wrapPi(f.h + f.turn * dt);
+      f.roll += (clamp(f.turn / ALATE_MAX_TURN, -1, 1) - f.roll) * Math.min(1, dt * 4);
+      const sp = SIZE * 1.15 * (0.85 + 0.25 * Math.sin(time * 0.8 + f.ph)) * (1 - 0.3 * Math.abs(f.roll));
+      f.x += Math.cos(f.h) * sp * dt;
+      f.y += Math.sin(f.h) * sp * dt;
+      f.alt = 10 + 2.6 * Math.sin(time * 2.4 + f.ph) + 1.2 * Math.sin(time * 5.3 + f.ph * 2);
+      f.flap += dt;
     }
-    return p;
+    for (const uid of [...flyers.keys()]) if (!seen.has(uid)) flyers.delete(uid);
+  }
+
+  /** Screen position of a flying alate's body (`x, y`) and its ground point (`gx, gy`). */
+  function flyerScreen(f) {
+    const z = curView.zoom;
+    const g = w2s(f.x, f.y);
+    const side = 1.6 * f.roll * z;   // banking slides the body a touch into the turn
+    return { gx: g.x, gy: g.y, x: g.x - Math.sin(f.h) * side, y: g.y - f.alt * z + Math.cos(f.h) * side };
+  }
+
+  function drawFlyers(ctx, s) {
+    const size = iconSize();
+    const z = curView.zoom;
+    const list = [];
+    for (const o of objectsList(s)) {
+      if (o.kind !== 'rival_alate') continue;
+      const f = flyers.get(o.uid);
+      if (!f) continue;
+      const p = flyerScreen(f);
+      if (visiblePt(p, 80)) list.push({ o, f, p });
+    }
+    for (const { f, p } of list) {
+      // soft ground shadow, smaller and fainter the higher the alate flies
+      const k = clamp(1.15 - f.alt / 40, 0.6, 1.1);
+      const r = size * 0.36 * k;
+      ctx.save();
+      ctx.translate(p.gx + 2.5 * z + f.roll * 1.5 * z, p.gy + 1.5 * z);
+      ctx.rotate(f.h);
+      ctx.scale(1, 0.55);
+      const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+      gr.addColorStop(0, `rgba(0,0,0,${0.3 * k})`);
+      gr.addColorStop(0.6, `rgba(0,0,0,${0.16 * k})`);
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = gr;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    list.sort((a, b) => a.p.gy - b.p.gy);
+    for (const { o, f, p } of list) {
+      const fr = reduced ? 0 : Math.floor((f.flap * ALATE_FLAP_HZ + hash01(o.uid, 1)) * 4) % 4;
+      atlas.drawFlyingAlate(ctx, fr, p.x, p.y, size, f.h, 1 - 0.18 * Math.abs(f.roll));
+      if (o.t > 0 && o.t < 600 && o.data && o.data.tMax > 0) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, size * 0.55, -Math.PI / 2, -Math.PI / 2 + clamp(o.t / o.data.tMax, 0, 1) * Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function objectScreen(o) {
+    if (o.kind === 'rival_alate') {
+      const f = flyers.get(o.uid);
+      if (f && f.hex === o.hex) return flyerScreen(f);
+      const p = hexToScreen(o.hex);
+      return { x: p.x, y: p.y - 10 * curView.zoom };
+    }
+    return hexToScreen(o.hex);
   }
 
   function drawObjects(ctx, s) {
     const size = iconSize();
     for (const o of objectsList(s)) {
+      if (o.kind === 'rival_alate') continue;   // C263: drawn in flight above the ants (drawFlyers)
       const p = objectScreen(o);
       if (!visiblePt(p, 80)) continue;
       if (o.kind === 'footstep') {
@@ -2604,14 +2675,31 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
   }
 
-  function drawSprites(ctx) {
+  /**
+   * C262: the job colour of a sprite group (the Colony-tab chip colour, worn on the gaster): trail workers by the
+   * trail's job, escorts and the garrison as soldiers, scouts, loose foragers.
+   */
+  function groupJobColor(s, g) {
+    const trails = s.run.surface.trails || [];
+    const T = trails.length;
+    if (g < T) {
+      const tr = trails[g];
+      return JOB_COLORS[(tr && tr.job) || 'forager'] || JOB_COLORS.forager;
+    }
+    if (g < 2 * T || g === 2 * T + 1) return JOB_COLORS.soldier;
+    if (g === 2 * T) return JOB_COLORS.scout;
+    return JOB_COLORS.forager;
+  }
+
+  function drawSprites(ctx, s) {
     const unit = 11 * Math.pow(curView.zoom, 0.75);
     let n = 0;
     for (let i = 0; i < pool.n; i++) {
       if (pool.state[i] === ST.AWAY) continue;
       const p = w2s(pool.x[i], pool.y[i]);
       if (!visiblePt(p, 10)) continue;
-      atlas.drawAnt(ctx, pool.type[i], CARRY_CODES[pool.carry[i]] || 'none', pool.a[i], Math.floor(pool.anim[i]) & 1, p.x, p.y, unit);
+      atlas.drawAnt(ctx, pool.type[i], CARRY_CODES[pool.carry[i]] || 'none', pool.a[i], Math.floor(pool.anim[i]) & 1, p.x, p.y, unit,
+        undefined, undefined, groupJobColor(s, pool.path[i]));
       n++;
     }
     return n;
@@ -2938,6 +3026,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     drawSources(ctx, s, d);
     drawRivals(ctx, s);
     drawRaidArrows(ctx, s);
+    updateFlyers(s, dt);
     drawObjects(ctx, s);
     ambientMs = ambientMs * 0.9 + (nowMs() - tAmb) * 0.1;
     drawGolden(ctx, s);
@@ -2948,7 +3037,8 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       realloc(s, d);
     }
     updateSprites(s, d, dt);
-    if (!ceremonyHidesSurfaceSprites()) drawSprites(ctx);
+    if (!ceremonyHidesSurfaceSprites()) drawSprites(ctx, s);
+    drawFlyers(ctx, s);
     drawParties(ctx, s);
     battles.sync(s, fxWorld, hexWorldPt);
     battles.update(dt, fxWorld, hexWorldPt);
