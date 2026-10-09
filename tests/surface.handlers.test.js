@@ -266,23 +266,14 @@ test('flagHex needs antennation; toggles a fogged hex in the flag list', () => {
   assert.deepEqual(s.run.surface.flagged, []);
 });
 
-test('buyMound: unlock, soil cost, levels above 5 need mound_building; autoMoundStep buys one level', () => {
+test('C220 / C246: there is no buyMound command and no Mound autobuyer step (the Mound grows on its own)', () => {
   const { s, d } = world();
-  assert.equal(run(s, d, { type: 'buyMound' }).reason, 'locked');
   s.run.unlocked.mound = true;
-  assert.equal(run(s, d, { type: 'buyMound' }).reason, 'cantAfford');
   s.run.res.soil = 1e6;
-  const r = run(s, d, { type: 'buyMound' });
-  assert.equal(r.reason, null);
-  assert.equal(s.run.surface.mound, 1);
-  assert.equal(s.run.res.soil, 1e6 - MOUND.base);
-  assert.ok(r.events.some((e) => e.type === 'moundLeveled' && e.level === 1));
-  s.run.surface.mound = MOUND.freeMax;
-  assert.equal(run(s, d, { type: 'buyMound' }).reason, 'requirements');
-  assert.equal(surface.autoMoundStep(s, d, fakeEnv()), false);
-  s.run.research.mound_building = 1;
-  assert.equal(surface.autoMoundStep(s, d, fakeEnv()), true);
-  assert.equal(s.run.surface.mound, MOUND.freeMax + 1);
+  assert.equal(surface.handlers.buyMound, undefined);
+  assert.equal(surface.autoMoundStep, undefined);
+  assert.equal(surface.moundCost(s), null);
+  assert.equal(s.run.res.soil, 1e6);
 });
 
 test('moveAphids moves a colony onto an owned plant hex and re-routes its trails', () => {

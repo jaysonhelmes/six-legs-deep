@@ -378,7 +378,10 @@ export function attachSurfaceInput(canvas, renderer, { game, ui, bridge } = {}) 
         }
         case 'moveAphids': {
           const res = act('moveAphids', { src: tool.src, hex }, cx, cy);
-          if (res.ok) setUI(ui, { tool: null });
+          if (res.ok) {
+            setUI(ui, { tool: null });
+            call(bridge, 'toast', 'Aphid colony moved: its trail now leads to the new hex.', 'good');   // C237
+          }
           return;
         }
         case 'tournament': {
@@ -402,10 +405,20 @@ export function attachSurfaceInput(canvas, renderer, { game, ui, bridge } = {}) 
       case 'gift':
         act('openGift', { index: t.id }, cx, cy);
         break;
-      case 'eventObject':
-        act('clickEventObject', { uid: t.id }, cx, cy);
+      case 'eventObject': {
+        // C185: an antlion pit is cleared by garrison soldiers (the refusal says how many are needed)
+        const o = ((s.run.events && s.run.events.objects) || []).find((x) => x && x.uid === t.id);
+        // C244: a click on an object whose click is already queued for the next tick (spam-clicking an alate) is ignored
+        if (game && Array.isArray(game.queue) && game.queue.some((c) => c && (c.type === 'clickEventObject' || c.type === 'clearAntlion') && c.uid === t.id)) break;
+        act(o && o.kind === 'antlion' ? 'clearAntlion' : 'clickEventObject', { uid: t.id }, cx, cy);
         break;
+      }
       case 'rival':
+        call(bridge, 'select', t);
+        call(bridge, 'openTab', 'map', 'war');
+        break;
+      // C248: the red warning arrow of an incoming raid → Map → War, scrolled to that raid (dispatch / defence)
+      case 'raid':
         call(bridge, 'select', t);
         call(bridge, 'openTab', 'map', 'war');
         break;

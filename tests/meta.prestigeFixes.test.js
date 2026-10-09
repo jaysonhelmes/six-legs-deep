@@ -73,7 +73,7 @@ test('F11: alates are spendable while the landing chooser is open, and run-start
   assert.equal(s.run.res.food >= FOUNDING_STORES[1].food, true, 'Founding Stores food in the new run');
   assert.equal(s.run.colony.naniticsLeft, TRAITS.nanitic_vigor.fx.eggs, 'Nanitic Vigor in the new run');
   assert.ok(s.run.surface.trails.length > 1, 'Remembered Paths drew a trail besides the crumb trail');
-  assert.equal(s.run.colony.autoJobs, true, 'Automaton Instincts automation in the new run');
+  assert.equal(s.run.colony.autoJobs, false, 'C166: Automaton Instincts no longer makes automatic jobs innate (Automated Brood does)');
   assert.equal(seasons.seasonAt(s.meta, s.meta.season.t).id, 'summer');
 });
 

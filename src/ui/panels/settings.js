@@ -6,24 +6,41 @@
 
 import { h, setText, setProp, show, clear, doc } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtPct, setNotation } from '../format.js';
-import { cosmeticSlot, COSMETIC_SLOTS, cosmeticName, equippedCosmeticId } from '../text.js';
+import { cosmeticSlot, COSMETIC_SLOTS, cosmeticName, equippedCosmeticId, cosmeticUnlock } from '../text.js';
 import { COSMETICS, COSMETIC_SLOT_ORDER } from '../../data/cosmetics.js';
 import { num, obj } from '../reveal.js';
 import { adultsTotal } from '../../core/state.js';
 import { makeAct, sliderRow, note } from './common.js';
 import { versionLabel } from '../patchNotes.js';
 import { CURRENT_VERSION } from '../../data/changelog.js';
+import { SOUND_COPY } from '../text.js';
+import { getActiveSound, SOUND_CATEGORIES } from '../sound.js';
 
 const NOTATIONS = [['suffix', 'Suffixes (1.23M)'], ['scientific', 'Scientific (1.23e6)'], ['engineering', 'Engineering (1.23e6)']];
 const AUTOSAVE = [[15, 'Every 15 s'], [30, 'Every 30 s'], [60, 'Every minute'], [0, 'Off (still saves on hide)']];
 const NAME_MAX = 40;
+
+/**
+ * C241 [pure]: one "how to unlock" line of a cosmetic, e.g. "✓ Crown (Queen, owned): Unlocked by the achievement
+ * Queen's Favourite: Click the queen 500 times." Secret, unearned achievements stay hidden.
+ * @param {string} id
+ * @param {Object} s
+ * @returns {string}
+ */
+export function cosmeticUnlockLine(id, s) {
+  const owned = !!(s && s.meta && s.meta.cosmetics && s.meta.cosmetics.owned && s.meta.cosmetics.owned[id] === true);
+  const def = COSMETICS[id];
+  const slot = def ? (COSMETIC_SLOTS[def.slot] || def.slot) : '';
+  return (owned ? '✓ ' : '• ') + cosmeticName(id) + ' (' + (slot ? slot + ', ' : '') + (owned ? 'owned' : 'locked') + '): '
+    + cosmeticUnlock(id, s).text;
+}
 /**
  * Keyboard shortcuts (DESIGN §25.4, ARCHITECTURE §14.2) and the view camera controls (render/nestInput.js,
  * render/surfaceInput.js) for the Settings reference list. View keys act on the view you clicked last.
  */
 export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab: Colony, Build, Map, Adaptations, Research, Prestige, Achievements, Field Guide, Stats'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
-  ['R', 'Rally the selected trail; relocate the selected chamber'],
-  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected)'],
+  ['R', 'Rally the selected trail; relocate the chamber under the cursor (or the selected one); R again or right-click cancels'],
+  ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected); Q again puts the tool away'],
   ['F / right-click', 'While placing: pick the corner the new chamber starts in'], ['G', 'Pick the growth side (older chambers without a reserved space)'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
   ['+ / −', 'Zoom the clicked view in or out'], ['0 / Home', 'Nest view: frame the queen'],
@@ -131,6 +148,49 @@ function legacyCopy(el) {
 }
 
 /**
+ * C234: the Sound section: master switch, volume, one switch per category and a Test button. Reads and writes the
+ * shell's sound engine (`getEngine()`; null → the section says sound is unavailable).
+ * @param {() => Object|null} getEngine
+ * @returns {{ el: HTMLElement, update(): void }}
+ */
+export function soundControls(getEngine) {
+  const C = SOUND_COPY;
+  const eng = () => { try { return getEngine ? getEngine() : null; } catch { return null; } };
+  const put = (patch) => { const e = eng(); if (e) e.setSettings(patch); update(); };
+  const master = h('input', { type: 'checkbox', class: 'check', attrs: { 'aria-label': C.master } });
+  master.addEventListener('change', () => put({ on: !!master.checked }));
+  const volume = sliderRow(C.volume, { min: 0, max: 100, step: 5, tip: C.volumeTip }, (v) => put({ volume: Math.max(0, Math.min(1, v / 100)) }));
+  const cats = {};
+  const catRows = SOUND_CATEGORIES.map((k) => {
+    const input = h('input', { type: 'checkbox', class: 'check', attrs: { 'aria-label': C[k] } });
+    input.addEventListener('change', () => put({ [k]: !!input.checked }));
+    cats[k] = input;
+    return h('label', { class: 'toggle-row sound-cat', dataset: { tip: C[k + 'Tip'] } }, input, h('span', { text: C[k] }));
+  });
+  const testBtn = h('button', { type: 'button', class: 'btn btn-small', text: C.test, dataset: { tip: C.testTip },
+    on: { click: () => { const e = eng(); if (e) { e.unlock(); e.play('buy'); } } } });
+  const msg = note(C.note);
+  const body = h('div', { class: 'sound-body' }, volume.el, h('div', { class: 'sound-cats' }, catRows), h('div', { class: 'btn-row' }, testBtn));
+  const el = h('section', { class: 'sec sec-sound' }, h('h3', { class: 'sec-title', text: C.title }),
+    h('label', { class: 'toggle-row', dataset: { tip: C.masterTip } }, master, h('span', { text: C.master })), body, msg);
+  function update() {
+    const e = eng();
+    const st = e ? e.getSettings() : null;
+    setProp(master, 'disabled', !st);
+    setProp(master, 'checked', !!(st && st.on));
+    show(body, !!(st && st.on));
+    if (st) {
+      const pct = Math.round(st.volume * 100);
+      volume.set(pct, { text: pct + '%', fmt: (v) => Math.round(v) + '%' });
+      for (const k of SOUND_CATEGORIES) setProp(cats[k], 'checked', !!st[k]);
+    }
+    setText(msg, st ? C.note : C.unavailable);
+  }
+  update();
+  return { el, update };
+}
+
+/**
  * Settings panel.
  * @param {HTMLElement} root
  * @param {{ game: Object, ui: Object, bridge: Object, dialogs?: Object, appRoot?: HTMLElement }} ctx
@@ -216,13 +276,17 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
   const photoBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Photo mode', dataset: { tip: 'Hide the interface and save a picture of your colony.' },
     on: { click: () => enterPhoto() } });
 
+  // --- sound (C234: per-browser settings in ui/sound.js, not in the save) ---
+  const soundUi = soundControls(getActiveSound);
+
   el.append(
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Display' }),
       h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Number format' }), notation),
       mkToggle('reducedMotion', 'Reduced motion', 'Fewer particles and animations.'),
-      mkToggle('sound', 'Sound', 'Soft chimes for reveals.'),
       mkToggle('showScaleLabel', 'Show "1 ● = K ants" labels', 'How many ants each dot stands for.')),
-    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Gameplay' }), retreat.el,
+    // C187: the auto-retreat slider moved to the war party (Map → War and the war-party chooser)
+    soundUi.el,
+    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Gameplay' }), note('Auto-retreat is set with your war party: Map → War.'),
       mkToggle('harshNature', 'Harsh nature', 'Starvation can kill adults. Optional.'), harshWarn),
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Names' }),
       h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Colony' }), colonyName),
@@ -252,10 +316,23 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
     if (cosBox.__sig === sig) return;
     cosBox.__sig = sig;
     clear(cosBox);
-    if (!owned.length) {
-      cosBox.appendChild(note('Earn achievements to unlock palettes, mound skins, flags and more.'));
-      return;
-    }
+    if (!owned.length) cosBox.appendChild(note('Earn achievements to unlock palettes, mound skins, flags and more.'));
+    else renderOwnedSlots(s, owned);
+    cosBox.appendChild(cosmeticUnlockList(s));
+  }
+
+  /** C241: every cosmetic with how it is unlocked (owned and locked). */
+  function cosmeticUnlockList(s) {
+    const owned = obj(s.meta.cosmetics && s.meta.cosmetics.owned);
+    const rank = (id) => COSMETIC_SLOT_ORDER.indexOf(COSMETICS[id].slot) + 1 || 99;
+    const ids = Object.keys(COSMETICS).sort((a, b) => rank(a) - rank(b));
+    return h('div', { class: 'cos-unlocks', dataset: { role: 'cos-unlocks' } },
+      h('p', { class: 'note', text: 'How to unlock:' }),
+      ids.map((id) => h('p', { class: 'note cos-unlock ' + (owned[id] === true ? 'owned' : 'locked'), dataset: { id },
+        text: cosmeticUnlockLine(id, s) })));
+  }
+
+  function renderOwnedSlots(s, owned) {
     const bySlot = {};
     for (const id of owned) (bySlot[cosmeticSlot(id)] ||= []).push(id);
     const slots = Object.keys(bySlot).sort((a, b) => (COSMETIC_SLOT_ORDER.indexOf(a) + 1 || 99) - (COSMETIC_SLOT_ORDER.indexOf(b) + 1 || 99));
@@ -323,6 +400,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
       setProp(colonyName, 'value', st.colonyName || '');
       setProp(queenName, 'value', st.queenName || '');
       renderCosmetics(s);
+      soundUi.update();
       const saved = num(s.meta.savedAt);
       const ago = Math.max(0, (Date.now() - saved) / 1000);
       setText(saveState, !game.storageOk ? 'Saving unavailable in this browser: use Export.'

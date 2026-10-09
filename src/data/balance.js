@@ -28,11 +28,64 @@ export const CLICK_CAP = 15;
 /** One-shot food rewards may push food up to this multiple of the cap. */
 export const FOOD_OVERFLOW = 2;
 
-/** Nest grid geometry. */
+/**
+ * C215: nest width. The base nest is 40 columns; a run can start wider (Satellite Nest levels, see nest.runStartCols),
+ * by the same number of columns on each side, so the main shaft and the Royal Chamber stay centred. The width of the
+ * nest being worked on is the "active" width: nestgeom.syncCols(s) sets it from s.run.nest.cols before any nest work
+ * (derive, tick, queries, each render frame), and GRID.cols / GRID.mainCol / GRID.royal read it. Old saves and every
+ * run without the bonus are 40 wide, exactly as before; a run's width never changes mid-run, so stored cell indices
+ * never move.
+ */
+const BASE_COLS = 40;
+const MAX_COLS = 64;
+let activeCols = BASE_COLS;
+const ROYAL_BASE = Object.freeze({ x: 18, y: 20, w: 4, h: 2 });
+const royalByCols = new Map();
+
+/**
+ * C215: the layout of a nest `cols` wide (even, 40–64): { cols, mainCol, royal }. 40 → main shaft 20, Royal 18–21.
+ * @param {number} cols
+ * @returns {{ cols: number, mainCol: number, royal: { x: number, y: number, w: number, h: number } }}
+ */
+export function nestLayout(cols) {
+  const c = validCols(cols) ? cols : BASE_COLS;
+  const side = (c - BASE_COLS) / 2;
+  let royal = royalByCols.get(c);
+  if (!royal) {
+    royal = Object.freeze({ x: ROYAL_BASE.x + side, y: ROYAL_BASE.y, w: ROYAL_BASE.w, h: ROYAL_BASE.h });
+    royalByCols.set(c, royal);
+  }
+  return { cols: c, mainCol: 20 + side, royal };
+}
+
+/** C215: an allowed nest width (an even integer from 40 to 64). */
+export function validCols(n) {
+  return Number.isInteger(n) && n >= BASE_COLS && n <= MAX_COLS && n % 2 === 0;
+}
+
+/** C215: set the active nest width (nestgeom.useCols / syncCols call this; anything invalid means 40). */
+export function setActiveNestCols(n) {
+  activeCols = validCols(n) ? n : BASE_COLS;
+  return activeCols;
+}
+
+/** Nest grid geometry. cols, mainCol and royal follow the active nest width (C215); base* are the 40-wide values. */
 export const GRID = deepFreeze({
-  cols: 40, rows: 80, cellPx: 12, visibleRows: 45, mainCol: 20, shaftRows: 20,
-  royal: { x: 18, y: 20, w: 4, h: 2 },
+  get cols() { return activeCols; },
+  rows: 80, cellPx: 12, visibleRows: 45, shaftRows: 20,
+  get mainCol() { return nestLayout(activeCols).mainCol; },
+  get royal() { return nestLayout(activeCols).royal; },
+  baseCols: BASE_COLS, maxCols: MAX_COLS, baseMainCol: 20, baseRoyal: ROYAL_BASE,
+  /** C215: extra columns on each side per Satellite Nest level at run start (up to maxCols). */
+  colsPerSide: 4,
 });
+
+/**
+ * C252: hard cap on how fast the nest changes, however strong the diggers get (ARCHITECTURE §18 C252): at most
+ * digCellsPerSec dug cells per second of game time (each Help Dig click may finish up to helpCells more) and at most
+ * backfillCellsPerSec backfilled cells per second. Dig work past the cap becomes maintenance (soil is still earned).
+ */
+export const DIG_CAP = deepFreeze({ digCellsPerSec: 25, backfillCellsPerSec: 20, helpCells: 2 });
 
 /** Nest cell codes stored in s.run.nest.cells. */
 export const CELL = deepFreeze({ SOIL: 0, TUNNEL: 1, CHAMBER: 2, STONE: 3, WATER: 4 });

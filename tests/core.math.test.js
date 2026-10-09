@@ -11,7 +11,9 @@ test('balance.js matches ARCHITECTURE §6.1 exactly', () => {
   assert.equal(B.COST_MAX, 1e280);
   assert.equal(B.CLICK_CAP, 15);
   assert.equal(B.FOOD_OVERFLOW, 2);
-  assert.deepEqual(B.GRID, { cols: 40, rows: 80, cellPx: 12, visibleRows: 45, mainCol: 20, shaftRows: 20, royal: { x: 18, y: 20, w: 4, h: 2 } });
+  // C215: cols / mainCol / royal follow the active nest width (40 unless a wider run is active); base* are fixed
+  assert.deepEqual({ ...B.GRID }, { cols: 40, rows: 80, cellPx: 12, visibleRows: 45, mainCol: 20, shaftRows: 20, royal: { x: 18, y: 20, w: 4, h: 2 },
+    baseCols: 40, maxCols: 64, baseMainCol: 20, baseRoyal: { x: 18, y: 20, w: 4, h: 2 }, colsPerSide: 4 });
   assert.deepEqual(B.CELL, { SOIL: 0, TUNNEL: 1, CHAMBER: 2, STONE: 3, WATER: 4 });
   assert.deepEqual(B.HEX, { maxRadius: 16, count: 817, px: 26 });
   assert.deepEqual(B.SOFTCAPS, {

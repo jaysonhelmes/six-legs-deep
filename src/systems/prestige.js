@@ -25,7 +25,7 @@
 import { SOFTCAPS, CLAMP_MAX, GRID, HEX, CELL } from '../data/balance.js';
 import {
   FLIGHT, LINEAGE, LINEAGE_LAY_EXP, SUPER, SPEC, PASSIVE, ACH_BONUS, ACH_META, HARDSHIP_ORDER, HARDSHIPS, SITES, SITE_ORDER,
-  BOONS, BOON_ORDER, EDICTS, LANDING, RESET, FOUNDING_STORES, LANDING_USELESS,
+  BOONS, BOON_ORDER, EDICTS, LANDING, RESET, FOUNDING_STORES, LANDING_USELESS, AUTO_FLIGHT,
 } from '../data/prestige.js';
 import { TRAITS } from '../data/bloodline.js';
 import { FEDERATION } from '../data/federation.js';
@@ -173,6 +173,18 @@ function alatesMult(s) {
  * @returns {number}
  */
 export function projectAlates(s, d) {
+  return Math.floor(clampNum(alatesUnfloored(s, d, true)));
+}
+
+/**
+ * The softcapped, unfloored alates projection; `weather` false leaves out the weather factor W (C166: the Auto-Flight
+ * peak rule watches this weather-free value, so a season change or a Flight Day never looks like a falling rate).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {boolean} [weather=true]
+ * @returns {number}
+ */
+export function alatesUnfloored(s, d, weather = true) {
   const run = s.run;
   const fRun = num(run.fRun);
   if (!(fRun > 0)) return 0;
@@ -181,20 +193,50 @@ export function projectAlates(s, d) {
   const vaultL = d && d.nest && d.nest.agg ? num(d.nest.agg.deepVaultL) : 0;
   const vault = num(fxOf(CHAMBERS, 'deep_vault').alates) * vaultL;
   const raw = FLIGHT.base * (fRun / FLIGHT.div) ** FLIGHT.exp * (1 + num(run.tPeak) / FLIGHT.tPeakDiv)
-    * (1 + FLIGHT.rearedPer * reared) * flightW(s, d) * alatesMult(s) * (1 + vault);
-  return Math.floor(clampNum(scChain(raw, SOFTCAPS.alates).value));
+    * (1 + FLIGHT.rearedPer * reared) * (weather ? flightW(s, d) : 1) * alatesMult(s) * (1 + vault);
+  return num(scChain(raw, SOFTCAPS.alates).value);
+}
+
+/** Kinship for an alate total (DESIGN §14.2): floor(SC_kinship(2 × (alates / 1000)^0.35)). */
+function kinshipOf(a) {
+  if (!(a > 0)) return 0;
+  return Math.floor(clampNum(scChain(SUPER.mult * (a / SUPER.div) ** SUPER.exp, SOFTCAPS.kinship).value));
 }
 
 /**
- * Projected kinship of a merge now (DESIGN §14.2): floor(SC_kinship(2 × (alatesCycle / 1000)^0.35)).
+ * C168: the kinship formula's terms with the player's values. A Supercolony counts the merging run's projected alates
+ * as if that run had flown: alates = alatesCycle (banked by flights) + projectAlates (this run).
+ * nextAt = the alate total that gives one more kinship (null when past the softcap's reach of this search).
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @returns {{ banked: number, run: number, total: number, raw: number, softcapped: boolean, kinship: number, nextAt: number|null }}
+ */
+export function kinshipBreakdown(s, d) {
+  const banked = num(s.cycle.alatesCycle);
+  const run = projectAlates(s, d);
+  const total = clampNum(banked + run);
+  const raw = total > 0 ? SUPER.mult * (total / SUPER.div) ** SUPER.exp : 0;
+  const sc = scChain(raw, SOFTCAPS.kinship);
+  const kinship = kinshipOf(total);
+  // Alates for kinship + 1, ignoring the softcap (1e5 kinship is far beyond a merge's reach); verified upward.
+  let nextAt = SUPER.div * ((kinship + 1) / SUPER.mult) ** (1 / SUPER.exp);
+  if (!Number.isFinite(nextAt) || nextAt > CLAMP_MAX) nextAt = null;
+  else {
+    nextAt = Math.ceil(nextAt);
+    for (let i = 0; i < 8 && kinshipOf(nextAt) <= kinship; i++) nextAt = Math.ceil(nextAt * 1.0001 + 1);
+  }
+  return { banked, run, total, raw, softcapped: !!sc.capped, kinship, nextAt };
+}
+
+/**
+ * Projected kinship of a merge now (DESIGN §14.2, C168): floor(SC_kinship(2 × ((alatesCycle + this run's projected
+ * alates) / 1000)^0.35)).
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @returns {number}
  */
 export function projectKinship(s, d) {
-  const a = num(s.cycle.alatesCycle);
-  if (!(a > 0)) return 0;
-  return Math.floor(clampNum(scChain(SUPER.mult * (a / SUPER.div) ** SUPER.exp, SOFTCAPS.kinship).value));
+  return kinshipOf(num(s.cycle.alatesCycle) + projectAlates(s, d));
 }
 
 /**
@@ -357,6 +399,16 @@ export function tick(s, d, dt, env) {
     pr.peakRate = clampNum(p.perMin);
     pr.peakAt = run.time;
   }
+  // C166 Auto-Flight peak rule: the weather-free, unfloored rate, its best this run, and since when it has been more
+  // than (1 − AUTO_FLIGHT.drop) below that best (counted only from AUTO_FLIGHT.minSec; -1 = not below).
+  // Saved peak/hold state only moves when time passes: a zero-time derive pass (load, import) must not change s.
+  if (dt > 0) {
+    const calm = run.time > 0 ? alatesUnfloored(s, d, false) / (run.time / 60) : 0;
+    if (Number.isFinite(calm) && calm > num(pr.calmPeak)) pr.calmPeak = clampNum(calm);
+    const below = run.time >= AUTO_FLIGHT.minSec && num(pr.calmPeak) > 0 && calm < AUTO_FLIGHT.drop * pr.calmPeak;
+    if (!below) pr.belowAt = -1;
+    else if (!(Number.isFinite(pr.belowAt) && pr.belowAt >= 0)) pr.belowAt = run.time;
+  }
   // Ending: emitted once per derived cache while unacknowledged (the UI acknowledges with uiFlag 'ending').
   if (!env || env.offline || s.meta.flags.endingSeen || m._ending) return;
   if (num(m.census) >= RESET.endingCensus) {
@@ -445,9 +497,16 @@ export function startRun(s, d, opts) {
 
   // Nest.
   const royalCount = Number.isFinite(sp.royalStart) && sp.royalStart > 0 ? sp.royalStart : 1;
+  // C215: the run's nest width is decided now (Satellite Nest levels widen it), and never changes during the run
+  const cols = nest.runStartCols(s);
   const genNest = nestgen.generateNest(run.seed, {
-    tags: run.landingTags.slice(), rootCols: Array.isArray(map.rootCols) ? map.rootCols.slice() : [], royalCount });
-  if (genNest && Array.isArray(genNest.cells) && genNest.cells.length === GRID.cols * GRID.rows) run.nest = plainCopy(genNest);
+    tags: run.landingTags.slice(), rootCols: Array.isArray(map.rootCols) ? map.rootCols.slice() : [], royalCount, cols });
+  if (genNest && Array.isArray(genNest.cells) && genNest.cells.length === cols * GRID.rows) {
+    run.nest = plainCopy(genNest);
+    // the main entrance sits on the (centred) main shaft column of this width
+    const mainCol = genNest.shafts && genNest.shafts[0] ? genNest.shafts[0].col : GRID.baseMainCol;
+    for (const e of run.surface.entrances) if (e && e.kind === 'main') e.col = mainCol;
+  }
 
   rivals.spawnInitial(s, d, Array.isArray(map.rivalSpecs) ? map.rivalSpecs.slice() : []);
   research.grantInnate(s);
@@ -464,13 +523,15 @@ export function startRun(s, d, opts) {
   if (carry > 0) population.addAdults(s, d, 'minor', carry, { capped: false });
   if (lv(tr, 'nanitic_vigor') > 0) run.colony.naniticsLeft = TRAITS.nanitic_vigor.fx.eggs;
 
-  // Automation carry (C39): job targets with automaton_instincts or automated_brood; caste targets with automated_brood.
-  const auto = lv(tr, 'automaton_instincts') > 0 || lv(fed, 'automated_brood') > 0;
+  // Automation carry (C39, C166): job targets with automaton_instincts or automated_brood; automatic jobs (ratio +
+  // thresholds) are innate with automated_brood only. Automaton Instincts switches the modes on when they are known this
+  // run anyway (Age Polyethism / Response Thresholds, e.g. Innate); caste targets carry with automated_brood.
+  const brood = lv(fed, 'automated_brood') > 0;
   const keep = s.meta.automation.keep || {};
-  if (auto) {
+  if (brood || lv(tr, 'automaton_instincts') > 0) {
     copyTargets(run.colony.jobTargets, keep.jobTargets);
-    run.colony.autoJobs = true;
-    run.colony.thresholdJobs = true;
+    run.colony.autoJobs = brood || !!run.research.age_polyethism;
+    run.colony.thresholdJobs = brood || !!run.research.response_thresholds;
   }
   // C151: caste target counts + "Keep berths filled" flags. keep.casteFill holds a boolean only for castes the player
   // set; those (and any caste with a carried target > 0) count as set this run, so the first Barracks / War Hall does
@@ -516,7 +577,9 @@ export function startRun(s, d, opts) {
   const startSeason = typeof o.startSeason === 'string' && Object.prototype.hasOwnProperty.call(SEASON_MODS, o.startSeason)
     ? o.startSeason : seasons.chronoStart(s);
   if (startSeason) seasons.setSeason(s, startSeason);
-  if (Number.isInteger(s.era.activeBlueprint) && s.era.activeBlueprint >= 0 && s.era.blueprints[s.era.activeBlueprint]) {
+  // C258: an active blueprint is applied only with Ancestral Blueprint (Bloodline) or Blueprint Library (Federation)
+  if (Number.isInteger(s.era.activeBlueprint) && s.era.activeBlueprint >= 0 && s.era.blueprints[s.era.activeBlueprint]
+    && nest.blueprintsAllowed(s)) {
     nest.applyBlueprint(s, d);
   }
   if (o.env && typeof o.env.emit === 'function') o.env.emit('runStarted', { index: run.index });
@@ -552,7 +615,13 @@ function runEndBookkeeping(s, kind, gain) {
     if (era.researchRuns[id] >= need) era.innate[id] = true;
   }
   const strata = s.meta.strata;
-  strata.push({ kind, cells: strataSilhouette(s.run.nest.cells), at: s.meta.simTime, ...strataMeta(s, gain) });
+  const rec = { kind, cells: strataSilhouette(s.run.nest.cells), at: s.meta.simTime, ...strataMeta(s, gain) };
+  // C219: the chambers (type, rectangle, level) for the Colony History drawing; C215: the nest width when it is not 40
+  const ch = nest.strataChambers(s.run.nest.chambers);
+  if (ch) rec.ch = ch;
+  const cols = nest.nestCols(s);
+  if (cols !== GRID.baseCols) rec.cols = cols;
+  strata.push(rec);
   while (strata.length > RESET.strataMax) strata.shift();
   compactStrata(strata);
   if (kind === 'run') {
@@ -634,7 +703,7 @@ export function landingPool(hardship) {
  * Landing chooser for a flight (3 seeded options with 1–2 tags, 3 boons), drawn from the main RNG. Options useless
  * under the coming Hardship are never drawn (landingPool, C147), and Eternal Winter offers no starting season.
  */
-function buildPending(s, alates, hardship, carryAdults) {
+function buildPending(s, alates, hardship, carryAdults, adults) {
   const hs = typeof hardship === 'string' && HARDSHIPS[hardship] ? hardship : null;
   const pool = landingPool(hs);
   const options = [];
@@ -645,7 +714,21 @@ function buildPending(s, alates, hardship, carryAdults) {
   }
   const boons = shuffle(s, pool.boons.slice()).slice(0, LANDING.boons);
   return { kind: 'landing', options, boons, chooseSeason: lv(s.cycle.traits, 'seasonal_wisdom') > 0 && hs !== 'eternal_winter', alates,
-    hardship: hs, carryAdults };
+    hardship: hs, carryAdults, adults };
+}
+
+/**
+ * C171: adults the Brood Bank carries into the landing, recomputed when the landing is chosen so a Brood Bank bought in
+ * the landing chooser applies to that landing. pending.adults = adults at the flight; older pendings without it keep
+ * the carryAdults stored at the flight.
+ * @param {import('../core/types.js').State} s
+ * @param {Object} p meta.pending (kind 'landing')
+ * @returns {number}
+ */
+export function landingCarry(s, p) {
+  if (!p) return 0;
+  if (!Number.isFinite(p.adults)) return Math.floor(num(p.carryAdults));
+  return lv(s.cycle.traits, 'brood_bank') > 0 ? Math.floor(Math.min(RESET.broodBankMax, RESET.broodBankFrac * num(p.adults))) : 0;
 }
 
 /**
@@ -671,7 +754,7 @@ export function doFlight(s, d, env, { hardship = null } = {}) {
   if (!(st.fastestFlightSec > 0) || run.time < st.fastestFlightSec) st.fastestFlightSec = run.time;
   if (!(st.firstFlightAt > 0)) st.firstFlightAt = meta.simTime;
   const carry = lv(s.cycle.traits, 'brood_bank') > 0 ? Math.floor(Math.min(RESET.broodBankMax, RESET.broodBankFrac * adults)) : 0;
-  meta.pending = buildPending(s, alates, hardship, carry);
+  meta.pending = buildPending(s, alates, hardship, carry, Math.floor(num(adults)));
   s.run = createRun(0);
   resetRunCaches(d); // the frozen skeleton run is shown with neutral caches while the landing chooser is open
   if (env && typeof env.emit === 'function') env.emit('flightComplete', { alates });
@@ -691,9 +774,15 @@ export function doSupercolony(s, d, env, opts) {
   const o = opts || {};
   const edict = typeof o.edict === 'string' && EDICTS[o.edict] ? o.edict : null;
   const kin = projectKinship(s, d);
+  const runAlates = projectAlates(s, d); // C168: the merging run's alates count as if it had flown
   const meta = s.meta;
   const era = s.era;
   runEndBookkeeping(s, 'cycle', kin);
+  meta.counters.alatesLife = clampNum(meta.counters.alatesLife + runAlates);
+  // C167: Innate research and its per-node run counts reset at every Supercolony (Genetic Memory protects them only
+  // at a Speciation). Cleared after the bookkeeping above, which counts this run first.
+  era.innate = {};
+  era.researchRuns = {};
   era.kinship = clampNum(era.kinship + kin);
   era.kinshipLife = clampNum(era.kinshipLife + kin);
   meta.counters.kinshipEver = clampNum(meta.counters.kinshipEver + kin);
@@ -803,7 +892,7 @@ export const handlers = {
       s.meta.pending = null;
       startRun(s, d, {
         seed: opt.seed, tags: opt.tags, boon: cmd.boon ?? null, hardship: p.hardship ?? null,
-        startSeason: p.chooseSeason && typeof cmd.season === 'string' ? cmd.season : null, carryAdults: p.carryAdults, env,
+        startSeason: p.chooseSeason && typeof cmd.season === 'string' ? cmd.season : null, carryAdults: landingCarry(s, p), env,
       });
     },
   },

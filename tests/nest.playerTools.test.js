@@ -38,6 +38,7 @@ function settle(s, d, sec = 1) {
   const env = fakeEnv({ dt: sec });
   s.run.time += sec;
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, sec, env);
   nest.derive(s, d);
   d.stats.digW = 1e9;
@@ -94,12 +95,14 @@ test('C117: draining the pocket a Water Well uses removes the Well with its plac
   assert.equal(s.run.res.food, CHAMBERS.water_well.place.food, 'placement food refunded 100 %');
 });
 
-test('C117: a pocket can move to plain soil within DRAINAGE.moveRows rows; refusals name the reason', () => {
+test('C117 / C255: a pocket can move to plain soil anywhere (no row limit); refusals name the reason', () => {
   const { s, d } = setup();
   s.run.research.drainage = 1;
   addPocket(s, 10, 40, 2, 2);
   nest.derive(s, d);
-  assert.equal(run(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 40 + DRAINAGE.moveRows + 1 }), 'invalid:row');
+  // C255: no distance limit any more (it was bypassed by moving twice); only the top row stays out of reach
+  assert.equal(nest.handlers.relocatePocket.validate(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 40 + 25 }), null, 'far away is fine');
+  assert.equal(nest.handlers.relocatePocket.validate(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 0 }), 'invalid:row');
   // C140 (player report): one tile over its own cells is fine; another pocket's water is not
   assert.equal(nest.handlers.relocatePocket.validate(s, d, { type: 'relocatePocket', pocket: 0, x: 10, y: 39 }), null, 'over its own cells');
   addPocket(s, 14, 40, 2, 2);
@@ -149,10 +152,10 @@ test('C118: Root Cultivation grows a root a few rows a second, capped per run; i
   settle(s, d, 60);
   assert.equal(r.y1, ROOT_CULT.maxRow, 'stops at the max depth');
   assert.equal(nest.cellInfo(s, d, idx(5, 10)).rootOwn, true);
-  // A root stops above a chamber: column 19 runs into the Royal Chamber (rows 20–21).
+  // C178: a root grows down through a chamber: column 19 runs through the Royal Chamber (rows 20–21) to the max depth.
   assert.equal(run(s, d, { type: 'growRoot', col: 19 }), null);
   settle(s, d, 60);
-  assert.equal(s.run.nest.features.roots.find((x) => x.own && x.col === 19).y1, GRID.royal.y - 1);
+  assert.equal(s.run.nest.features.roots.find((x) => x.own && x.col === 19).y1, ROOT_CULT.maxRow);
   // Cost grows; cap 3 (+1 per 5 Mound levels).
   assert.deepEqual(nest.rootCost(s), { honeydew: ROOT_CULT.cost.honeydew * ROOT_CULT.growth ** 2, food: ROOT_CULT.cost.food * ROOT_CULT.growth ** 2 });
   assert.equal(run(s, d, { type: 'growRoot', col: 30 }), null);
@@ -176,6 +179,7 @@ test('C119: a blueprint pre-digs the Royal Chamber at its saved spot, connected 
   assert.deepEqual(s.era.blueprints[0].royal, { x: GRID.royal.x, y: GRID.royal.y, res: { x: 13, y: 20, w: 9, h: 4 } }); // C155: its L8 room
   s.era.blueprints = [{ name: 'Deep', chambers: [], tunnels: [], royal: { x: 8, y: 30 } }];
   s.era.activeBlueprint = 0;
+  s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(s, d);
   nest.derive(s, d);
   const royal = s.run.nest.chambers.find((c) => c.uid === 1);
@@ -193,6 +197,7 @@ test('C119: a blueprint pre-digs the Royal Chamber at its saved spot, connected 
   const b = setup();
   b.s.era.blueprints = [{ name: 'Deep', chambers: [], tunnels: [], royal: { x: 8, y: 30 } }];
   b.s.era.activeBlueprint = 0;
+  b.s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   b.s.run.nest.cells[idx(9, 31)] = CELL.STONE;
   b.s.run.nest.rev++;
   nest.applyBlueprint(b.s, b.d);
@@ -204,6 +209,7 @@ test('C119: a blueprint pre-digs the Royal Chamber at its saved spot, connected 
   const c3 = setup();
   c3.s.era.blueprints = [{ name: 'High', chambers: [], tunnels: [], royal: { x: 8, y: 10 } }];
   c3.s.era.activeBlueprint = 0;
+  c3.s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(c3.s, c3.d);
   assert.equal(c3.s.run.nest.chambers.find((c) => c.uid === 1).y, GRID.royal.y);
   assert.equal(c3.s.run.nest.bpNotes[0].reason, 'royal:kept:invalid:row');
@@ -215,6 +221,7 @@ test('C119: a blueprint Water Well is never placed away from water: it waits, th
   addPocket(s, 30, 50, 2, 2, false);
   s.era.blueprints = [{ name: 'W', chambers: [{ type: 'water_well', x: 4, y: 30, w: 2, h: 3, level: 1 }], tunnels: [] }];
   s.era.activeBlueprint = 0;
+  s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(s, d);
   assert.deepEqual(s.run.nest.bpPending, [{ type: 'water_well', x: 4, y: 30, float: true }]);
   assert.deepEqual(nest.plannedChambers(s), [], 'no planned outline at the saved (dry) spot');
@@ -236,6 +243,7 @@ test('C119: with no water pocket on the new soil, a blueprint Water Well is drop
   const { s, d } = setup();
   s.era.blueprints = [{ name: 'W', chambers: [{ type: 'water_well', x: 4, y: 30, w: 2, h: 3, level: 1 }], tunnels: [] }];
   s.era.activeBlueprint = 0;
+  s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(s, d);
   assert.deepEqual(s.run.nest.bpPending, []);
   const ev = settle(s, d);
@@ -308,7 +316,10 @@ test('C122: "Level cheapest" still shows (and levels) the selected chamber when 
   assert.equal(other.self, false);
   const list = cheapestButton(s, d, 'gallery', { compact: true });
   assert.match(list.label, /^Lvl cheapest · /);
-  assert.ok(list.label.length <= 22, 'compact: ' + list.label);
+  // C212: the compact label names every resource of the cost (the button also draws them with icons)
+  assert.match(list.label, /^Lvl cheapest · .+ food · .+ soil$/, 'compact: ' + list.label);
+  assert.equal(list.head, 'Lvl cheapest');
+  assert.ok(list.cost.food > 0 && list.cost.soil > 0);
   assert.equal(list.ok, true);
   s.run.res.food = 0;
   assert.equal(cheapestButton(s, d, 'gallery', { compact: true }).ok, false, 'quiet when unaffordable');

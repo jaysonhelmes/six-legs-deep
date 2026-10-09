@@ -150,6 +150,53 @@ export const EVENTS = f({
 });
 
 /**
+ * C189: player-facing outcome of every resolved event choice, carried as eventResolved.outcomeText (the event log).
+ * Keyed 'eventId:choice' (or a variant key the resolver picks, e.g. 'ev_rainstorm:keepFlood'); {placeholders} are
+ * filled by systems/events.js with formatted numbers. Hidden rolls (a parasite queen, a brood-eating guest, cuckoo or
+ * predator caterpillar) are not revealed here.
+ */
+export const OUTCOMES = f({
+  'ev_wandering_queen:adopt': 'Adopted the wandering queen: lay ×{mult} for {time}.',
+  'ev_wandering_queen:devour': 'Devoured the wandering queen: +{food} food.',
+  'ev_myrmecophile_guest:accept': 'Accepted the rove beetle: +{pct} food for {time}.',
+  'ev_myrmecophile_guest:expel': 'Expelled the rove beetle: +{chitin} chitin.',
+  'ev_phengaris_caterpillar:adopt': 'Adopted the caterpillar: if it lasts {time} it becomes a butterfly.',
+  'ev_phengaris_caterpillar:reject': 'Rejected the caterpillar: nothing happens.',
+  'ev_phengaris_caterpillar:butterfly': 'The caterpillar became a butterfly: +{insight} insight.',
+  'ev_rainstorm:seal': 'Sealed the entrance: no foraging for {time}, no flood.',
+  'ev_rainstorm:keep': 'Kept foraging in the rain: topsoil chambers −{pct} for {time}.',
+  'ev_rainstorm:keepFlood': 'Kept foraging in the rain: topsoil chambers −{pct} for {time}, and the topsoil flooded for {flood}.',
+  'ev_rainstorm:keepDry': 'Kept foraging in the rain: Drainage kept the nest dry.',
+  'ev_ophiocordyceps:quarantine': 'Quarantined the infected: foragers −{pct} for {time}.',
+  'ev_ophiocordyceps:ignore': 'Ignored the zombie fungus: it spreads among foragers for {time}.',
+  'ev_ophiocordyceps:averted': 'The zombie fungus burned out with almost no losses.',
+  'ev_ophiocordyceps:ended': 'The zombie fungus outbreak ended: {n} infected foragers died.',
+  'ev_ladybug_raid:send': 'Soldiers chased the ladybugs off the aphids.',
+  'ev_ladybug_raid:wait': 'Waited out the ladybugs: that aphid colony yields {pct} for {time}.',
+  'ev_ladybug_raid:clicked': 'Shooed every ladybug off the aphids.',
+  'ev_antlion_pit:send': 'Soldiers cleared the antlion pit.',
+  'ev_antlion_pit:wait': 'Left the antlion pit: its trail loses {pct} of its workers per minute until rerouted or cleared.',
+  'ev_antlion_pit:rerouted': 'The trail no longer passes the antlion pit.',
+  'ev_horned_lizard:reroute': 'The ants walk round the horned lizard: no losses.',
+  'ev_horned_lizard:mob': 'Mobbed the horned lizard: it left, +{food} food.',
+  'ev_horned_lizard:ignore': 'Ignored the horned lizard: its trail loses workers for {time}.',
+  'ev_fungal_blight:quarantine': 'Quarantined the blight: lost {fungus} fungus.',
+  'ev_fungal_blight:clean': 'Cleaning the garden: click the Fungus Garden (Below) {n} times within {time}.',
+  'ev_fungal_blight:cleaned': 'Cleaned the fungus garden: nothing lost.',
+  'ev_fungal_blight:failed': 'The blight took {fungus} fungus.',
+  'ev_army_ant_column:evacuate': 'Evacuated the trails: no foraging for {time}, lost {food} food.',
+  'ev_army_ant_column:fight': 'The garrison marches out to fight the army ants.',
+  'ev_golden_aphid:clicked': 'Caught the golden aphid: honeydew ×{mult} for {time}.',
+  'ev_golden_aphid:expired': 'The golden aphid flew away.',
+  'ev_footstep:scattered': 'Scattered the footstep: no harm done.',
+  'ev_footstep:stomped': 'The footstep landed: {n} trail(s) cut, {m} source(s) crushed.',
+  'ev_fallen_fruit:harvested': 'Harvested the whole fallen fruit.',
+  'ev_fallen_fruit:lost': 'The fallen fruit is gone.',
+  'ev_picnic_spill:harvested': 'Cleared the whole picnic spill.',
+  'ev_picnic_spill:lost': 'The picnic spill is gone.',
+});
+
+/**
  * Golden Beetle and Golden Pupa (DESIGN §18.3). Beetle every U(beetleMin, beetleMax) s while online; lifetime `life`
  * (`lifeAch` with ach_beetle_collector, + lifePicnicAch with ach_picnic_crasher). Pupa: pupaChance per egg laid, at
  * most one per pupaGapSec, visible pupaLife s.

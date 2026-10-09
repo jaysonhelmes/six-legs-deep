@@ -30,6 +30,7 @@ function run(s, d, cmd, env = fakeEnv()) {
 function stepNest(s, d, dt = 1) {
   const env = fakeEnv({ dt });
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, dt, env);
   return env.events;
 }

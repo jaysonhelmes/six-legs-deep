@@ -102,6 +102,13 @@ export function createToasts(el) {
         on: { click: () => { try { toast.action.fn(); } finally { dismiss(entry); } } },
       }));
     }
+    // C190: a quiet secondary link (e.g. "Log": open the event log at this entry)
+    if (toast.link && typeof toast.link.fn === 'function') {
+      node.appendChild(h('button', {
+        type: 'button', class: 'toast-link', text: toast.link.label || 'More',
+        on: { click: () => { try { toast.link.fn(); } finally { dismiss(entry); } } },
+      }));
+    }
     node.appendChild(h('button', {
       type: 'button', class: 'toast-close', attrs: { 'aria-label': 'Dismiss' }, text: '×',
       on: { click: () => dismiss(entry) },
@@ -132,10 +139,12 @@ export function createToasts(el) {
      * Offer a toast; returns 'shown' | 'queued' | 'dropped'.
      * @param {string} text
      * @param {string} [kind]
-     * @param {{ priority?: 'top'|'high'|'low', action?: { label: string, fn: Function }|null, ttlMs?: number }} [opts]
+     * @param {{ priority?: 'top'|'high'|'low', action?: { label: string, fn: Function }|null, link?: { label: string, fn: Function }|null,
+     *   ttlMs?: number }} [opts]
      */
     push(text, kind = 'info', opts = {}) {
-      const toast = { text: String(text || ''), kind, priority: opts.priority || 'low', action: opts.action || null, ttlMs: opts.ttlMs };
+      const toast = { text: String(text || ''), kind, priority: opts.priority || 'low', action: opts.action || null, link: opts.link || null,
+        ttlMs: opts.ttlMs };
       const res = limiter.push(toast, now);
       if (res === 'shown') render(toast);
       return res;

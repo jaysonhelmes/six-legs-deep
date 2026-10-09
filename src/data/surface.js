@@ -51,6 +51,23 @@ export const TERRAIN = deepFreeze({
 export const SCOUT = deepFreeze({ base: 10, exp: 1.2, insightPerRing: 0.75, forceExp: 0.6, flagPriority: 3, cartographer: 1.5 });
 
 /**
+ * C188: scout expeditions (DESIGN §8.3). Once no frontier hex is left inside the map radius, the scout force works
+ * beyond the border at its scouting rate (scouts^0.6 × multipliers) and each `cost × growth^(finds this season)`
+ * scout-seconds brings back a find on a free, revealed hex of the edge ring (ring = map radius), at most perSeason
+ * per season. Offline the work banks up to one find (it is placed on return). Each find lasts `ttl` seconds.
+ * finds: weighted pick. Sources (rich_seed_patch, beetle_carcass: data/sources.js) are trail targets; objects
+ * (fossil_cache, lost_queen) are clicked once: fossil = max(insightMin, insightSec of insight income); lost queen =
+ * lay ×layMult for laySec.
+ */
+export const EXPEDITION = deepFreeze({ cost: 240, growth: 2, perSeason: 2, ttl: 300,
+  finds: [
+    { id: 'rich_seed_patch', kind: 'source', w: 3 },
+    { id: 'beetle_carcass', kind: 'source', w: 3 },
+    { id: 'fossil_cache', kind: 'object', w: 2, insightSec: 120, insightMin: 40 },
+    { id: 'lost_queen', kind: 'object', w: 1, layMult: 1.5, laySec: 120 },
+  ] });
+
+/**
  * Trails (DESIGN §8.5). Extras: achRise (ach_double_bridge strength rise ×1.1), achSMax (ach_highway S_max +5),
  * allocChunks (auto-fill chunks, ARCHITECTURE §8.3 "≤ 50 chunks").
  */
@@ -80,8 +97,12 @@ export const TERRITORY = deepFreeze({ claimBase: 10, claimGrowth: 1.06, autoBase
   ownedSource: 1.25, creepSec: 180, landGrabAch: 0.9 });
 
 /**
- * Mound (DESIGN §8.7). Level L costs base × growth^(L−1) soil; levels above freeMax need mound_building.
- * homeAP → WP5, winterForage/winterMax → WP2, frostPerLevels/frostMax → WP6, shieldLevel → WP6, unlockSoil → WP6 unlocks.
+ * Mound (DESIGN §8.7). C220: the Mound grows on its own with the colony (no soil purchase): its growth value is
+ * Σ w × log10(1 + x / div) over `grow` — x = the run's peak adults (maxAdults), the summed levels of active chambers,
+ * and cells dug this run — and its level is floor(value), never lower than the level it already has; levels above
+ * freeMax need mound_building. homeAP → WP5, winterForage/winterMax → WP2, frostPerLevels/frostMax → WP6,
+ * shieldLevel → WP6, unlockSoil → WP6 unlocks (the Mound starts growing once unlocked).
  */
-export const MOUND = deepFreeze({ base: 300, growth: 1.9, freeMax: 5, homeAP: 0.05, winterForage: 0.03, winterMax: 0.3,
-  frostPerLevels: 3, frostMax: 6, shieldLevel: 5, unlockSoil: 300 });
+export const MOUND = deepFreeze({ freeMax: 5, homeAP: 0.05, winterForage: 0.03, winterMax: 0.3,
+  frostPerLevels: 3, frostMax: 6, shieldLevel: 5, unlockSoil: 300,
+  grow: { adults: { w: 4, div: 100 }, chambers: { w: 2.5, div: 20 }, dug: { w: 1, div: 200 } } });

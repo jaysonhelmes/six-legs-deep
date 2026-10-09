@@ -160,10 +160,12 @@ test('C151: "Keep berths filled" tracks the cap; switching it off keeps the cap 
   assert.equal(handlers.setCasteFill.validate(s, d, { type: 'setCasteFill', caste: 'replete', on: true }), 'locked');
 });
 
-test('C151: filling switches on by itself at the first Barracks / War Hall of a run, unless the player set that caste', () => {
+test('C151 / C243: filling is on by default for every unlocked caste, unless the player set that caste', () => {
   const { s, d } = world();
+  cmd(s, d, 'setCasteTargets', { supermajor: 0 });       // the player sets supermajors before the War Hall
   run(s, d, 5);
-  assert.deepEqual(s.run.colony.casteFill, { soldier: false, supermajor: false, replete: false }, 'no berths yet');
+  assert.deepEqual(s.run.colony.casteFill, { soldier: true, supermajor: false, replete: true }, 'on before any berth (C243)');
+  assert.equal(s.run.colony.eggs.soldier, 0, 'no berths: target 0');
   d.nest.agg.berthsBase = 4;                             // first Barracks becomes active
   run(s, d, 10);
   assert.equal(s.run.colony.casteFill.soldier, true);
@@ -181,12 +183,19 @@ test('C151: filling switches on by itself at the first Barracks / War Hall of a 
   run(s, d, 10);
   assert.equal(s.run.colony.casteFill.supermajor, false);
   assert.equal(s.run.colony.eggs.supermajor, 1);
-  // a fresh colony with a War Hall and no player choice: supermajors switch on; repletes never switch on by themselves
+  // a fresh colony with a War Hall and no player choice: supermajors and (C243) repletes switch on
   const w = world({ warBerths: 3, repleteBerths: 3 });
   run(w.s, w.d, 10);
   assert.equal(w.s.run.colony.casteFill.supermajor, true);
-  assert.equal(w.s.run.colony.casteFill.replete, false);
+  assert.equal(w.s.run.colony.casteFill.replete, true);
   assert.equal(w.s.run.colony.eggs.supermajor, 3);
+  assert.equal(w.s.run.colony.eggs.replete, 3);
+  // C243 existing save: the player explicitly turned repletes off → respected; soldiers never set → switch on
+  const e = world({ berths: 2, repleteBerths: 2 });
+  e.s.run.colony.casteTouched = { soldier: false, supermajor: true, replete: true };
+  e.s.run.colony.casteFill = { soldier: false, supermajor: false, replete: false };
+  run(e.s, e.d, 5);
+  assert.deepEqual(e.s.run.colony.casteFill, { soldier: true, supermajor: false, replete: false });
   // locked caste / pacifist: no auto switch
   const x = world({ berths: 3 });
   x.s.run.hardship = 'pacifist';
@@ -262,7 +271,8 @@ test('C152: the rail Ants row breaks the colony down by caste (only unlocked / n
   assert.ok(list && !list.hidden, 'breakdown shown');
   const visible = list.querySelectorAll('.res-sub').filter((r) => !r.hidden);
   assert.deepEqual(visible.map((r) => r.querySelector('.res-name').textContent), ['Workers', 'Soldiers', 'Alates (reared)', 'Queens']);
-  assert.equal(list.querySelector('.pop-soldier .res-val').textContent, '6');
+  assert.equal(list.querySelector('.pop-soldier .pop-n').textContent, '6');
+  assert.match(list.querySelector('.pop-soldier .pop-cap').textContent, /\/ 0 berths/, 'C193: the caste cap follows the count');
   const row = rail.querySelector('.res-pop');
   assert.equal(row.getAttribute('aria-expanded'), 'true');
   row.click();

@@ -44,6 +44,9 @@ export const DIG = freeze({
   richLoamMult: 0.8, shallowSoilRow: 23, shallowSoilRewardPerTier: 0.05, blueprintCellDiv: 3, blueprintPlaceMult: 0.5,
   goingUnderTunnelMult: 0.95,
   architectMult: 0.75,
+  // C253: auto-backfill re-checks for unneeded tunnels every autoBackfillSec. C254: a relocated chamber's old room is
+  // cleared over relocateClearBase + relocateClearPerCell × its cells seconds (the chamber stays inactive meanwhile).
+  autoBackfillSec: 30, relocateClearBase: 3, relocateClearPerCell: 0.5,
 });
 
 /**
@@ -57,6 +60,20 @@ export const GEOM = freeze({
   hintRadiusAch: 1, shaftGap: 3,
 });
 
+/**
+ * Blueprint adjustments (ARCHITECTURE §18 C174–C177): a planned chamber whose saved spot holds water (or, for a
+ * Nuptial Chamber, has no exit-shaft route) moves to the nearest valid spot within moveRadius cells (Manhattan); a
+ * planned Water Well takes a pocket spot within wellReach cells before Deep Spring / Drainage step in; at most
+ * notesMax blueprint notes and events wait for the next tick.
+ */
+export const BLUEPRINT = freeze({ moveRadius: 6, wellReach: 8, notesMax: 60 });
+
 /** Placement advisor (nest.findPlacement): granaries and nurseries go deep from minute 15 (ARCHITECTURE §8.2). */
 export const ADVISOR = freeze({ deepAfterSec: 900 });
 
+
+/**
+ * C214: automatic tunnel origins kept per run (s.run.nest.dugBy: [{ w, t, c }] — why, chamber type, cells) so the nest
+ * view can say who dug a tunnel the player did not draw. Newest last; the oldest entries go first past either cap.
+ */
+export const AUTO_TUNNEL = freeze({ maxEntries: 24, maxCells: 480 });

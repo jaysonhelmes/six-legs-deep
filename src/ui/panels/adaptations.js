@@ -10,6 +10,7 @@ import { canAfford } from '../../core/wallet.js';
 import { cost as adaptCost, isAvailable as adaptAvailable } from '../../systems/adaptations.js';
 import { ADAPTATION_ORDER, ADAPTATIONS } from '../../data/adaptations.js';
 import { makeAct, note } from './common.js';
+import { adaptAutoBox } from './automation.js';
 
 /** Adaptation ids when data/adaptations.js is still empty. */
 export const ADAPT_FALLBACK = Object.freeze(['quick_dispatch', 'strong_mandibles', 'royal_feeding', 'digging_claws', 'potent_trails',
@@ -93,7 +94,8 @@ export function createPanel(root, { game, ui, bridge }) {
   const empty = note('Adaptations appear once your first worker hatches.');
   const adaptSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Adaptations' }),
     h('p', { class: 'note', text: 'Repeatable upgrades. Each level costs more than the last; they reset with a Nuptial Flight.' }), adaptList);
-  el.append(empty, adaptSec);
+  const autoBox = adaptAutoBox({ game, bridge }); // C166: the Adaptation autobuyer (Federation Autobuyers)
+  el.append(empty, autoBox.el, adaptSec);
 
   function createAdaptRow(id) {
     const lvl = h('span', { class: 'lvl' });
@@ -159,6 +161,7 @@ export function createPanel(root, { game, ui, bridge }) {
       show(adaptSec, aIds.length > 0);
       show(empty, aIds.length === 0);
       syncList(adaptList, aIds, (id) => id, createAdaptRow, (row, id) => updateAdaptRow(row, id, s));
+      autoBox.update(s);
     },
     destroy() {
       if (el.parentNode) el.parentNode.removeChild(el);

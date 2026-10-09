@@ -9,8 +9,16 @@ const freeze = (o) => {
 /** Root lines: 6–10 vertical lines from row 1 down to a row in 6..25. */
 export const ROOTS = freeze({ min: 6, max: 10, yMin: 6, yMax: 25 });
 
-/** Stones: 4–8 boulders of 3×3 cells, entirely within rows 8–55. */
-export const STONES = freeze({ min: 4, max: 8, size: 3, yMin: 8, yMax: 55 });
+/**
+ * Stones: 4–8 boulders, entirely within rows 8–55. C181: each boulder draws a shape by weight — a pebble (1×1), a bar
+ * (2×1, either way up), a block (2×2), a slab (2×3, either way up), an L (3 or 4 cells, any turn), a blob (blobMin–blobMax
+ * cells grown from one cell) or the classic size × size boulder — from its own seeded stream (nestgen). Gameplay is the
+ * same for every shape (acid_excavation digs stone).
+ */
+export const STONES = freeze({
+  min: 4, max: 8, size: 3, yMin: 8, yMax: 55, blobMin: 3, blobMax: 6,
+  shapes: { pebble: 2, bar: 3, block: 2, slab: 2, ell: 3, blob: 4, boulder: 1 },
+});
 
 /**
  * Caches: 8–12 single cells in rows 5–60, kind drawn by weight; one amber bead per map in bedrock.
@@ -47,12 +55,12 @@ export const GEN = freeze({ attempts: 300, margin: 1, royalGap: 2 });
 /**
  * Drainage abilities (DESIGN §7.9; research `drainage`, ARCHITECTURE §18 C117). A revealed water pocket can be
  * drained (each water cell costs drainWork × its layer's cell work in dig work and drainSoil soil, paid when queued;
- * the cells become diggable soil) or relocated to a same-size spot of plain soil within moveRows rows of it (moveWork ×
+ * the cells become diggable soil) or relocated to a same-size spot of plain soil anywhere in the nest (C255: no row limit; moveWork ×
  * layer work per water cell, no soil). A Water Well left touching no pocket is removed with its placement food refunded
  * in full. C157: a move may cover open tunnel cells that can be backfilled without cutting anything off; each is filled
  * as part of the move for fillWork × its tunnel work.
  */
-export const DRAINAGE = freeze({ research: 'drainage', drainWork: 2, drainSoil: 120, moveWork: 1.5, moveRows: 12, fillWork: 1 });
+export const DRAINAGE = freeze({ research: 'drainage', drainWork: 2, drainSoil: 120, moveWork: 1.5, fillWork: 1 });
 
 /**
  * Cultivated roots (research `root_cultivation`, ARCHITECTURE §18 C118): a player-grown root line from row y0 down a

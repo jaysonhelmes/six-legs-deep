@@ -189,7 +189,10 @@ test('context menu (C115): Lycaenid caterpillar and fallen fruit (source or its 
   menu = menuFor({ view: 'surface', kind: 'source', id: fruit.uid, hex: fruit.hex });
   assert.ok(button(menu, 'Draw trail from nearest entrance'));
   game.s.run.events.objects.push({ uid: 42, kind: 'ladybug', hex: 3, cell: -1, t: 5, data: {} });
-  assert.equal(menuFor({ view: 'surface', kind: 'eventObject', id: 42, hex: 3 }), null, 'other event objects: no menu');
+  // C249: other event objects have no actions of their own, only the options of the hex they sit on
+  const lm = menuFor({ view: 'surface', kind: 'eventObject', id: 42, hex: 3 });
+  assert.ok(lm !== null && button(lm, 'Claim hex') !== null, 'hex options under an object');
+  assert.equal(button(lm, 'Draw trail'), null, 'no source actions for a ladybug');
   ui.destroy();
   root.remove();
 });

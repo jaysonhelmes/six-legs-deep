@@ -329,6 +329,32 @@ export function hatchPattern(ctx, kind, color, alpha = 0.55, size = 10) {
   return pat;
 }
 
+/**
+ * C242: anchor a (cached, shared) pattern to the map so it pans and zooms with the camera instead of staying fixed to
+ * the screen: the pattern's own matrix becomes translate(x, y) · scale(z) on top of the context transform, where
+ * (x, y) is the screen position of world (0, 0) and z the camera zoom. Patterns are shared per context, so every
+ * screen-space user sets it right before filling. Returns the pattern; a no-op without CanvasPattern.setTransform.
+ * @param {CanvasPattern|null} pat
+ * @param {number} x
+ * @param {number} y
+ * @param {number} [z=1]
+ * @returns {CanvasPattern|null}
+ */
+export function anchorPattern(pat, x, y, z = 1) {
+  if (!pat || typeof pat.setTransform !== 'function') return pat;
+  const m = patternMatrix(x, y, z);
+  try {
+    pat.setTransform(typeof DOMMatrix === 'function' ? new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]) : m);
+  } catch { /* older engines: keep the screen-space pattern */ }
+  return pat;
+}
+
+/** C242 [pure]: the pattern matrix of anchorPattern ({ a, b, c, d, e, f } of translate(x, y) · scale(z)). */
+export function patternMatrix(x, y, z = 1) {
+  const k = Number.isFinite(z) && z > 0 ? z : 1;
+  return { a: k, b: 0, c: 0, d: k, e: Number.isFinite(x) ? x : 0, f: Number.isFinite(y) ? y : 0 };
+}
+
 // ----------------------------------------------------------------------------------------------------------------
 // Gradual seasons (C123): every seasonal colour blends toward the next season over the last BLEND_SEC of a season
 // ----------------------------------------------------------------------------------------------------------------

@@ -44,7 +44,7 @@ Useful while developing:
 | `npm run sim` | Headless pacing bot. It plays the real game and prints a milestone table checked against the design's time targets. Common runs: `npm run sim -- --until flight`, and `npm run sim -- --hours 12 --dt 1 --until supercolony`. Add `--strict` to exit non-zero when a check fails, or `--json` for machine-readable output. |
 | `npm run smoke` | Headless 40-minute play-through, like a player. Fails on any exception, console error, invalid state value or stalled growth. Options: `--minutes`, `--seed`, `--quiet`, `--export <file>`. |
 | `npm run saves` | Plays the pacing bot and writes test saves at four key points to `test-saves/` (about 7 minutes). Options: `--seed`, `--out`. |
-| `npm run check:imports` | Static import-graph check from `src/main.js`: every imported file and name exists. |
+| `npm run check:imports` | Static import-graph check from `src/boot.js` (which loads `src/main.js`): every imported file and name exists. |
 | `node tools/meta-model.mjs` | Analytic model of the prestige layers and the time to the 2e16 ending. |
 
 ## How to play
@@ -83,7 +83,7 @@ and takes the game back.
 | Right-click or long-press | Context actions (cancels an active tool instead) | Context actions (cancels an active tool instead) |
 
 View keys act on the canvas you clicked last. Anywhere: `1`–`9` open tabs, `H` or `?` opens the in-game Manual (also the book icon by the tabs), `Space` hand-forages the selected source,
-`M` / `R` Mark or Rally the selected trail; with a chamber selected `L` levels the cheapest of its type, `Shift+L` levels the selected one and `R` relocates it (`G` picks the growth side of older chambers that have no reserved space); `Q` over a chamber picks its type to place another; while placing, `F` or right-click picks the corner the new chamber starts in; `B` toggles the Backfill tool (nest view focused), `V` cycles the view (Above, Below, Stacked, Side by side; also the switcher under the map, whose ⇄ button swaps which side the map and nest sit on), and `Esc` cancels a
+`M` / `R` Mark or Rally the selected trail; with a chamber selected `L` levels the cheapest of its type, `Shift+L` levels the selected one and `R` relocates it (`G` picks the growth side of older chambers that have no reserved space); `Q` over a chamber picks its type to place another (`Q` again puts the tool away); while placing, `F` or right-click picks the corner the new chamber starts in; `B` toggles the Backfill tool (nest view focused), `V` cycles the view (Above, Below, Stacked, Side by side; also the switcher under the map, whose ⇄ button swaps which side the map and nest sit on), and `Esc` cancels a
 tool, clears the selection, then closes the panel drawer or lowers the panel sheet. **Settings → Keyboard and view
 controls** lists the same keys in the game.
 
@@ -103,11 +103,39 @@ The game shows its version (for example **v0.9.0**) in Settings → Save and at 
 
 Write for players: no clarification numbers (C123), file names or developer terms. Versions must be strictly descending and dates must not increase down the list; `tests/ui.patchNotes.test.js` checks both, plus the wording rules.
 
+### Releasing and auto-update
+
+GitHub Pages caches every file for 10 minutes (Netlify revalidates every request), and the game is over a hundred
+separately cached ES modules, so right after a deploy a browser could load a mix of old and new files. The game guards
+against that itself:
+
+- **The version source of truth is the changelog.** There is no separate version file to keep in sync. `index.html`
+  loads `src/boot.js`, which fetches `src/data/changelog.js` with `cache: 'no-store'` (the live version: the first
+  `version: '…'` after `export const CHANGELOG`) and compares it with `CURRENT_VERSION` of the cached copy.
+- **On a mismatch** it shows an "Updating to vX…" screen, re-downloads every game file with `cache: 'reload'`
+  (`index.html`, its stylesheets and the whole import graph, walked at runtime from the module scripts) and reloads.
+  At most one forced update per version per browser session (`sessionStorage` key `sld.updateAttempt`); if the
+  versions still differ after that, the game starts anyway and logs a console warning. If `main.js` fails to load at
+  all (a broken mixed set), one refresh per session is tried before the error screen. Saves are never touched.
+- **While playing** the live version is checked every 10 minutes and when the tab becomes visible; a newer one shows an
+  "Update available" pill that saves, refreshes and reloads.
+- Offline, `file://`, or a check slower than 3 s: the game just starts.
+
+So a release is still just: add the changelog entry (which bumps the version), merge, deploy. Keep the
+`version: '…'` field literal in the newest entry (`tests/ui.updater.test.js` asserts the parsed text equals
+`CURRENT_VERSION`). Any new module must be reachable through literal relative `import`/`export … from`/`import('…')`
+paths (as `npm run check:imports` already requires), or the refresh will not re-download it.
+
+Testing locally: `http://localhost:8080/?forceUpdateCheck=0.99.0` pretends v0.99.0 is live (honoured only on
+localhost / 127.x / *.localhost): you see one update and reload, then a console warning and normal play; in the
+console `sld.checkForUpdate()` shows the "Update available" pill. Run `sessionStorage.clear()` to try again.
+
 ## Folder map
 
 ```
-index.html            DOM skeleton (ids are the contract with src/main.js)
+index.html            DOM skeleton (ids are the contract with src/main.js); loads src/boot.js
 styles/               base.css (layout, breakpoints, theme) and panels.css (panels, HUD, modals, toasts)
+src/boot.js           entry: the pre-boot version check (src/ui/updater.js), then a dynamic import of src/main.js
 src/main.js           browser boot: storage, the one-tab lock, load or new game, UI, renderers, the frame loop, autosave
 src/core/             state schema, fixed-step loop, commands, save/load, offline catch-up, RNG, hex maths
 src/data/             every balance number and table (change numbers here, nowhere else), and changelog.js (patch notes)

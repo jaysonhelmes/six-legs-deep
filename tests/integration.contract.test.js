@@ -51,7 +51,7 @@ const SYSTEMS = {
     chamberAtCell: 3, cellInfo: 3, queueShaft: 5, applyBlueprint: 2, autoLevelStep: 3, moleTunnel: 3 },
   'systems/mapgen.js': { generateMap: 1 },
   'systems/surface.js': { derive: 2, tick: 4, handlers: 'object', isPassable: 3, moveCost: 3, claimCost: 1, canClaim: 3, moundCost: 1, sourceAt: 2,
-    nuptialHex: 3, spawnSource: 3, removeSource: 4, revealHexes: 3, conquerHexes: 3, grantHex: 3, touch: 1, addEntrance: 6, autoMoundStep: 3 },
+    nuptialHex: 3, spawnSource: 3, removeSource: 4, revealHexes: 3, conquerHexes: 3, grantHex: 3, touch: 1, addEntrance: 6 },   // C246: autoMoundStep removed (no Mound autobuyer)
   'systems/trails.js': { tick: 4, handlers: 'object', previewTrail: 4, trailYield: 4, bestTargets: 2, trailOrigins: 2, hitTrail: 3, cutTrailsAt: 3,
     resetStrength: 2, autoDraw: 4, createTrail: 4 },
   'systems/combat.js': { unitStats: 3, armyAP: 3, rivalAP: 3, preview: 4, startBattle: 4, stepBattles: 4, grantReward: 4 },
@@ -103,19 +103,19 @@ const DATA = {
 /** §8 handler keys per system module (= the §9 catalogue minus the core handlers). */
 const HANDLERS = {
   'systems/economy.js': ['clickForage'],
-  'systems/population.js': ['setCasteTargets', 'setCasteFill', 'setEggReserve', 'setChitinReserve', 'setFungalBrood', 'rearAlate', 'groomBrood', 'clickQueen', 'retireAdults'],
+  'systems/population.js': ['setCasteTargets', 'setCasteFill', 'setEggReserve', 'setChitinReserve', 'setFungalBrood', 'rearAlate', 'cancelRear', 'groomBrood', 'clickQueen', 'retireAdults'],
   'systems/jobs.js': ['shiftJob', 'setJobs', 'setJobTargets', 'setAutoJobs', 'setThresholdJobs', 'saveJobPreset', 'applyJobPreset'],
   'systems/adaptations.js': ['buyAdaptation'],
   'systems/nest.js': ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill', 'reorderQueue',
     'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint', 'cancelPlanned', 'backfillUnneeded', 'drainPocket',
-    'relocatePocket', 'growRoot'],
-  'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'buyMound', 'moveAphids'],
+    'relocatePocket', 'growRoot', 'editBlueprint', 'setAutoBackfill', 'clearBlueprint'],
+  'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'moveAphids'],   // C220: buyMound removed (the Mound grows on its own)
   'systems/trails.js': ['drawTrail', 'rerouteTrail', 'deleteTrail', 'assignWorkers', 'assignEscorts', 'mark', 'rally', 'frenzy', 'massRecruit'],
   'systems/rivals.js': ['launchParty', 'recallParty', 'reinforce', 'battleAction', 'bribe', 'tournament', 'tournamentChoice'],
   'systems/raids.js': ['dispatchGuard'],
-  'systems/research.js': ['buyResearch', 'buyRefinement'],
+  'systems/research.js': ['buyResearch', 'buyRefinement', 'buyArchive'],
   'systems/seasons.js': ['setChronobiology'],
-  'systems/events.js': ['eventChoice', 'clickEventObject', 'scrapeMold', 'bailFlood', 'cleanBlight'],
+  'systems/events.js': ['eventChoice', 'clickEventObject', 'scrapeMold', 'bailFlood', 'cleanBlight', 'clearAntlion'],
   'systems/golden.js': ['clickBeetle', 'clickPupa', 'openGift'],
   'systems/prestige.js': ['fly', 'chooseLanding', 'supercolony', 'speciate', 'setHeirlooms', 'placeSatellite'],
   'systems/traits.js': ['buyTrait', 'buyFederation', 'buyGenome'],
@@ -288,13 +288,13 @@ test('[post-integration] data content: documented ORDER arrays, table sizes and 
     const got = (await load(rel))[name].length;
     if (got !== n) problems.push(rel + ': ' + name + ' has ' + got + ' entries, DESIGN has ' + n);
   };
-  await size('data/chambers.js', 'CHAMBER_ORDER', 17); // C136 War Hall
+  await size('data/chambers.js', 'CHAMBER_ORDER', 19); // C136 War Hall, C179 Carapace Store / Workshop
   await size('data/adaptations.js', 'ADAPTATION_ORDER', 10);
   await size('data/research.js', 'RESEARCH_ORDER', 58);
   await size('data/events.js', 'EVENT_ORDER', 28);
   await size('data/achievements.js', 'ACH_ORDER', 81);
   await size('data/fieldGuide.js', 'FG_ORDER', 40);
-  await size('data/sources.js', 'SOURCE_ORDER', 15);
+  await size('data/sources.js', 'SOURCE_ORDER', 17); // C188 expedition finds (rich seed patch, beetle carcass)
   const src = (await load('data/sources.js')).SOURCE_ORDER;
   if (!src.includes('termite_swarm')) problems.push('data/sources.js: termite_swarm missing (C7)');
   if (src.includes('gift')) problems.push('data/sources.js: gift must not be a source');

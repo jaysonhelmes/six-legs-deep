@@ -32,9 +32,9 @@ test('top-level shape, version and seed handling', () => {
   const a = createState();
   const b = createState();
   a.run.res.food = 99;
-  a.meta.automation.autobuy.priority.push('x');
+  a.meta.automation.autobuy.chambers = true;
   assert.equal(b.run.res.food, 5);
-  assert.deepEqual(b.meta.automation.autobuy.priority, ['adaptations', 'chambers', 'mound']);
+  assert.deepEqual(b.meta.automation.autobuy, { adaptations: false, chambers: false });   // C246
 });
 
 test('meta defaults per ARCHITECTURE §4', () => {
@@ -59,7 +59,7 @@ test('meta defaults per ARCHITECTURE §4', () => {
 
 test('era and cycle factories', () => {
   assert.deepEqual(createEra(), { species: 'garden_ant', kinship: 0, kinshipLife: 0, federation: {}, heirlooms: [], innate: {},
-    researchRuns: {}, hardshipBest: {}, blueprints: [], activeBlueprint: -1, startedAt: 0 });
+    researchRuns: {}, archive: {}, hardshipBest: {}, blueprints: [], activeBlueprint: -1, startedAt: 0 });
   assert.deepEqual(createCycle(), { alates: 0, alatesCycle: 0, traits: {}, hardshipTier: {}, edict: null, daughters: [], startedAt: 0 });
 });
 

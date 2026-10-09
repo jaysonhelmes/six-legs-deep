@@ -538,14 +538,15 @@ export function endBattle(s, d, b, env, outcome) {
   }
   rs.kills = clampNum(rs.kills + kills);
   s.meta.stats.largestBattle = Math.max(s.meta.stats.largestBattle, clampNum(entered + b.start.foe));
-  if (win && b.reward) grantReward(s, d, b.reward, env);
+  // C207: what was granted rides on battleEnd as `loot` (the toast and the event log name it)
+  const loot = win && b.reward ? grantReward(s, d, b.reward, env) : null;
   const payload = {
     uid: b.uid, kind: b.kind, tag: b.tag, win,
     lost: { soldier: b.lost.soldier, supermajor: b.lost.supermajor, militia: b.lost.militia },
     kills, odds: b.odds, start: { you: b.start.you, foe: b.start.foe },
     hex: b.hex, below: b.below, party: b.party, raid: b.raid, rival: b.rival, esc: b.esc,
     survivors: { militia: mobSurv, soldier: b.you.soldier, supermajor: b.you.supermajor },
-    foeLeft: b.foe.n, retreat: outcome === 'retreat',
+    foeLeft: b.foe.n, retreat: outcome === 'retreat', loot,
   };
   emit('battleEnd', payload);
   return payload;

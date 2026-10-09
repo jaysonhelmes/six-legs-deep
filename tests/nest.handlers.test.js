@@ -12,7 +12,9 @@ import { idx } from '../src/systems/nestgeom.js';
 const TYPES = ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill',
   'reorderQueue', 'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint',
   // C117–C121
-  'cancelPlanned', 'backfillUnneeded', 'drainPocket', 'relocatePocket', 'growRoot'];
+  'cancelPlanned', 'backfillUnneeded', 'drainPocket', 'relocatePocket', 'growRoot', 'editBlueprint',
+  // C253 / C258
+  'setAutoBackfill', 'clearBlueprint'];
 
 function setup({ digW = 0 } = {}) {
   const s = newState();

@@ -385,7 +385,9 @@ test('surface pick returns the documented Target kinds in priority order', () =>
   assert.deepEqual(at(10), { view: 'surface', kind: 'hex', hex: 10 });
   const a = surf.hexToScreen(0);
   const b = surf.hexToScreen(3);
-  assert.deepEqual(surf.pick((a.x + b.x) / 2, (a.y + b.y) / 2 + 2), { view: 'surface', kind: 'trail', id: 2 });
+  const tp = surf.pick((a.x + b.x) / 2, (a.y + b.y) / 2 + 2);   // C249: a trail pick also names the hex under it
+  assert.deepEqual({ view: tp.view, kind: tp.kind, id: tp.id }, { view: 'surface', kind: 'trail', id: 2 });
+  assert.ok(Number.isInteger(tp.hex));
   assert.equal(surf.hexAt(-5000, -5000), -1);
   assert.equal(surf.hexAt(a.x, a.y), 0);
   s.run.rivals.list.push({ uid: 3, type: 'black_garden_ants', tier: 1, hex: 40, radius: 2, base: 15, n: 15, atk: 3, hp: 15, traits: [], alive: true,
@@ -462,16 +464,16 @@ test('nest input dispatches only through actions / uistate / bridge', () => {
   drag(nc, from.x, from.y, to.x, to.y);
   const dt = game.calls.pop();
   assert.equal(dt.type, 'digTunnel');
-  // contiguous soil path from next to an open cell to the drop cell (nestgeom.routeTo or the straight fallback)
+  // C256: exactly the dragged cells (no auto-route): from the open cell the drag started on, a contiguous straight
+  // line to the drop cell; every cell after the start is soil
   const cells0 = game.s.run.nest.cells;
   const tc = dt.args.cells;
-  assert.ok(tc.length >= 4);
+  assert.equal(tc.length, 5);
+  assert.equal(tc[0], 10 * COLS + GRID.mainCol, 'starts on the open shaft cell');
   assert.equal(tc[tc.length - 1], 10 * COLS + GRID.mainCol + 4);
   const adj4 = (a, b) => (Math.abs(a - b) === COLS) || (Math.abs(a - b) === 1 && Math.floor(a / COLS) === Math.floor(b / COLS));
-  const openAt = (i) => cells0[i] === CELL.TUNNEL || cells0[i] === CELL.CHAMBER;
-  assert.ok([tc[0] - 1, tc[0] + 1, tc[0] - COLS, tc[0] + COLS].some((n) => n >= 0 && adj4(n, tc[0]) && openAt(n)), 'starts next to an open cell');
   for (let k = 1; k < tc.length; k++) assert.ok(adj4(tc[k - 1], tc[k]), 'contiguous');
-  for (const i of tc) assert.equal(cells0[i], CELL.SOIL);
+  for (const i of tc.slice(1)) assert.equal(cells0[i], CELL.SOIL);
   // placement tool: click places at the ghost's top-left and clears the tool
   ui.setUI({ tool: { kind: 'placeChamber', chamber: 'gallery' } });
   const pc = cellPt(nest, 30 * COLS + 10);
@@ -489,6 +491,12 @@ test('nest input dispatches only through actions / uistate / bridge', () => {
   assert.equal(ui.getUI().tool, null);
   nc.fire('contextmenu', ev(ch.x, ch.y, { button: 2 }));
   assert.equal(bridge.of('contextMenu').pop()[1].kind, 'chamber');
+  // C257: right-click while relocating a chamber cancels the relocation (no context menu)
+  ui.setUI({ tool: { kind: 'relocate', uid: 1 } });
+  const menus = bridge.of('contextMenu').length;
+  nc.fire('contextmenu', ev(ch.x, ch.y, { button: 2 }));
+  assert.equal(ui.getUI().tool, null, 'relocation cancelled');
+  assert.equal(bridge.of('contextMenu').length, menus);
   // hover writes uistate.hover and calls bridge.hover
   nc.fire('pointermove', ev(q.x, q.y));
   assert.equal(ui.getUI().hover.kind, 'queen');
@@ -819,5 +827,41 @@ test('C154 / C156: a reserved cell picks its chamber (no grooming), water inside
   }
   ui.setUI({ hover: { view: 'nest', kind: 'chamber', id: 1, reserved: true, i: cell } });
   frames([nest], 3);
+  assert.deepEqual(stats.bad, []);
+});
+
+test('C215 / C216: a wider nest renders and picks with its own width; the house pip is a target; back to 40 after', async () => {
+  const { generateNest } = await import('../src/systems/nestgen.js');
+  const game = makeGame(11);
+  const ui = makeUI();
+  game.s.run.nest = generateNest(11, { cols: 56 });
+  const nest = createNestRenderer(makeCanvas(800, 600), { game, ui, bus: game.bus });
+  stats.bad.length = 0;
+  frames([nest], 4);
+  assert.deepEqual(stats.bad, []);
+  assert.equal(nest.getView().cols, 56);
+  const W = 56;
+  const at = (i) => {
+    const v = nest.getView();
+    return nest.pick(v.ox + ((i % W) + 0.5) * v.cell, v.oy + (Math.floor(i / W) + 0.5) * v.cell);
+  };
+  assert.deepEqual(at(10 * W + 28), { view: 'nest', kind: 'shaft', i: 10 * W + 28 });
+  assert.deepEqual(at(20 * W + 29), { view: 'nest', kind: 'chamber', id: 1 });
+  const far = 30 * W + 53;
+  game.s.run.nest.cells[far] = CELL.SOIL;
+  assert.deepEqual(at(far), { view: 'nest', kind: 'cell', i: far });
+  // housing full: the yellow pip over the Royal Chamber is a target of its own
+  game.s.run.colony.adults.minor = 10;
+  game.d.stats.housing = 10;
+  frames([nest], 1);
+  const v = nest.getView();
+  const r = game.s.run.nest.chambers.find((c) => c.uid === 1);
+  const px = v.ox + (r.x + r.w) * v.cell - v.cell * 0.5;
+  const py = v.oy + r.y * v.cell - v.cell * 0.1;
+  assert.deepEqual(nest.pick(px, py), { view: 'nest', kind: 'housePip' });
+  // a 40-wide state again
+  game.s = createState({ seed: 3 });
+  frames([nest], 2);
+  assert.equal(nest.getView().cols, 40);
   assert.deepEqual(stats.bad, []);
 });

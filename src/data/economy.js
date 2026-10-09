@@ -24,8 +24,13 @@ function deepFreeze(o) {
 /** Egg cost E(N) = base × (1 + k·N)^exp; nanitics: the first `nanitics` (`naniticsVigor` with nanitic_vigor) minors × naniticMult. */
 export const EGG = deepFreeze({ base: 10, k: 0.02, exp: 1.5, nanitics: 5, naniticsVigor: 25, naniticMult: 0.5 });
 
-/** Lay rate λ = (base + perRF·RF) × perRC^(RC − 1) × M_lay × colony_scale (DESIGN §5.1). */
-export const LAY = deepFreeze({ base: 0.2, perRF: 0.05, perRC: 1.15 });
+/**
+ * Lay rate (DESIGN §5.1, ARCHITECTURE §18 C198): λ = Σ_queens (base + perRF·RF) × royal(RC) × court × M_lay — colony
+ * scale no longer multiplies it. royal(RC) = perRC^(min(RC, highFrom) − 1) × perRCHigh^max(0, RC − highFrom): ×1.15 per
+ * level up to L8 (the full-size room; run 1 unchanged), steeper above it so late Royal levels keep pace with the population.
+ * court = 1 + courtPer × (queens − 1): every extra laying queen (Polygyny, Queens' Council) also speeds up the others.
+ */
+export const LAY = deepFreeze({ base: 0.2, perRF: 0.05, perRC: 1.15, highFrom: 8, perRCHigh: 1.25, courtPer: 0.25 });
 
 /** Brood development (DESIGN §5.3, §17.3, §6.4, C20). */
 export const BROOD = deepFreeze({ baseSec: 25, royalSlots: 3, maxNursePerSlot: 4, stages: [0.25, 0.75], frostDeathPerSec: 0.005,
@@ -72,6 +77,14 @@ export const SLIDERS = deepFreeze({ eggReserveMax: 0.9, casteSumMax: 0.9, casteG
  * displayed moult rate (d.rates.chitin.molts).
  */
 export const MOLT = deepFreeze({ perHatch: 0.025, gate: ['caste_soldier', 'res_chitin'], avgSec: 60 });
+
+/**
+ * C199 chitin storage (player decision): chitinCap = (capBase + Σ Carapace Store capacity) × colony_scale. Income adds
+ * up to the cap; one-shot rewards (hunts, battles, events, moults excepted) may overflow to `overflow` × cap; chitin
+ * above the cap decays at `decayPerMin` of the excess per minute. Carapace Workshops multiply every chitin source by
+ * (1 + Σ boost) (d.stats.chitinBoost).
+ */
+export const CHITIN = deepFreeze({ capBase: 500, overflow: 2, decayPerMin: 0.01 });
 
 /** Extra winter-forage R terms: honeypot species `winterForageHalf` (penalty halved) = 0.5 (DESIGN §15.6). */
 export const WINTER_R = deepFreeze({ honeypotHalf: 0.5 });

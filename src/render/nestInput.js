@@ -3,10 +3,10 @@
 // DESIGN §7.12. Never writes game state directly: every intent goes through game.actions.do().
 
 import { GRID, CELL } from '../data/balance.js';
-import * as nestgeom from '../systems/nestgeom.js';
+import { COLS } from '../systems/nestgeom.js';
 import * as nestSys from '../systems/nest.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding (the active nest width)
 const ROWS = GRID.rows;
 const DRAG_PX = 5;
 const LONG_PRESS_MS = 550;
@@ -214,32 +214,52 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     return true;
   }
 
-  function tunnelPreview(from, to) {
+  /**
+   * C256: extend the dragged tunnel path (exactly the cells the pointer crossed, no auto-route) to cell `to`: a
+   * straight 4-connected step line from the path's last cell; crossing back onto the path cuts it back to that cell
+   * (dragging back undoes).
+   */
+  function extendPath(path, to) {
+    if (!path.length || !(to >= 0)) return path;
+    let cur = path[path.length - 1];
+    if (cur === to) return path;
+    const tx = to % COLS;
+    const ty = Math.floor(to / COLS);
+    let guard = 0;
+    while (cur !== to && guard++ < COLS + ROWS) {
+      let x = cur % COLS;
+      let y = Math.floor(cur / COLS);
+      const dx = tx - x;
+      const dy = ty - y;
+      if (Math.abs(dx) >= Math.abs(dy)) x += Math.sign(dx);
+      else y += Math.sign(dy);
+      cur = y * COLS + x;
+      const k = path.indexOf(cur);
+      if (k >= 0) path.length = k + 1;
+      else path.push(cur);
+    }
+    return path;
+  }
+
+  /** C256: preview of the free-drawn path (nest.tunnelPath: cut at the first cell a tunnel cannot cross, with why). */
+  function freePreview(path) {
     const s = game && game.s;
     const d = game && game.d;
-    if (!s) return { cells: [], ok: false, work: 0 };
-    const key = `${from}|${to}|${s.run.nest.rev}`;
+    if (!s || !path || path.length < 2) return null;
+    const key = `free|${path.join(',')}|${s.run.nest.rev}|${s.run.nest.queue.length}`;
     if (dragMemo.key === key) return dragMemo.res;
-    let cells = null;
-    let work = 0;
-    let ok = true;
+    let r = null;
     try {
-      const r = nestgeom.routeTo(s, d, [to], { from });
-      if (r && Array.isArray(r.cells)) {
-        cells = r.cells.slice();
-        work = Number(r.work) || 0;
-      }
+      r = nestSys.tunnelPath(s, d, path);
     } catch {
-      cells = null;
+      r = null;
     }
-    if (!cells) cells = straightTunnel(cellsArr(), from, to);
-    const tc = cellsArr()[to];
-    if (tc === CELL.SOIL && !cells.includes(to)) cells.push(to);
-    if (tc === CELL.STONE || tc === CELL.WATER) ok = false;
-    if (!cells.length) ok = false;
+    const res = r
+      ? { cells: r.soil.slice(), path: r.path.slice(), ok: r.ok, reason: r.reason, work: r.work || r.soil.length }
+      : { cells: [], path: [], ok: false, reason: 'invalid', work: 0 };
     dragMemo.key = key;
-    dragMemo.res = { cells, ok, work: work || cells.length };
-    return dragMemo.res;
+    dragMemo.res = res;
+    return res;
   }
 
   function clearPreviews() {
@@ -363,7 +383,10 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
         clearTimeout(longTimer);
         longTimer = null;
       }
-      if (down.mode === 'tunnelCandidate') down.mode = 'tunnel';
+      if (down.mode === 'tunnelCandidate') {
+        down.mode = 'tunnel';
+        down.path = down.cell ? [down.cell.i] : []; // C256: the dragged cells, starting on the open cell
+      }
     }
     if (!down.moved) return;
     if (down.mode === 'scroll') {
@@ -372,8 +395,10 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       down.lastY = p.y;
     } else if (down.mode === 'tunnel') {
       const cell = renderer.cellAt(p.x, p.y);
-      if (cell && down.cell && cell.i !== down.cell.i) inp.drag = tunnelPreview(down.cell.i, cell.i);
-      else inp.drag = null;
+      if (cell && down.path && down.path.length) {
+        extendPath(down.path, cell.i);
+        inp.drag = freePreview(down.path);
+      } else inp.drag = null;
     } else if (down.mode === 'backfill') {
       const cell = renderer.cellAt(p.x, p.y);
       if (cell && inp.rect) {
@@ -412,7 +437,12 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
     if (dn.mode === 'tunnel' && dn.moved) {
       const prev = inp.drag;
       inp.drag = null;
-      if (prev && prev.ok && prev.cells.length) act('digTunnel', { cells: prev.cells.slice() }, e.clientX, e.clientY);
+      // C256: digs exactly the dragged cells (up to the first one a tunnel cannot cross); when the drag was cut short,
+      // the reason is shown (stone, water, a reserved room …) instead of silently routing around it
+      if (prev && prev.ok && prev.cells.length) {
+        act('digTunnel', { cells: prev.path.slice() }, e.clientX, e.clientY);
+        if (prev.reason) call(bridge, 'reject', prev.reason, e.clientX, e.clientY);
+      } else if (prev && prev.reason) call(bridge, 'reject', prev.reason, e.clientX, e.clientY);
       return;
     }
     if (dn.mode === 'backfill') {
@@ -500,11 +530,19 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       case 'pupa':
         call(bridge, 'openChooser', 'pupa', {});
         break;
+      // C216: the "house full" pip opens the Build tab (Galleries add housing)
+      case 'housePip':
+        call(bridge, 'openTab', 'build');
+        break;
       case 'mold':
         act('scrapeMold', { uid: t.id }, cx, cy);
         break;
       case 'flood':
         act('bailFlood', {}, cx, cy);
+        break;
+      // C245: a blighted Fungus Garden: each click scrapes the blight (the first one also picks "Clean" on the card)
+      case 'blight':
+        act('cleanBlight', {}, cx, cy);
         break;
       case 'cacheHint':
         act('digTo', { cell: t.i }, cx, cy);
@@ -535,7 +573,14 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
   function onContext(e) {
     if (e.preventDefault) e.preventDefault();
     const p = local(e);
-    // C137: right-click while placing or relocating a chamber flips the corner it starts in (Esc cancels)
+    // C257: right-click while relocating cancels the relocation (like Q puts the placing tool away; F still flips the
+    // corner, and a touch long-press too). C137: right-click while placing flips the corner it starts in (Esc cancels).
+    const cur = getUI(ui).tool;
+    if (cur && cur.kind === 'relocate') {
+      setUI(ui, { tool: null });
+      clearPreviews();
+      return;
+    }
     if (flipAnchor()) return;
     if (getUI(ui).tool) {
       setUI(ui, { tool: null });

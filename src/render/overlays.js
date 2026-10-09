@@ -11,10 +11,11 @@ import { MOUND, TRAIL } from '../data/surface.js';
 import { SOURCES } from '../data/sources.js';
 import { RESEARCH } from '../data/research.js';
 import { hexDist } from '../core/hex.js';
-import { rgba, ramp, OWNED_TINT, NEST, SURFACE, hatchPattern, rivalColor, rivalPatternKind } from './palette.js';
+import { rgba, ramp, OWNED_TINT, NEST, SURFACE, hatchPattern, rivalColor, rivalPatternKind, anchorPattern } from './palette.js';
 import { hexCorners } from './geom.js';
+import { COLS } from '../systems/nestgeom.js';
 
-const COLS = GRID.cols;
+// C215: COLS is nestgeom's live binding (the active nest width)
 
 /** Layer list (data/strata.js LAYER_ORDER). */
 export function layerList() {
@@ -299,6 +300,12 @@ export function drawSurfaceOverlays(ctx, ov, info) {
   if (ov.richness) richness(ctx, info);
 }
 
+/** C242: anchor a screen-space fill pattern to the map (info.origin = screen point of world (0, 0), info.zoom). */
+function mapPattern(pat, info) {
+  const o = info && info.origin;
+  return o ? anchorPattern(pat, o.x, o.y, info.zoom || 1) : pat;
+}
+
 function territory(ctx, info) {
   const { owned, border, rivalOf, rivalByUid, radiusCount, hexR } = info;
   for (const code of [1, 2, 3, 4]) {
@@ -315,7 +322,7 @@ function territory(ctx, info) {
     if (any) ctx.fill();
     // C162: trail-held hexes (temporary, lost with the trail) also carry a fine diagonal hatch
     if (any && code === 4) {
-      const pat = hatchPattern(ctx, 'diag', OWNED_TINT[4], 0.8, 6);
+      const pat = mapPattern(hatchPattern(ctx, 'diag', OWNED_TINT[4], 0.8, 6), info);
       if (pat) {
         ctx.fillStyle = pat;
         ctx.fill();
@@ -343,7 +350,7 @@ function territory(ctx, info) {
   for (const [u, hexes] of groups) {
     const r = rivalByUid.get(u);
     const col = rivalColor(r ? r.type : '', r ? r.tier : 1);
-    const pat = hatchPattern(ctx, rivalPatternKind(r ? r.type : '', r ? r.tier : 1), col, 0.85, 9);
+    const pat = mapPattern(hatchPattern(ctx, rivalPatternKind(r ? r.type : '', r ? r.tier : 1), col, 0.85, 9), info);
     ctx.fillStyle = pat || rgba(col, 0.35);
     ctx.beginPath();
     for (const i of hexes) {
@@ -388,7 +395,7 @@ function danger(ctx, info) {
   for (const o of (s && s.run && s.run.events && s.run.events.objects) || []) {
     if (o && (o.kind === 'antlion' || o.kind === 'lizard') && o.hex >= 0) set.add(o.hex);
   }
-  const pat = hatchPattern(ctx, 'cross', SURFACE.raid, 0.7, 9);
+  const pat = mapPattern(hatchPattern(ctx, 'cross', SURFACE.raid, 0.7, 9), info);
   ctx.fillStyle = pat || 'rgba(255,59,48,0.3)';
   ctx.beginPath();
   for (const h of set) {

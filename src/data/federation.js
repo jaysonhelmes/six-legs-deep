@@ -17,14 +17,18 @@ function deepFreeze(o) {
 }
 
 /** Display and iteration order (DESIGN §14.5 table order). */
-export const FED_ORDER = deepFreeze(['automated_brood', 'blueprint_memory', 'autobuyers', 'auto_flight', 'aquifer_access',
+export const FED_ORDER = deepFreeze(['automated_brood', 'blueprint_memory', 'architects_table', 'autobuyers', 'auto_flight', 'aquifer_access',
   'heirloom_bloodline', 'satellite_nest', 'regional_expansion', 'megacolony_galleries', 'highway_network', 'diapause_mastery',
   'queens_council', 'megacolony']);
 
-/** Federation nodes: { id, name, cost, max, fx }. Consumers per ARCHITECTURE §12.3. */
+/** Federation nodes: { id, name, cost, max, fx, requires? }. Consumers per ARCHITECTURE §12.3. */
 export const FEDERATION = deepFreeze({
   automated_brood: { id: 'automated_brood', name: 'Automated Brood', cost: { base: 1, growth: 1 }, max: 1, fx: {} },
   blueprint_memory: { id: 'blueprint_memory', name: 'Blueprint Library', cost: { base: 1, growth: 1 }, max: 1, fx: { slots: 5, cellDiv: 5 } },
+  // C172: Architect's Table, the hand editor for saved blueprints (the nest UI reads fedLevel(s, 'architects_table')).
+  // `requires`: buyFederation refuses the node with 'locked' until that node is owned.
+  architects_table: { id: 'architects_table', name: "Architect's Table", cost: { base: 3, growth: 1 }, max: 1, requires: 'blueprint_memory',
+    fx: {} },
   autobuyers: { id: 'autobuyers', name: 'Autobuyers', cost: { base: 2, growth: 1 }, max: 1, fx: {} },
   auto_flight: { id: 'auto_flight', name: 'Auto-Flight', cost: { base: 3, growth: 1 }, max: 1, fx: {} },
   aquifer_access: { id: 'aquifer_access', name: 'Aquifer Access', cost: { base: 3, growth: 1 }, max: 1, fx: {} },

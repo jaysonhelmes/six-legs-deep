@@ -24,6 +24,7 @@ test('F3: a seed cache dug while food is at the cap overflows up to 2 × cap ins
   d.stats.digW = 1000;
   const env = fakeEnv({ dt: 1 });
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, 1, env);
   const found = env.events.find((e) => e.type === 'cacheFound');
   assert.ok(found, 'cache dug');

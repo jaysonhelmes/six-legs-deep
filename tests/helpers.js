@@ -164,7 +164,8 @@ const DOC = {
   jobs: ['forager', 'digger', 'nurse', 'scout', 'herder', 'leafcutter', 'gardener'],
   adaptations: ['quick_dispatch', 'strong_mandibles', 'royal_feeding', 'digging_claws', 'potent_trails', 'serrated_mandibles',
     'thick_cuticle', 'sweet_tooth', 'queens_feast', 'long_legs'],
-  chambers: ['royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'root_aphid_pen',
+  chambers: ['royal_chamber', 'gallery', 'nursery', 'granary', 'scent_library', 'midden', 'barracks', 'war_hall', 'carapace_store',
+    'carapace_workshop', 'root_aphid_pen',
     'fungus_garden', 'repletion_hall', 'hibernaculum', 'thermal_chimney', 'gate', 'water_well', 'nuptial_chamber', 'deep_vault'],
   research: ['trail_memory', 'scent_marking', 'tandem_running', 'recruitment_pheromones', 'double_bridge', 'persistent_trails',
     'sun_compass', 'mass_recruitment', 'frenzy_signal', 'trunk_trails', 'odometer_navigation', 'coordinated_digging',
@@ -217,7 +218,8 @@ export const DOC_UNLOCK_KEYS = ['panel_colony', 'adapt_basic', 'job_digger', 'ad
   'chamber_root_aphid_pen', 'adapt_honeydew', 'climate_overlay', 'panel_prestige', 'ability_rally', 'raid_warnings',
   'frost_line', 'chamber_gate', 'job_leafcutter', 'chamber_hibernaculum', 'chamber_nuptial_chamber', 'alate_rearing',
   'fungus_widget', 'chamber_fungus_garden', 'job_gardener', 'res_fungus', 'chamber_thermal_chimney', 'chamber_repletion_hall',
-  'caste_replete', 'chamber_deep_vault', 'chamber_water_well', 'caste_supermajor', 'chamber_war_hall', 'adapt_long_legs', 'ability_frenzy',
+  'caste_replete', 'chamber_deep_vault', 'chamber_water_well', 'caste_supermajor', 'chamber_war_hall', 'chamber_carapace_store',
+  'chamber_carapace_workshop', 'adapt_long_legs', 'ability_frenzy',
   'panel_map', 'flight_button', 'tab_bloodline', 'tab_hardships', 'tab_federation_teaser', 'tab_federation', 'tab_edicts',
   'tab_genome_teaser', 'tab_genome', 'tab_guide', 'tab_stats', 'tab_settings'];
 
@@ -236,6 +238,7 @@ export const COMMAND_ARGS = {
   setChitinReserve: { amount: 'count' },
   setFungalBrood: { on: 'bool' },
   rearAlate: { n: 'count' },
+  cancelRear: { n: 'count' },
   groomBrood: { chamber: 'chamberUid' },
   clickQueen: {},
   retireAdults: { caste: 'caste', n: 'count' },
@@ -265,10 +268,12 @@ export const COMMAND_ARGS = {
   drainPocket: { pocket: 'smallCount' },
   relocatePocket: { pocket: 'smallCount', x: 'col', y: 'row' },
   growRoot: { col: 'col' },
+  editBlueprint: { slot: 'slot', blueprint: 'name' },
+  setAutoBackfill: { on: 'bool' },
+  clearBlueprint: {},
   claimHex: { hex: 'hex' },
   cancelChannel: {},
   flagHex: { hex: 'hex', on: 'bool' },
-  buyMound: {},
   moveAphids: { src: 'sourceUid', hex: 'hex' },
   drawTrail: { origin: 'originHex', target: 'sourceHex', waypoints: 'hexes' },
   rerouteTrail: { uid: 'trailUid', waypoints: 'hexes' },
@@ -289,6 +294,7 @@ export const COMMAND_ARGS = {
   dispatchGuard: { raid: 'raidUid' },
   buyResearch: { id: 'researchId' },
   buyRefinement: { branch: 'branchId' },
+  buyArchive: { branch: 'branchId' },
   setChronobiology: { lengthSec: 'seasonLen', start: 'seasonId' },
   eventChoice: { uid: 'cardUid', choice: 'eventChoice' },
   clickEventObject: { uid: 'objectUid' },
@@ -421,8 +427,8 @@ function genArg(h, kind, s) {
     case 'genomeId': return pick(h, IDS.genome);
     case 'hardshipId': return pick(h, IDS.hardships);
     case 'automationPatch': return pick(h, [
-      { autobuy: { on: true } }, { autoGuard: true }, { autoRear: true }, { autoFlight: { on: true, mode: 'alates', alates: 10 } },
-      { autobuy: { priority: ['mound', 'chambers', 'adaptations'] } }, { bogus: 1 }, null]);
+      { autobuy: { adaptations: true } }, { autoGuard: true }, { autoRear: true }, { autoFlight: { on: true, mode: 'alates', alates: 10 } },
+      { autobuy: { chambers: true } }, { autobuy: { on: true } }, { bogus: 1 }, null]);
     default: return null;
   }
 }

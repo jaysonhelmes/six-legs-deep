@@ -39,6 +39,7 @@ function settle(s, d, sec = 1) {
   s.run.time += sec;
   d.stats.digW = 1e9;
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, sec, env);
   nest.derive(s, d);
   return env.events || [];
@@ -361,12 +362,14 @@ test('C158 Root Memory: a rootless blueprint Root Aphid Pen gets a free root gro
   assert.equal(s.run.nest.features.roots.length, 1, 'one root only');
 });
 
-test('C158 Root Memory: without the trait (or with no column a root can grow down) the pen is dropped as before', () => {
+test('C158 / C177: without the trait (or with no column a root can grow down) the pen waits and says why', () => {
   const a = setup();
   a.s.cycle.traits.ancestral_blueprint = 1;
   penBlueprint(a.s);
   nest.applyBlueprint(a.s, a.d);
-  assert.deepEqual(a.s.run.nest.bpPending, []);
+  // C177: no longer dropped: it waits for Root Cultivation (no research yet)
+  assert.deepEqual(a.s.run.nest.bpPending.map((p) => p.type), ['root_aphid_pen']);
+  assert.equal(nest.plannedWaits(a.s, a.d)[0].code, 'wait:rootResearch');
   assert.equal(a.s.run.nest.features.roots.length, 0);
   const b = setup();
   b.s.cycle.traits.ancestral_blueprint = 1;
@@ -376,7 +379,8 @@ test('C158 Root Memory: without the trait (or with no column a root can grow dow
   b.s.run.nest.rev++;
   penBlueprint(b.s);
   nest.applyBlueprint(b.s, b.d);
-  assert.deepEqual(b.s.run.nest.bpPending, []);
+  assert.deepEqual(b.s.run.nest.bpPending.map((p) => p.type), ['root_aphid_pen']);
+  assert.equal(nest.plannedWaits(b.s, b.d)[0].code, 'wait:rootPath');
   assert.equal(b.s.run.nest.features.roots.length, 0);
   assert.equal(ROOT_CULT.y0, 1);
 });
