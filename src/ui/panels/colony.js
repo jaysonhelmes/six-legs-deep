@@ -4,8 +4,10 @@
 // Queries: population.broodSummary, jobs.idleMinors, jobs.jobCap, jobs.withTarget, jobs.effectiveTargets, stats.eggCost.
 // Feedback pass 7: sections fold by their heading (C229), "Per click" job step shown on the +/− buttons (C230), the
 // nurse cap row (C231) and caste / army upkeep lines (C233).
+// Feedback pass 9: one-line summaries on folded headings (C280); jobs are full-width two-line rows with a fixed-width
+// cap meter, stacked +/− buttons, Fill to cap and an over-cap warning with Clamp to cap (C282).
 
-import { h, setText, setProp, show, toggleClass, syncList, setCost } from '../dom.js';
+import { h, setText, setProp, show, toggleClass, syncList, setCost, setBar, setStyle } from '../dom.js';
 import { fmt, fmtRate, fmtCount, fmtPct } from '../format.js';
 import { nameOf, JOB_TIPS, CASTE_TIPS } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
@@ -107,6 +109,60 @@ export function nurseCapTip(cap, slots, have) {
     + 'More nurses would not speed brood, so no more can be assigned. More brood slots (Nurseries) raise the cap.'
     + (num(have) > cap + 1e-9 ? ' ' + fmtCount(num(have) - cap) + ' extra nurses do nothing now: move them to another job.' : '');
 }
+/**
+ * C282: cap facts of one job row. targets: the ratio targets in auto mode (the row's target mark and the over-cap
+ * warning use them), null in manual mode. want = what the target asks for (avail × share, like jobs.assignByTargets).
+ * @param {Object} s
+ * @param {Object} d
+ * @param {string} id
+ * @param {Object<string, number>|null} [targets]
+ * @returns {{ capped: boolean, cap: number, have: number, want: number, avail: number, assigned: number, full: boolean, over: boolean }}
+ */
+export function jobCapInfo(s, d, id, targets = null) {
+  const c = obj(s && s.run && s.run.colony);
+  const jobs = obj(c.jobs);
+  const have = num(jobs[id]);
+  const capV = q(() => jobCap(s, d, id), Infinity);
+  const capped = Number.isFinite(capV) && id !== 'forager';
+  const avail = Math.max(0, num(obj(c.adults).minor) - num(c.militia));
+  let tSum = 0;
+  if (targets) for (const j of jobIds()) tSum += num(targets[j]);
+  const scale = tSum > 1 ? 1 / tSum : 1;
+  const want = targets ? avail * num(targets[id]) * scale : have;
+  let assigned = 0;
+  for (const j of jobIds()) assigned += num(jobs[j]);
+  return { capped, cap: capped ? capV : Infinity, have, want, avail, assigned, full: capped && have >= capV - 1e-9,
+    over: !!targets && capped && want > capV + 0.5 };
+}
+
+/**
+ * C282: the target share that fills a cap exactly (rounded up to 1e-6, at most 100 %).
+ * @param {number} cap
+ * @param {number} avail workers available to jobs (minors − militia)
+ * @returns {number}
+ */
+export function capShare(cap, avail) {
+  return avail > 0 ? Math.min(1, Math.ceil((num(cap) / avail) * 1e6) / 1e6) : 0;
+}
+
+/**
+ * C282: why a herder / gardener / leafcutter row has a cap (the nurse uses nurseCapTip).
+ * @param {string} id
+ * @param {number} cap
+ * @returns {string}
+ */
+export function capTipFor(id, cap) {
+  if (id === 'herder') {
+    const per = num(JOBS.herder && JOBS.herder.fx && JOBS.herder.fx.capPerLevel, 8);
+    return 'Up to ' + fmtCount(cap) + ' herders: ' + per + ' per aphid-colony level on your herder trails. More aphid trails raise the cap.';
+  }
+  if (id === 'gardener') return 'Up to ' + fmtCount(cap) + ' gardeners: the gardener slots of your Fungus Gardens. More or bigger gardens raise the cap.';
+  if (id === 'leafcutter' && !(cap > 0)) return 'No leafcutters until a Fungus Garden stores leaves.';
+  return cap > 0 ? 'Up to ' + fmtCount(cap) + ' ' + nameOf('job', id).toLowerCase() + 's can work here.' : 'No room for this job yet.';
+}
+
+/** C280: caste names in the folded Castes summary. */
+const CASTE_PLURAL = Object.freeze({ minor: 'workers', soldier: 'soldiers', supermajor: 'supermajors', replete: 'repletes' });
 /** Slider limit (DESIGN §5.1 egg reserve ≤ 90 % of the food cap). */
 const RESERVE_MAX = num(SLIDERS && SLIDERS.eggReserveMax, 0.9);
 /** C151 caste target counts: upper bound and the stepper's step sizes. */
@@ -381,7 +437,7 @@ export function createPanel(root, { game, ui, bridge }) {
   const thrBox = h('input', { type: 'checkbox', class: 'check' });
   thrBox.addEventListener('change', (ev) => act('setThresholdJobs', { on: !!thrBox.checked }, ev, thrBox));
   const thrRow = h('label', { class: 'toggle-row', dataset: { tip: 'Workers shift toward the current bottleneck (nurses for full brood slots, diggers for a long dig queue, herders when honeydew is short) and drift back to your targets once it clears.' } }, thrBox, h('span', { text: 'Respond to bottlenecks' }));
-  const jobList = h('div', { class: 'job-list' });
+  const jobList = h('div', { class: 'job-rows' });
   const targetNote = h('p', { class: 'note' });
   const presetRow = h('div', { class: 'btn-row presets' });
   const presetBtns = [];
@@ -536,19 +592,50 @@ export function createPanel(root, { game, ui, bridge }) {
     sendTargets(withTarget(next, to, num(next[to]) + amt), ev, src);
   }
 
-  // --- job chips ---
+  // --- job rows (C282: two lines and a cap meter; the meter has the same width on every row) ---
+  /** C282: Fill to cap / Clamp to cap: auto mode sets the target to the cap's share; manual moves idle, then foragers. */
+  function fillToCap(id, ev, src) {
+    const s = game.s;
+    const d = game.d;
+    const info = jobCapInfo(s, d, id, autoMode() ? baseTargets() : null);
+    if (!info.capped || info.cap <= 0) return;
+    if (autoMode()) {
+      if (info.avail <= 0) return;
+      setTarget(id, capShare(info.cap, info.avail), ev, src);
+      return;
+    }
+    let need = Math.max(0, Math.floor(info.cap - info.have + 1e-9));
+    const idle = Math.floor(q(() => idleMinors(s), 0) + 1e-9);
+    const k1 = Math.min(need, idle);
+    if (k1 > 0) act('shiftJob', { from: 'idle', to: id, n: k1 }, ev, src);
+    need -= k1;
+    const k2 = Math.min(need, Math.floor(num(obj(s.run.colony.jobs).forager) + 1e-9));
+    if (k2 > 0 && id !== 'forager') act('shiftJob', { from: 'forager', to: id, n: k2 }, ev, src);
+  }
+
   function createJobChip(id) {
-    const n = h('span', { class: 'job-num' });
+    const n = h('b', { class: 'job-num' });
     const cap = h('span', { class: 'job-cap' });
     const target = h('span', { class: 'job-target' });
-    const minus = h('button', { type: 'button', class: 'btn btn-icon btn-step', text: '−', attrs: { 'aria-label': 'Fewer ' + nameOf('job', id) + 's' },
+    const tgtPct = h('span', { class: 'jb-tgt', title: 'Target share' });
+    const meterFill = h('span', { class: 'jb-meter-fill' });
+    const mark = h('span', { class: 'jb-mark' });
+    const meter = h('span', { class: 'jb-meter', role: 'img' }, meterFill, mark);
+    const sub = h('span', { class: 'jb-sub' });
+    const fill = h('button', { type: 'button', class: 'btn btn-small btn-fill', text: 'Fill to cap',
+      on: { click: (ev) => fillToCap(id, ev, fill) } });
+    const warnText = h('span', { class: 'warn-text' });
+    const clamp = h('button', { type: 'button', class: 'btn btn-small btn-fill', text: 'Clamp to cap',
+      on: { click: (ev) => fillToCap(id, ev, clamp) } });
+    const warn = h('div', { class: 'cap-warn', role: 'status' }, h('span', { class: 'warn-ico', text: '!', attrs: { 'aria-hidden': 'true' } }), warnText, clamp);
+    const minus = h('button', { type: 'button', class: 'btn btn-step jb-step down', text: '−', attrs: { 'aria-label': 'Fewer ' + nameOf('job', id) + 's' },
       on: { click: (ev) => {
         if (autoMode()) { setTarget(id, num(baseTargets()[id]) - TARGET_STEP, ev, minus); return; }
         const cur = num(obj(game.s.run.colony.jobs)[id]);
         const k = amountFor(cur);
         if (k > 0) act('shiftJob', { from: id, to: 'idle', n: k }, ev, minus);
       } } });
-    const plus = h('button', { type: 'button', class: 'btn btn-icon btn-step', text: '+', attrs: { 'aria-label': 'More ' + nameOf('job', id) + 's' },
+    const plus = h('button', { type: 'button', class: 'btn btn-step jb-step up', text: '+', attrs: { 'aria-label': 'More ' + nameOf('job', id) + 's' },
       on: { click: (ev) => {
         if (autoMode()) { setTarget(id, num(baseTargets()[id]) + TARGET_STEP, ev, plus); return; }
         const m = plusMove(id, game.s, game.d);
@@ -558,15 +645,15 @@ export function createPanel(root, { game, ui, bridge }) {
     const tSl = sliderRow('Target', { min: 0, max: 100, step: 1, tip: 'Share of workers this job should get. Raising it past a 100% total lowers the others.' },
       (v) => setTarget(id, v / 100, null, tSl.input));
     tSl.el.className += ' job-target-row';
-    Object.assign(tSl.el.style, { gridColumn: '1 / -1', gridTemplateColumns: '3.4em minmax(0, 1fr) auto', margin: '4px 0 0', gap: '6px' });
-    tSl.out.style.minWidth = '3.2em';
-    const chip = h('div', { class: 'job-chip', dataset: { job: id, tip: JOB_TIPS[id] }, draggable: true },
+    const chip = h('div', { class: 'job-row', dataset: { job: id, tip: JOB_TIPS[id] }, draggable: true },
       h('i', { class: 'ico ico-job-' + id, attrs: { 'aria-hidden': 'true' } }),
-      h('span', { class: 'job-name', text: nameOf('job', id) }),
-      // C195: count, cap and the bottleneck bias share one row, so the bias % sits right after the count (it used to land
-      // under the +/− buttons in narrow cells)
-      h('span', { class: 'job-count' }, n, cap, target), h('span', { class: 'job-btns' }, minus, plus), tSl.el);
-    // Sliding the target thumb must not start a chip drag (a draggable ancestor swallows range drags in some browsers).
+      h('div', { class: 'jb-main' },
+        // C195: count, cap and the bottleneck bias share line 1, so the bias % sits right after the count
+        h('div', { class: 'jb-line1' }, h('span', { class: 'job-name', text: nameOf('job', id) }),
+          h('span', { class: 'jb-count' }, n, cap, target), tgtPct),
+        h('div', { class: 'jb-line2' }, meter, sub, fill)),
+      h('span', { class: 'jb-steps job-btns', role: 'group', attrs: { 'aria-label': nameOf('job', id) } }, plus, minus), warn, tSl.el);
+    // Sliding the target thumb must not start a row drag (a draggable ancestor swallows range drags in some browsers).
     tSl.input.addEventListener('pointerdown', () => { chip.draggable = false; });
     for (const t of ['pointerup', 'pointercancel', 'change', 'blur']) tSl.input.addEventListener(t, () => { chip.draggable = true; });
     chip.addEventListener('dragstart', (ev) => {
@@ -593,28 +680,59 @@ export function createPanel(root, { game, ui, bridge }) {
       const k = amountFor(avail);
       if (k > 0) act('shiftJob', { from, to: id, n: k }, ev, chip);
     });
-    chip.__r = { n, cap, target, minus, plus, tSl };
+    chip.__r = { n, cap, target, tgtPct, meter, meterFill, mark, sub, fill, warn, warnText, minus, plus, tSl };
     return chip;
   }
 
   function updateJobChip(chip, id, s, d, eff) {
     const r = chip.__r;
     const c = obj(s.run.colony);
-    setText(r.n, fmtCount(num(obj(c.jobs)[id])));
-    const capV = q(() => jobCap(s, d, id), Infinity);
-    const have = num(obj(c.jobs)[id]);
-    setText(r.cap, Number.isFinite(capV) ? '/ ' + fmtCount(capV) : '');
-    toggleClass(r.cap, 'over', Number.isFinite(capV) && have > capV + 1e-9);
-    // C231: the nurse cap explains itself (4 per brood slot, the queen counting as one)
-    const capTip = id === 'nurse' && Number.isFinite(capV) ? nurseCapTip(capV, num(d && d.stats && d.stats.broodSlots, 3), have) : '';
-    if (r.cap.title !== capTip) r.cap.title = capTip;
     const auto = !!(c.autoJobs || c.thresholdJobs);
     const tgt = num(obj(c.jobTargets)[id]);
-    show(r.tSl.el, auto);
-    // The bottleneck bias (Respond to bottlenecks) on top of the player's target.
+    const info = jobCapInfo(s, d, id, auto ? obj(c.jobTargets) : null);
+    const have = info.have;
+    setText(r.n, fmtCount(have));
+    setText(r.cap, info.capped ? '/ ' + fmtCount(info.cap) : '');
+    toggleClass(r.cap, 'over', info.capped && have > info.cap + 1e-9);
+    // C231: the nurse cap explains itself (4 per brood slot, the queen counting as one)
+    const capTip = id === 'nurse' && info.capped ? nurseCapTip(info.cap, num(d && d.stats && d.stats.broodSlots, 3), have)
+      : info.capped ? capTipFor(id, info.cap) : '';
+    if (r.cap.title !== capTip) r.cap.title = capTip;
+    if (r.meter.title !== capTip) r.meter.title = capTip;
+    // line 1: the target share (auto) and the bottleneck bias (Respond to bottlenecks) on top of it
+    show(r.tgtPct, auto);
+    setText(r.tgtPct, auto ? fmtPct(tgt, { signed: false }) : '');
     const extra = auto && eff ? num(eff[id]) - tgt : 0;
     setText(r.target, Math.abs(extra) >= 0.005 ? fmtPct(extra) : '');
     r.target.title = Math.abs(extra) >= 0.005 ? 'Respond to bottlenecks: ' + fmtPct(num(eff[id]), { signed: false }) + ' right now' : '';
+    // line 2: count against the cap (with the target mark in auto mode), or the share of all workers
+    toggleClass(r.meter, 'share', !info.capped);
+    toggleClass(r.meter, 'full', info.capped && info.full && !info.over);
+    const meterFrac = info.capped ? (info.cap > 0 ? have / info.cap : 0) : (info.assigned > 0 ? have / info.assigned : 0);
+    setBar(r.meterFill, meterFrac);
+    const markOn = info.capped && auto && info.cap > 0;
+    show(r.mark, markOn);
+    if (markOn) setStyle(r.mark, 'left', (Math.round(Math.min(1, info.want / info.cap) * 1000) / 10) + '%');
+    toggleClass(r.mark, 'over', info.over);
+    r.mark.title = markOn ? 'Target: ' + fmtCount(Math.floor(info.want + 1e-9)) + ' ants' : '';
+    r.meter.setAttribute('aria-label', info.capped ? fmtCount(have) + ' of ' + fmtCount(info.cap) + ' cap' : fmtPct(meterFrac, { signed: false }) + ' of workers');
+    setText(r.sub, info.capped ? fmtCount(have) + ' / ' + fmtCount(info.cap) + ' cap' : fmtPct(meterFrac, { signed: false }) + ' of workers · no cap');
+    toggleClass(r.sub, 'full', info.capped && info.full);
+    // Fill to cap (capped, room left, not over); Clamp to cap in the warning when an auto target asks for more
+    const atCap = auto ? info.want >= info.cap - 1e-9 : info.full;
+    const fillOn = info.capped && info.cap > 0 && !info.over && !atCap && (auto ? info.avail > 0 : true);
+    show(r.fill, fillOn);
+    if (fillOn) {
+      r.fill.title = auto ? 'Set the target to the cap: ' + fmtPct(capShare(info.cap, info.avail), { signed: false }) + ' (' + fmtCount(info.cap) + ' ants)'
+        : 'Move ' + fmtCount(Math.max(0, Math.floor(info.cap - have + 1e-9))) + ' workers here (idle first, then foragers)';
+    }
+    show(r.warn, info.over);
+    toggleClass(chip, 'is-over', info.over);
+    if (info.over) {
+      setText(r.warnText, 'Target ' + fmtPct(tgt, { signed: false }) + ' asks for ' + fmtCount(Math.floor(info.want + 1e-9)) + ', but the cap is '
+        + fmtCount(info.cap) + '. ' + fmtCount(Math.max(0, Math.floor(info.want - info.cap + 1e-9))) + ' go to foragers instead.');
+    }
+    show(r.tSl.el, auto);
     if (auto) {
       const pct = (v) => fmtPct(v / 100, { signed: false });
       r.tSl.set(Math.round(tgt * 100), { text: fmtPct(tgt, { signed: false }), fmt: pct });
@@ -694,6 +812,8 @@ export function createPanel(root, { game, ui, bridge }) {
       show(fungalRow, hasResearch(s, 'fungiculture') || isShown(s, 'fungus_widget'));
       setProp(fungalBox, 'checked', !!c.fungalBrood);
       show(broodSec, total >= 1 || arr(c.brood).length > 0 || isShown(s, 'panel_colony'));
+      // C280: one-line summaries on folded headings
+      folds.brood.setSummary(fmtCount(brood) + ' / ' + fmtCount(slots) + ' brood slots · lay ' + fmtRate(num(st.layRate)));
 
       // castes
       const anyCaste = isShown(s, 'panel_war') || ['soldier', 'supermajor', 'replete'].some((k) => isShown(s, casteKey(k)));
@@ -704,6 +824,8 @@ export function createPanel(root, { game, ui, bridge }) {
           show(casteEls[k].chip, k === 'minor' || num(adults[k]) > 0 || isShown(s, casteKey(k)));
         }
         setText(berthsEl, berthLines(s, st, adults).join(' · '));
+        folds.castes.setSummary(['minor', 'soldier', 'supermajor', 'replete'].filter((k) => k === 'minor' || num(adults[k]) > 0)
+          .map((k) => fmtCount(num(adults[k])) + ' ' + CASTE_PLURAL[k]).join(' · '));
         const army = armyUpkeep(adults);
         const armyVis = num(adults.soldier) + num(adults.supermajor) > 0 || isShown(s, casteKey('soldier'));
         show(armyUpkeepEl, armyVis);
@@ -746,6 +868,9 @@ export function createPanel(root, { game, ui, bridge }) {
       const idle = q(() => idleMinors(s), Math.max(0, num(adults.minor) - Object.values(obj(c.jobs)).reduce((a, v) => a + num(v), 0) - num(c.militia)));
       setText(idleEl, fmtCount(idle) + ' idle' + (num(c.militia) > 0 ? ' · ' + fmtCount(c.militia) + ' militia' : ''));
       show(jobsSec, num(adults.minor) > 0 || isShown(s, 'panel_colony'));
+      let assignedNow = 0;
+      for (const j of jobIds()) assignedNow += num(obj(c.jobs)[j]);
+      folds.jobs.setSummary(fmtCount(assignedNow) + ' workers assigned · ' + fmtCount(idle) + ' idle');
       const ids = jobIds().filter((id) => isShown(s, jobKey(id)) || num(obj(c.jobs)[id]) > 0);
       const auto = !!(c.autoJobs || c.thresholdJobs);
       const eff = auto ? q(() => effectiveTargets(s), null) : null;

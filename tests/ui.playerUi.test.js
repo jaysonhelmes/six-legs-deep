@@ -109,7 +109,7 @@ test('C143: berth lines show Barracks (soldiers) and War Hall (supermajors) only
 });
 
 // ------------------------------------------------------------------------------------------------ C144 research
-test('C144: research has no "All" view; it opens the first branch with something available and remembers the choice', () => {
+test('C144 → C281: research shows every branch as a foldable section (no filter row); folds are remembered per browser', () => {
   const store = makeFakeStorage();
   globalThis.window.localStorage = store;
   try {
@@ -121,24 +121,30 @@ test('C144: research has no "All" view; it opens the first branch with something
     assert.ok(branches.includes(want));
     assert.equal(researchPanel.defaultBranch(s, branches[2]), branches[2], 'a remembered branch wins');
     assert.equal(researchPanel.defaultBranch(s, 'all'), want, 'an invalid remembered value is ignored');
+    assert.equal(researchPanel.branchMeta(2, 3, 10), '2 available · 3 / 10 owned');
     const host = doc.createElement('div');
     const p = researchPanel.createPanel(host, panelCtx(s, d));
     p.update(s, d);
-    const segs = host.querySelectorAll('.seg-btn');
-    assert.equal(segs.length, branches.length, 'one button per branch');
-    assert.ok(!segs.some((b) => /^All/.test(b.textContent.trim())), 'no All button');
-    assert.equal(segs.find((b) => b.classList.contains('selected')).dataset.f, want);
-    assert.equal(host.querySelectorAll('.tech-col').length, 1, 'one branch column at a time');
+    assert.equal(host.querySelectorAll('.seg-btn').length, 0, 'no branch filter row');
+    const secs = host.querySelectorAll('.tech-branch');
+    assert.equal(secs.length, branches.length, 'one section per branch');
+    assert.deepEqual(secs.map((x) => x.dataset.branch), branches, 'in branch order');
     assert.ok(host.querySelector('.hide-owned input'), 'Hide completed stays');
-    const other = segs.find((b) => b.dataset.f !== want);
-    other.click();
-    p.update(s, d);
-    assert.equal(store.getItem(researchPanel.BRANCH_KEY), other.dataset.f);
+    for (const sec of secs) {
+      const t = sec.querySelector('.sec-title');
+      assert.equal(t.getAttribute('role'), 'button');
+      assert.match(t.textContent, /available · \d+ \/ \d+ owned/);
+    }
+    const first = secs[0].querySelector('.sec-title');
+    first.click();
+    assert.equal(secs[0].classList.contains('collapsed'), true);
+    assert.match(first.dataset.foldSum, /owned/, 'the folded heading keeps its summary');
+    assert.equal(JSON.parse(store.getItem('sld.collapsed'))['research:' + branches[0]], true);
     p.destroy();
     const host2 = doc.createElement('div');
     const p2 = researchPanel.createPanel(host2, panelCtx(s, d));
     p2.update(s, d);
-    assert.equal(host2.querySelectorAll('.seg-btn').find((b) => b.classList.contains('selected')).dataset.f, other.dataset.f, 'remembered per browser');
+    assert.equal(host2.querySelector('.tech-branch').classList.contains('collapsed'), true, 'remembered per browser');
     p2.destroy();
   } finally {
     delete globalThis.window.localStorage;

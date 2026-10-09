@@ -30,13 +30,14 @@
 
 import { EVENT_RULES, EVENT_ORDER, EVENTS, EVENT_GAP, OUTCOMES } from '../data/events.js';
 import { FROST } from '../data/seasons.js';
-import { GRID } from '../data/balance.js';
+import { GRID, CELL } from '../data/balance.js';
+import { MOLE_CACHE } from '../data/soilFeatures.js';
 import { CHAMBERS } from '../data/chambers.js';
 import { RESEARCH } from '../data/research.js';
 import { BOSSES } from '../data/rivals.js';
 import { MOUND, TERRAIN, TERRAIN_ORDER, EXPEDITION } from '../data/surface.js';
 import { SPECIES } from '../data/genome.js';
-import { randInt, randRange, chance, pick, weighted, expSample } from '../core/rng.js';
+import { randInt, randRange, chance, pick, weighted, expSample, makeHolder } from '../core/rng.js';
 import { addEffect, removeEffect, hasEffect, effectsFor } from '../core/effects.js';
 import { grant, incomeSeconds, spend } from '../core/wallet.js';
 import { adultsTotal, broodTotal, clickAvailable, consumeClick } from '../core/state.js';
@@ -50,7 +51,7 @@ import * as nest from './nest.js';
 import * as combat from './combat.js';
 
 /** Object kinds the player may click through clickEventObject. */
-const CLICKABLE = new Set(['ladybug', 'footstep', 'rival_alate', 'golden_aphid', 'fossil_cache', 'lost_queen']);
+const CLICKABLE = new Set(['ladybug', 'footstep', 'rival_alate', 'golden_aphid', 'fossil_cache', 'lost_queen', 'mole_cache']);
 /** Clickable kinds that yield resources (refused under claustral_founding, C32). */
 const YIELDING = new Set(['rival_alate', 'golden_aphid', 'fossil_cache']);
 
@@ -541,7 +542,8 @@ const SPAWN = {
     return true;
   },
   ev_mole_tunnel(s, d, def, occ, env) {
-    nest.moleTunnel(s, d, env);
+    const dug = nest.moleTunnel(s, d, env);
+    spawnMoleCache(s, d, dug && Array.isArray(dug.cells) ? dug.cells : [], occ);
     s.meta.counters.moleTunnels = num(s.meta.counters.moleTunnels) + 1;
     const blocked = new Set(s.run.surface.sources.map((x) => x.hex));
     for (const e of s.run.surface.entrances) blocked.add(e.hex);
@@ -1004,6 +1006,75 @@ function claimFind(s, d, o, env) {
   }
 }
 
+// ------------------------------------------------------------------------------------------------------------------
+// C290 treasure mole: the cache at the end of a mole tunnel
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Put the mole's cache (event object 'mole_cache', cell = the tunnel's last cell, data.cache = its MOLE_CACHE kind,
+ * drawn by weight from a child stream seeded by the main RNG state and the occurrence, so the main stream — and every
+ * later event roll — is the same as before C290). With no tunnel dug (no room found) it goes on a random open tunnel
+ * cell; with none at all there is no cache (cannot happen: the main shaft is always open). One cache per cell.
+ */
+function spawnMoleCache(s, d, cells, occ) {
+  const h = makeHolder((num(s.rng) ^ Math.imul(num(occ) + 1, 2654435761)) >>> 0);
+  const kind = weighted(h, MOLE_CACHE.order.map((k) => ({ k, w: MOLE_CACHE.kinds[k].weight })));
+  if (!kind) return 0;
+  const taken = new Set(s.run.events.objects.filter((o) => o && o.kind === 'mole_cache').map((o) => o.cell));
+  const tun = s.run.nest.cells;
+  let cell = cells.length ? cells[cells.length - 1] : -1;
+  if (!(cell >= 0) || taken.has(cell) || tun[cell] !== CELL.TUNNEL) {
+    const free = [];
+    for (let i = 0; i < tun.length; i++) if (tun[i] === CELL.TUNNEL && !taken.has(i)) free.push(i);
+    cell = free.length ? pick(h, free) : -1;
+  }
+  if (!(cell >= 0)) return 0;
+  return addObj(s, 'mole_cache', -1, cell, -1, { occ, cache: kind.k });
+}
+
+/**
+ * [q] C290: what the mole's cache holds right now: { kind, name, res, amount } (amount before the chitin boost / cap;
+ * the reward scales with the colony: max(min, sec × smoothed income, capFrac × cap)). null for an unknown kind.
+ * @param {import('../core/types.js').Derived} d
+ * @param {string} kind a MOLE_CACHE.kinds key
+ * @returns {{ kind: string, name: string, res: string, amount: number } | null}
+ */
+export function moleCacheReward(d, kind) {
+  const k = Object.prototype.hasOwnProperty.call(MOLE_CACHE.kinds, kind) ? MOLE_CACHE.kinds[kind] : null;
+  if (!k) return null;
+  const capKey = k.res === 'food' ? 'foodCap' : k.res === 'chitin' ? 'chitinCap' : null;
+  const cap = capKey && d && d.stats ? num(d.stats[capKey]) : 0;
+  const amount = Math.max(incomeSeconds(d, k.res, k.sec, k.min), k.capFrac > 0 && cap > 0 ? k.capFrac * cap : 0);
+  return { kind, name: k.name, res: k.res, amount };
+}
+
+/** Grant a mole cache's reward and announce it (findClaimed toast + log line). auto: the cell was filled / built over. */
+function collectMoleCache(s, d, o, env, auto) {
+  const r = moleCacheReward(d, o.data && o.data.cache);
+  if (!r) return 0;
+  const got = grant(s, d, r.res, r.amount, { overflow: true });
+  const what = '+' + fmtOutcomeNum(got) + ' ' + r.res;
+  if (env && typeof env.emit === 'function') {
+    env.emit('findClaimed', { kind: 'mole_cache', cache: r.kind, res: r.res, amount: got,
+      text: (auto ? 'Your ants turned up the mole\'s ' : 'Mole\'s ') + r.name.toLowerCase() + ': ' + what + '.' });
+  }
+  return got;
+}
+
+/**
+ * C290: a mole cache whose cell is no longer an open tunnel (backfilled, built over) is collected for the player, so a
+ * cache is never lost. Online only (events are frozen offline; it is collected on return).
+ */
+function sweepMoleCaches(s, d, env) {
+  const objs = s.run.events.objects;
+  if (!objs.some((o) => o && o.kind === 'mole_cache')) return;
+  const cells = s.run.nest.cells;
+  const gone = objs.filter((o) => o && o.kind === 'mole_cache' && cells[o.cell] !== CELL.TUNNEL);
+  if (!gone.length) return;
+  removeObjs(s, (o) => gone.includes(o));
+  for (const o of gone) collectMoleCache(s, d, o, env, true);
+}
+
 /** End an antlion occurrence (send, reroute, trail gone); closes its card if still open. */
 function endAntlion(s, occ, env, choice) {
   const ev = s.run.events;
@@ -1295,6 +1366,7 @@ export function tick(s, d, dt, env) {
   if (!env || env.offline || !(dt > 0) || !Number.isFinite(dt)) return;
   const ev = s.run.events;
   sweepMold(s);
+  sweepMoleCaches(s, d, env);
   if (ev.card) {
     ev.card.t -= dt;
     if (ev.card.t <= 0) resolveCard(s, d, defaultChoice(ev.card), env);
@@ -1418,6 +1490,8 @@ export const handlers = {
         const n = EVENTS.ev_golden_aphid.num;
         addEffect(s, { id: 'ev_golden_aphid', stat: 'honeydew', mult: n.mult, t: n.buffSec });
         emitResolved(env, occ, 'ev_golden_aphid', 'clicked', { mult: n.mult, time: fmtOutcomeTime(n.buffSec) });
+      } else if (o.kind === 'mole_cache') {
+        collectMoleCache(s, d, o, env, false);   // C290 treasure mole
       } else if (o.kind === 'fossil_cache' || o.kind === 'lost_queen') {
         claimFind(s, d, o, env);   // C188 expedition finds
       } else if (o.kind === 'footstep') {

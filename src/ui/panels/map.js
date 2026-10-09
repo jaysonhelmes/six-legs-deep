@@ -1404,10 +1404,13 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
      * click on the raid's warning arrow) scrolls to that raid's row in Incoming raids (its Dispatch / defence note).
      */
     focusTarget(target, kind = null) {
+      // C280: a folded section opens for the row it is asked to show
       if (target && target.type === 'raid') {
+        if (raidSec.__fold) raidSec.__fold.set(false);
         focusRaid = num(target.uid, -1);
         return;
       }
+      if (warFormSec.__fold) warFormSec.__fold.set(false);
       form.setTarget(target, kind);
     },
     destroy() {

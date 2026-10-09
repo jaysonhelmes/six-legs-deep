@@ -1,13 +1,16 @@
-// Achievements panel: Next Goals (the 3 closest, with progress bars), the full list by category with progress, and
+// Achievements panel: the Quest book bookmark (C283, replacing Next Goals: the tracked quest and a button that opens
+// the book over the stage), the full list by category with progress, and
 // secret placeholders. C145: every goal and card names its requirement ("Wellspring — Dig down to row 74.") and a
 // "Recently earned" list (the last 8 by earn time, meta.achievements[id] = simTime) heads the panel. Owner: WP9. Contract: ARCHITECTURE §14.5 (Achievements row), §8.5; DESIGN §19, §25.6 rule 9.
-// Queries: achievements.progress / nextGoals (falls back to d.progress.goals).
+// Queries: achievements.progress; quests.questBook (which uses achievements.nextGoals for its fill-in quests).
 
 import { h, setText, show, toggleClass, syncList } from '../dom.js';
 import { fmt, fmtCount, fmtMult, fmtTime } from '../format.js';
 import { nameOf } from '../text.js';
-import { num, arr, obj } from '../reveal.js';
-import { progress as achProgress, nextGoals } from '../../systems/achievements.js';
+import { num, obj } from '../reveal.js';
+import { progress as achProgress } from '../../systems/achievements.js';
+import { questBook } from '../quests.js';
+import { trackedQuest } from '../questbook.js';
 import { ACH_ORDER, ACHIEVEMENTS } from '../../data/achievements.js';
 import { note, progressBar } from './common.js';
 
@@ -91,7 +94,7 @@ export function isSecret(id) {
  * @param {HTMLElement} root
  * @param {{ game: Object, ui: Object, bridge: Object }} ctx
  */
-export function createPanel(root, { game }) {
+export function createPanel(root, { game, questBook: book = null }) {
   const el = h('div', { class: 'panel panel-achievements' });
   root.appendChild(el);
   let cat = 'all';
@@ -99,10 +102,18 @@ export function createPanel(root, { game }) {
 
   const countEl = h('span', { class: 'big-num' });
   const bonusEl = h('span', { class: 'muted' });
-  const goalsList = h('div', { class: 'list goals' });
   const recentList = h('div', { class: 'list ach-recent' });
   const recentSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Recently earned' }), recentList);
-  const goalsEmpty = note('Keep playing to see your next goals.');
+  // C283: the Quest book bookmark replaces Next goals (the book itself opens over the map and nest)
+  const qbMeta = h('span', { class: 'sec-meta' });
+  const qbTitle = h('span', { class: 'row-title' });
+  const qbBar = progressBar('bar-goal');
+  const qbNote = h('p', { class: 'note' });
+  const qbOpen = h('button', { type: 'button', class: 'btn btn-primary', text: 'Open the Quest book',
+    on: { click: () => { if (book) book.open(); } } });
+  qbOpen.disabled = !book;
+  const qbSec = h('section', { class: 'sec sec-questbook' }, h('h3', { class: 'sec-title' }, 'Quest book ', qbMeta),
+    h('div', { class: 'qb-bookmark' }, qbTitle, qbBar.el, qbNote, h('div', { class: 'btn-row' }, qbOpen)));
   const filterRow = h('div', { class: 'seg seg-small seg-scroll', role: 'radiogroup', 'aria-label': 'Category' });
   const mk = (id, label) => h('button', { type: 'button', class: 'seg-btn' + (id === cat ? ' selected' : ''), dataset: { c: id }, text: label,
     on: { click: () => { cat = id; tick = 0; for (const b of Array.from(filterRow.children)) toggleClass(b, 'selected', b.dataset.c === id); } } });
@@ -111,7 +122,7 @@ export function createPanel(root, { game }) {
   const list = h('div', { class: 'list ach-list' });
   const empty = note('Achievement data not loaded yet.');
   el.append(h('div', { class: 'row-between balance' }, h('span', null, countEl, ' earned'), bonusEl), recentSec,
-    h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Next goals' }), goalsList, goalsEmpty),
+    qbSec,
     h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'All achievements' }), filterRow, list, empty));
 
   function createRecent() {
@@ -129,22 +140,6 @@ export function createPanel(root, { game }) {
     setText(r.name, nameOf('achievement', e.id));
     setText(r.desc, achRequirement(e.id, true));
     setText(r.when, agoText(e.ago));
-  }
-
-  function createGoal(g) {
-    const name = h('span', { class: 'row-title' });
-    const bar = progressBar('bar-goal');
-    const row = h('div', { class: 'goal-row' }, name, bar.el);
-    row.__r = { name, bar };
-    return row;
-  }
-
-  function updateGoal(row, g) {
-    const r = row.__r;
-    setText(r.name, goalLabel(g.id));
-    const target = num(g.target);
-    const cur = num(g.cur);
-    r.bar.set(target > 0 ? cur / target : 0, fmt(cur) + ' / ' + fmt(target));
   }
 
   function createAch(id) {
@@ -189,11 +184,18 @@ export function createPanel(root, { game }) {
       const total = ACH_ORDER.length;
       setText(countEl, fmtCount(earned) + (total ? ' / ' + fmtCount(total) : ''));
       setText(bonusEl, 'Production ' + fmtMult(num(d && d.meta && d.meta.achMult, 1)));
-      let goals = q(() => nextGoals(s, d, 3), null);
-      if (!Array.isArray(goals) || goals.length === 0) goals = arr(d && d.progress && d.progress.goals);
-      goals = goals.filter((g) => g && g.id).slice(0, 3);
-      syncList(goalsList, goals, (g) => g.id, createGoal, updateGoal);
-      show(goalsEmpty, goals.length === 0);
+      // C283: Quest book bookmark (the tracked quest, else the chapter's blurb)
+      const bk = q(() => questBook(s, d), null);
+      if (bk) {
+        const tq = trackedQuest(bk);
+        setText(qbMeta, (bk.stage.chapter || '') + ' · ' + (bk.stage.name || ''));
+        const openN = bk.quests.filter((x) => !x.complete).length;
+        setText(qbTitle, tq ? tq.title : fmtCount(openN) + ' quest' + (openN === 1 ? '' : 's') + ' for this stage');
+        show(qbBar.el, !!tq);
+        if (tq) qbBar.set(tq.frac, tq.progText);
+        setText(qbNote, tq ? 'Tracked on the HUD. Open the book for its steps.' : bk.stage.blurb || '');
+        if (qbSec.__fold) qbSec.__fold.setSummary(tq ? tq.title + ' · ' + Math.round(tq.frac * 100) + '%' : fmtCount(openN) + ' quests');
+      }
       const recent = recentAchievements(s);
       show(recentSec, recent.length > 0);
       syncList(recentList, recent, (e) => e.id, createRecent, updateRecent);

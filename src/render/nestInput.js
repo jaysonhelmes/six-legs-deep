@@ -537,6 +537,10 @@ export function attachNestInput(canvas, renderer, { game, ui, bridge } = {}) {
       case 'mold':
         act('scrapeMold', { uid: t.id }, cx, cy);
         break;
+      // C290: the treasure mole's cache: collect it
+      case 'moleCache':
+        act('clickEventObject', { uid: t.id }, cx, cy);
+        break;
       case 'flood':
         act('bailFlood', {}, cx, cy);
         break;

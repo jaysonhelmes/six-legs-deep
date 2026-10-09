@@ -1,12 +1,13 @@
-// Research panel: tier grid by branch (columns = branches, rows = tiers), locked nodes greyed with their
+// Research panel: one foldable section per branch (nodes in tier order), locked nodes greyed with their
 // prerequisites, Innate helix badges with run counts, and branch refinements. "Hide completed" (C116) drops owned nodes
-// from the grid (remembered per browser) and leaves a "N completed hidden" note per branch. C144: one branch at a
-// time (no "All" view); the first visit opens the first branch with something available, later visits the branch last
-// viewed (remembered per browser); each branch button counts its available nodes. Owner: WP9.
+// from the grid (remembered per browser) and leaves a "N completed hidden" note per branch. C144 (one branch at a
+// time behind a filter row) is superseded by C281 below. Owner: WP9.
 // C200: an "Archive" block under the refinement once the branch's Archive track is open (research.archiveOpen): its
 // level, the permanent bonus and the next level's cost; clicking buys a level (buyArchive).
 // C209: a search box filters nodes by name or effect text across every branch (searchResearch); while it has text the
-// branch view is replaced by one results column (nodes tagged with their branch); picking a branch clears it.
+// branch sections are replaced by one results column (nodes tagged with their branch).
+// C281 (feedback pass 9): the branch filter is gone; every branch is a foldable section stacked down the panel, its
+// heading saying "N available · owned / total" (also the folded summary). loadBranch / defaultBranch stay for old data.
 // Contract: ARCHITECTURE §14.5 (Research row), §8.4; DESIGN §11. Queries: research.isAvailable / isOwned / cost /
 // refinementCost / branchComplete / archiveOpen / archiveCost / archiveLevel.
 
@@ -17,7 +18,7 @@ import { traitLevel, num, arr, obj } from '../reveal.js';
 import { isAvailable, isOwned, cost as researchCost, refinementCost, branchComplete, archiveOpen, archiveCost, archiveLevel }
   from '../../systems/research.js';
 import { BRANCH_ORDER, BRANCHES, RESEARCH_ORDER, RESEARCH, REFINEMENT, INNATE, ARCHIVE } from '../../data/research.js';
-import { makeAct, note } from './common.js';
+import { makeAct, note, collapsible } from './common.js';
 
 const BRANCH_FALLBACK = ['foraging', 'excavation', 'brood', 'husbandry', 'warfare', 'communication'];
 const MAIN_LABELS = { forage: 'forager output', dig: 'dig work', lay: 'lay rate', 'honeydew+fungus': 'honeydew and fungus', ap: 'army power', insight: 'insight' };
@@ -206,6 +207,17 @@ export function searchResearch(query) {
 }
 
 /**
+ * C281: the heading meta of a branch: "2 available · 3 / 10 owned".
+ * @param {number} avail
+ * @param {number} owned
+ * @param {number} total
+ * @returns {string}
+ */
+export function branchMeta(avail, owned, total) {
+  return fmtCount(avail) + ' available · ' + fmtCount(owned) + ' / ' + fmtCount(total) + ' owned';
+}
+
+/**
  * Research panel.
  * @param {HTMLElement} root
  * @param {{ game: Object, ui: Object, bridge: Object }} ctx
@@ -214,87 +226,57 @@ export function createPanel(root, { game, ui, bridge }) {
   const act = makeAct(game, bridge);
   const el = h('div', { class: 'panel panel-research' });
   root.appendChild(el);
-  let filter = null;           // resolved on the first update (defaultBranch)
   let hideOwned = loadHideOwned();
-  let lastGlow = null;
 
   const insightEl = h('span', { class: 'big-num' });
   const rateEl = h('span', { class: 'muted' });
-  const filterRow = h('div', { class: 'seg seg-small seg-scroll', role: 'radiogroup', 'aria-label': 'Branch' });
-  const filterCount = {};
-  const selectBranch = (id, remember) => {
-    filter = id;
-    for (const b of Array.from(filterRow.children)) toggleClass(b, 'selected', b.dataset.f === id);
-    if (remember) saveBranch(id);
-  };
-  const mkFilter = (id, label) => {
-    filterCount[id] = h('span', { class: 'seg-count' });
-    return h('button', { type: 'button', class: 'seg-btn', dataset: { f: id }, on: { click: () => {
-      if (query) { query = ''; search.value = ''; }   // C209: picking a branch leaves the search
-      selectBranch(id, true);
-    } } }, label, filterCount[id]);
-  };
-  for (const b of branchFilters()) filterRow.appendChild(mkFilter(b, nameOf('branch', b)));
   const hideBox = h('input', { type: 'checkbox', class: 'check' });
   hideBox.checked = hideOwned;
   hideBox.addEventListener('change', () => { hideOwned = !!hideBox.checked; saveHideOwned(hideOwned); });
   const hiddenTotal = h('span', { class: 'muted hide-owned-count' });
   const hideRow = h('label', { class: 'toggle-row hide-owned', dataset: { tip: 'Hide research you already own. Locked nodes still name the prerequisites they are missing.' } },
     hideBox, h('span', { text: 'Hide completed' }), hiddenTotal);
-  const grid = h('div', { class: 'tech-grid' });
-  const gridWrap = h('div', { class: 'tech-scroll' }, grid);
+  // C281: every branch is a foldable section stacked down the panel (no branch filter; fold state per browser)
+  const branchBox = h('div', { class: 'tech-branches' });
   const empty = note('No research data loaded yet.');
-  // C209: search by name or effect across every branch (results replace the branch view while the box has text)
+  // C209: search by name or effect across every branch (results replace the branch sections while the box has text)
   let query = '';
   const search = h('input', { type: 'search', class: 'input research-search', placeholder: 'Search research (name or effect)', autocomplete: 'off',
     spellcheck: false, attrs: { 'aria-label': 'Search research' } });
   search.addEventListener('input', () => { query = String(search.value || '').trim(); });
   const noHits = note('');
+  const searchHead = h('span', { class: 'tech-col-main' });
+  const searchList = h('div', { class: 'tech-col-list search-results' });
+  const searchBox = h('div', { class: 'tech-col tech-search' }, h('h4', { class: 'tech-col-head' }, 'Search results ', searchHead), searchList);
+  searchBox.hidden = true;
   el.append(h('div', { class: 'row-between research-head' }, h('span', null, h('i', { class: 'ico ico-insight' }), ' ', insightEl, ' insight'), rateEl),
-    search, filterRow, hideRow, gridWrap, noHits, empty);
+    search, hideRow, searchBox, noHits, branchBox, empty);
 
   const cols = {};
-  let lastLayout = '';
-  let searchCol = null;
-
-  /** C209: one result column holding matches from every branch (each node tagged with its branch). */
-  function buildSearchColumn() {
-    clear(grid);
-    for (const k of Object.keys(cols)) delete cols[k];
-    toggleClass(grid, 'single', true);
-    const list = h('div', { class: 'tech-col-list search-results' });
-    const head = h('span', { class: 'tech-col-main' });
-    grid.appendChild(h('div', { class: 'tech-col' }, h('h4', { class: 'tech-col-head' }, 'Search results ', head), list));
-    searchCol = { list, head };
-  }
-
-  function buildColumns() {
-    searchCol = null;
-    clear(grid);
-    for (const k of Object.keys(cols)) delete cols[k];
-    const branches = [filter];
-    toggleClass(grid, 'single', true);
-    for (const b of branches) {
-      const main = BRANCHES[b] && BRANCHES[b].main;
-      const list = h('div', { class: 'tech-col-list' });
-      const hiddenNote = h('p', { class: 'tech-hidden-note' });
-      const refine = h('div', { class: 'tech-node refine' });
-      const refName = h('span', { class: 'tech-name' });
-      const refCost = h('span', { class: 'cost' });
-      refine.append(refName, h('span', { class: 'tech-desc', text: fmtMult(num(REFINEMENT && REFINEMENT.mult, 1.1)) + ' ' + (MAIN_LABELS[main] || 'branch output') + ' per level' }), refCost);
-      refine.addEventListener('click', (ev) => act('buyRefinement', { branch: b }, ev, refine));
-      // C200: the branch's permanent Archive track
-      const archive = h('div', { class: 'tech-node refine archive', dataset: { tip: ARCHIVE_TEXT.tip } });
-      const arcName = h('span', { class: 'tech-name' });
-      const arcDesc = h('span', { class: 'tech-desc' });
-      const arcCost = h('span', { class: 'cost' });
-      archive.append(arcName, arcDesc, arcCost);
-      archive.addEventListener('click', (ev) => act('buyArchive', { branch: b }, ev, archive));
-      const col = h('div', { class: 'tech-col' }, h('h4', { class: 'tech-col-head' }, nameOf('branch', b),
-        h('span', { class: 'tech-col-main', text: MAIN_LABELS[main] || '' })), hiddenNote, list, refine, archive);
-      cols[b] = { list, refine, refName, refCost, hiddenNote, archive, arcName, arcDesc, arcCost, main };
-      grid.appendChild(col);
-    }
+  for (const b of branchIds()) {
+    const main = BRANCHES[b] && BRANCHES[b].main;
+    const meta = h('span', { class: 'sec-meta' });
+    const list = h('div', { class: 'tech-col-list tech-branch-grid' });
+    const hiddenNote = h('p', { class: 'tech-hidden-note' });
+    const refine = h('div', { class: 'tech-node refine' });
+    const refName = h('span', { class: 'tech-name' });
+    const refCost = h('span', { class: 'cost' });
+    refine.append(refName, h('span', { class: 'tech-desc', text: fmtMult(num(REFINEMENT && REFINEMENT.mult, 1.1)) + ' ' + (MAIN_LABELS[main] || 'branch output') + ' per level' }), refCost);
+    refine.addEventListener('click', (ev) => act('buyRefinement', { branch: b }, ev, refine));
+    // C200: the branch's permanent Archive track
+    const archive = h('div', { class: 'tech-node refine archive', dataset: { tip: ARCHIVE_TEXT.tip } });
+    const arcName = h('span', { class: 'tech-name' });
+    const arcDesc = h('span', { class: 'tech-desc' });
+    const arcCost = h('span', { class: 'cost' });
+    archive.append(arcName, arcDesc, arcCost);
+    archive.addEventListener('click', (ev) => act('buyArchive', { branch: b }, ev, archive));
+    const title = h('h3', { class: 'sec-title' }, nameOf('branch', b) + ' ', meta);
+    const sec = h('section', { class: 'sec tech-branch', dataset: { branch: b, foldId: b } }, title,
+      h('p', { class: 'tech-branch-main', text: MAIN_LABELS[main] ? 'Main bonus: ' + MAIN_LABELS[main] : '' }),
+      hiddenNote, list, refine, archive);
+    branchBox.appendChild(sec);
+    const fold = collapsible(sec, title, 'research:' + b);
+    cols[b] = { sec, meta, list, refine, refName, refCost, hiddenNote, archive, arcName, arcDesc, arcCost, main, fold };
   }
 
   function createNode(id) {
@@ -306,19 +288,20 @@ export function createPanel(root, { game, ui, bridge }) {
     const pre = h('span', { class: 'tech-pre' });
     // C209: the branch, shown on search results (they mix branches)
     const tag = h('span', { class: 'tech-branch-tag', text: nameOf('branch', RESEARCH[id] && RESEARCH[id].branch) });
-    tag.hidden = !searchCol;
+    tag.hidden = true;
     const node = h('button', { type: 'button', class: 'tech-node', dataset: { id, tip: RESEARCH_TIPS[id] || '' } }, tag, h('span', { class: 'tech-top' }, name, helix), desc, pre,
       h('span', { class: 'tech-foot' }, costEl, runs));
     node.addEventListener('click', (ev) => {
       if (q(() => isOwned(game.s, id), false)) return;
       act('buyResearch', { id }, ev, node);
     });
-    node.__r = { costEl, helix, runs, pre };
+    node.__r = { costEl, helix, runs, pre, tag };
     return node;
   }
 
-  function updateNode(node, id, s) {
+  function updateNode(node, id, s, tagged = false) {
     const r = node.__r;
+    if (r.tag.hidden === tagged) r.tag.hidden = !tagged;
     const owned = q(() => isOwned(s, id), !!obj(s.run.research)[id]);
     const avail = !owned && q(() => isAvailable(s, id), false);
     const innate = !!obj(s.era && s.era.innate)[id];
@@ -360,37 +343,21 @@ export function createPanel(root, { game, ui, bridge }) {
       setText(rateEl, fmtRate(num(d && d.rates && d.rates.insight && d.rates.insight.net)));
       const hasData = RESEARCH_ORDER.length > 0;
       show(empty, !hasData);
-      show(gridWrap, hasData);
-      if (!hasData) return;
-      if (!filter) selectBranch(defaultBranch(s, loadBranch()), false);
-      // an onboarding glow on a node of another branch opens that branch (once per glow)
-      const glow = ui.getUI().glow;
-      if (glow !== lastGlow) {
-        lastGlow = glow;
-        const gid = typeof glow === 'string' && glow.startsWith('research:') ? glow.slice(9) : null;
-        const gb = gid && RESEARCH[gid] ? RESEARCH[gid].branch : null;
-        if (gb && gb !== filter && branchIds().includes(gb)) selectBranch(gb, false);
+      if (!hasData) {
+        show(branchBox, false);
+        show(searchBox, false);
+        return;
       }
-      for (const b of branchIds()) {
-        const n = nodesOf(b).filter((id) => q(() => isAvailable(s, id), false)).length;
-        setText(filterCount[b], n > 0 ? ' ' + fmtCount(n) : '');
-        filterCount[b].title = n > 0 ? fmtCount(n) + ' available' : '';
-      }
-      const layout = query ? '?search' : filter;
-      if (layout !== lastLayout) {
-        lastLayout = layout;
-        if (query) buildSearchColumn();
-        else buildColumns();
-      }
-      toggleClass(filterRow, 'dim', !!query);
+      if (hideBox.checked !== hideOwned) hideBox.checked = hideOwned;
       // C209: search results from every branch (owned ones included, marked Owned), best name matches first
-      if (searchCol) {
+      show(searchBox, !!query);
+      show(branchBox, !query);
+      if (query) {
         const hits = searchResearch(query);
-        setText(searchCol.head, fmtCount(hits.length) + ' match' + (hits.length === 1 ? '' : 'es'));
-        syncList(searchCol.list, hits, (id) => id, createNode, (node, id) => updateNode(node, id, s));
+        setText(searchHead, fmtCount(hits.length) + ' match' + (hits.length === 1 ? '' : 'es'));
+        syncList(searchList, hits, (id) => id, createNode, (node, id) => updateNode(node, id, s, true));
         setText(noHits, hits.length ? '' : 'No research matches “' + query + '”.');
         show(noHits, !hits.length);
-        if (hideBox.checked !== hideOwned) hideBox.checked = hideOwned;
         setText(hiddenTotal, '');
         return;
       }
@@ -398,7 +365,15 @@ export function createPanel(root, { game, ui, bridge }) {
       let hiddenSum = 0;
       for (const b of Object.keys(cols)) {
         const c = cols[b];
-        const vis = visibleNodes(nodesOf(b), (id) => q(() => isOwned(s, id), !!obj(s.run.research)[id]), hideOwned);
+        const all = nodesOf(b);
+        const ownedFn = (id) => q(() => isOwned(s, id), !!obj(s.run.research)[id]);
+        const owned = all.filter(ownedFn).length;
+        const avail = all.filter((id) => !ownedFn(id) && q(() => isAvailable(s, id), false)).length;
+        const meta = branchMeta(avail, owned, all.length);
+        setText(c.meta, meta);
+        toggleClass(c.sec, 'has-available', avail > 0);
+        c.fold.setSummary(meta);
+        const vis = visibleNodes(all, ownedFn, hideOwned);
         hiddenSum += vis.hidden;
         show(c.hiddenNote, vis.hidden > 0);
         setText(c.hiddenNote, vis.hidden > 0 ? fmtCount(vis.hidden) + ' completed hidden' : '');
@@ -422,7 +397,6 @@ export function createPanel(root, { game, ui, bridge }) {
           toggleClass(c.archive, 'cant', !ok);
         }
       }
-      if (hideBox.checked !== hideOwned) hideBox.checked = hideOwned;
       setText(hiddenTotal, hideOwned && hiddenSum > 0 ? '(' + fmtCount(hiddenSum) + ' hidden)' : '');
     },
     destroy() {

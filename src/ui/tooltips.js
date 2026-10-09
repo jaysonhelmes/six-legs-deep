@@ -10,7 +10,7 @@ import {
   sourceTipLines, detourText, FIND_NAMES, FIND_TIPS, honeydewCapText, territoryBenefitLines, trailDistanceLines,
 } from './text.js';
 import { detourInfo } from '../systems/trails.js';
-import { blightStatus } from '../systems/events.js';   // C245
+import { blightStatus, moleCacheReward } from '../systems/events.js';   // C245, C290
 import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
@@ -116,6 +116,22 @@ export function tipForKey(key, s, d) {
       th.locate ? (arr(th.spots).length > 1 ? 'Click to find it; click again for the next.' : 'Click to find it.') : ''].filter(Boolean) };
   }
   return null;
+}
+
+/**
+ * C290: tooltip of a mole's cache (nest pick { kind: 'moleCache', id }): what it is and about how much it gives now.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {{ id?: number }} t
+ * @returns {{ title: string, lines: string[] } | null}
+ */
+export function moleCacheTip(s, d, t) {
+  const o = arr(s && s.run && s.run.events && s.run.events.objects).find((x) => x && x.uid === num(t && t.id, -1) && x.kind === 'mole_cache');
+  if (!o) return null;
+  const r = moleCacheReward(d, o.data && o.data.cache);
+  if (!r) return null;
+  const res = { food: 'food', insight: 'insight', chitin: 'chitin' }[r.res] || r.res;
+  return { title: 'Mole\'s cache: ' + r.name, lines: ['A mole left it at the end of its tunnel.', 'Click to collect: about +' + fmt(r.amount) + ' ' + res + '.'] };
 }
 
 /** C182: tooltip line of a trail on a detour round a molehill / spring puddle, or paused with no way round. */
@@ -270,6 +286,8 @@ export function tipForTarget(t, s, d) {
     // C216: the yellow house pip over the Royal Chamber (housing full)
     if (k === 'housePip') return { title: 'Housing full', lines: housePipLines(s, d) };
     if (k === 'mold') return { title: 'Mold', lines: ['Halves this chamber. Click to scrape it off.'] };
+    // C290: the treasure mole's cache at the end of its tunnel
+    if (k === 'moleCache') return moleCacheTip(s, d, t);
     // C245: a blighted Fungus Garden: every click scrapes the blight
     if (k === 'blight') {
       const bl = blightStatus(s);

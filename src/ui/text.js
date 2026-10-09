@@ -1072,7 +1072,7 @@ export const EVENT_COPY = Object.freeze({
   ev_rival_queen_dies: 'A rival queen has died; that nest is weakened.',
   ev_flight_day: 'Warm, still air (a "flying ant day"): Nuptial Flights get ×1.5 alates for 3 min.',
   ev_golden_aphid: 'A golden aphid! Click it within 15 s.',
-  ev_mole_tunnel: 'A mole tunnels through: free tunnels below.',
+  ev_mole_tunnel: 'A mole tunnels through and leaves a cache at the end of its tunnel. Click it in the nest!',
   ev_wandering_queen: 'A strange queen waits at the entrance.',
   ev_myrmecophile_guest: 'A rove beetle begs at the shaft.',
   ev_phengaris_caterpillar: 'A caterpillar that smells like your brood.',

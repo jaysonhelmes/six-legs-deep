@@ -15,7 +15,7 @@
 // scrollBy(dy), panBy(dx, dy), zoomAt(f, x, y), frameHome(), controlAt(x, y), pressControl(name), getView(),
 // ghostAt(cell, tool), ceremonyView(row).
 
-import { GRID, CELL, DIG_CAP } from '../data/balance.js';
+import { GRID, CELL, DIG_CAP, TICK } from '../data/balance.js';
 import { LAYER_ORDER, LAYERS, GEOM, DIG } from '../data/strata.js';
 import { CHAMBERS, ADJACENCY } from '../data/chambers.js';
 import { BROOD } from '../data/economy.js';
@@ -30,7 +30,7 @@ import { effectsFor } from '../core/effects.js';
 import { createLayer, createOffscreen, pageHidden, nowMs, reducedMotion } from './canvas.js';
 import { createNestCamera, FRAME_CELL } from './camera.js';
 import { pxToCell, clamp, hash01, hash2 } from './geom.js';
-import { STRATA, NEST, GRASS_LINE, ANT, CARRY_CODES, mix, shade, rgba, rivalColor, seasonBlend, blendSky, blendSeasonColor } from './palette.js';
+import { STRATA, NEST, GRASS_LINE, ANT, CARRY, CARRY_CODES, mix, shade, rgba, rivalColor, seasonBlend, blendSky, blendSeasonColor } from './palette.js';
 import { getAtlas } from './atlas.js';
 import * as cosmetics from './cosmetics.js';
 import {
@@ -437,6 +437,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     glows.length = 0;
     ghostMemo.key = '';
     levelMemo.key = '';
+    resetMoves(); // C270 / C271
     reallocIn = 0;
     hub.clear();
     // a new run / reset / import: back to the default framing on the next viewport check (F20). A ceremony that has
@@ -1995,6 +1996,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const sel = ui0.selection && ui0.selection.view === 'nest' ? ui0.selection : null;
     const hov = ui0.hover && ui0.hover.view === 'nest' ? ui0.hover : null;
     labelQueue.length = 0;
+    // C271: old rooms of relocating chambers (still working while the new room is dug, emptied during the move)
+    drawRelocGhosts(ctx, s, d, unit, W, H, { plan, res, stats, colony, blight, ventilated, exposed: false, winter });
     for (let k = 0; k < chs.length; k++) {
       const c = chs[k];
       if (!c) continue;
@@ -2003,11 +2006,14 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       const box = cavityPx(c, v);
       const exposed = chamberExposed(s, d, c, k);
       const active = c.status === 'active' || c.status === 'growing';
+      // C271: during a relocation's move the contents (and set dressing) arrive in the new room as they are carried in
+      const mv = c.status === 'relocating' ? relocMemo.get(c.uid) : null;
+      const moving = !!(mv && mv.ph === 'move');
       const full = !!geo.full[k];
       const isSel = !!(sel && (sel.kind === 'chamber' || sel.kind === 'nursery' || sel.kind === 'queen') && sel.id === c.uid);
       const isHov = !!(hov && (hov.kind === 'chamber' || hov.kind === 'nursery') && hov.id === c.uid);
       // interior content, clipped to the cavity (and to the dug cells while it is still being dug)
-      if (active) {
+      if (active || moving) {
         ctx.save();
         chamberPath(ctx, c, v);
         ctx.clip();
@@ -2016,8 +2022,10 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
           for (const i of geo.cells[k] || []) ctx.rect(v.ox + (i % COLS) * v.cell, v.oy + ((i / COLS) | 0) * v.cell, v.cell, v.cell);
           ctx.clip();
         }
-        ctx.globalAlpha = chamberStatusAlpha(c);
-        drawContent(ctx, s, d, c, k, r, box, unit, { plan, res, stats, colony, blight, ventilated, exposed, winter });
+        ctx.globalAlpha = moving ? 1 : chamberStatusAlpha(c);
+        const o = { plan, res, stats, colony, blight, ventilated, exposed, winter };
+        if (moving) Object.assign(o, { frac: relocFrac(mv), decorAlpha: relocFrac(mv), planOverride: mv.plan || plan.get(c.uid) });
+        drawContent(ctx, s, d, c, k, r, box, unit, o);
         ctx.globalAlpha = 1;
         if (exposed) {
           ctx.fillStyle = 'rgba(200,230,255,0.16)';
@@ -2071,7 +2079,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       let pct = 100;
       if (building) {
         const list = geo.cells[k] || [];
-        pct = Math.round((100 * list.length) / Math.max(1, c.w * c.h));
+        // C271: during a relocation's move the bar shows how much has been carried in
+        pct = moving ? Math.round(100 * relocFrac(mv)) : Math.round((100 * list.length) / Math.max(1, c.w * c.h));
         const bw = Math.max(4, box.w - 4);
         const bh = Math.max(2, Math.min(4, unit * 0.2));
         const by = box.y + box.h - bh - 1;
@@ -2098,38 +2107,49 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
   }
 
+  /**
+   * Set dressing and live contents of chamber c. C271 (relocation): `o.frac` (0..1, default 1) scales the contents
+   * (seed pile, brood, fungus, repletes, alates, midden murk), `o.decorAlpha` fades the set dressing and
+   * `o.planOverride` replaces the chamber's brood plan (the brood it had before the move).
+   */
   function drawContent(ctx, s, d, c, k, r, box, unit, o) {
+    const frac = o.frac == null ? 1 : clamp(o.frac, 0, 1);
+    const a0 = ctx.globalAlpha;
+    const da = o.decorAlpha == null ? 1 : clamp(o.decorAlpha, 0, 1);
+    const brood = scalePlan(o.planOverride !== undefined ? o.planOverride : o.plan.get(c.uid), frac);
     // set dressing first (cached static layer), then the live contents, then the subtle animated layer
     const dOpts = decorOpts(c, r, box, unit, o.winter);
-    decorCache.draw(ctx, c, box, unit, cache.cpp || cppFor(unit), dOpts);
+    ctx.globalAlpha = a0 * da;
+    if (da > 0.001) decorCache.draw(ctx, c, box, unit, cache.cpp || cppFor(unit), dOpts);
+    ctx.globalAlpha = a0;
     switch (c.type) {
       case 'royal_chamber':
-        drawRoyal(ctx, s, d, c, r, unit, o.plan.get(c.uid), box);
+        drawRoyal(ctx, s, d, c, r, unit, brood, box);
         break;
       case 'nursery':
       case 'hibernaculum':
-        art.drawBroodHeaps(ctx, box, o.plan.get(c.uid) || { egg: 0, larva: 0, pupa: 0 }, c.type === 'nursery' && o.exposed, unit, MAX_BROOD_SPRITES);
+        art.drawBroodHeaps(ctx, box, brood || { egg: 0, larva: 0, pupa: 0 }, c.type === 'nursery' && o.exposed, unit, MAX_BROOD_SPRITES);
         break;
       case 'granary':
-        art.drawSeedPile(ctx, box, unit, clamp((o.res.food || 0) / Math.max(1, o.stats.foodCap || 150), 0, 1),
+        art.drawSeedPile(ctx, box, unit, frac * clamp((o.res.food || 0) / Math.max(1, o.stats.foodCap || 150), 0, 1),
           layerOfChamber(d, c, k) === 'clay' && !o.ventilated && (o.res.food || 0) > 0, c.uid);
         break;
       case 'fungus_garden':
-        art.drawFungusBed(ctx, box, unit, clamp((o.res.fungus || 0) / Math.max(1, o.stats.fungusCap || 1000), 0, 1), o.blight, time);
+        art.drawFungusBed(ctx, box, unit, frac * clamp((o.res.fungus || 0) / Math.max(1, o.stats.fungusCap || 1000), 0, 1), o.blight, time);
         break;
       case 'repletion_hall': {
-        const n = o.colony.adults ? o.colony.adults.replete || 0 : 0;
+        const n = Math.round(frac * (o.colony.adults ? o.colony.adults.replete || 0 : 0));
         const per = Math.max(1, Math.floor(box.w / (unit * 0.62)));
         art.drawRepletes(ctx, box, unit, n, Math.min(0.6, (0.02 * n) / per * 0.5));
         break;
       }
       case 'nuptial_chamber':
-        drawAlates(ctx, box, unit, o.colony.alatesReared || 0, (d && d.stats && d.stats.alateCells) || 25);
+        drawAlates(ctx, box, unit, Math.round(frac * (o.colony.alatesReared || 0)), (d && d.stats && d.stats.alateCells) || 25);
         break;
       case 'midden': {
         const load = adultsTotal(s) / Math.max(1, 100 * Math.max(1, c.level || 1) * ((d && d.meta && d.meta.colonyScale) || 1));
         // ARCH-R: "overloaded" read as more than 100 adults × colonyScale per midden level (DESIGN §7.13 gives no number)
-        const dark = clamp(load - 1, 0, 1);
+        const dark = frac * clamp(load - 1, 0, 1);
         if (dark > 0) {
           ctx.fillStyle = `rgba(10,6,3,${(0.5 * dark).toFixed(3)})`;
           ctx.fillRect(box.x - unit, box.y - unit, box.w + 2 * unit, box.h + 2 * unit);
@@ -2139,9 +2159,11 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       default:
         break;
     }
-    if (decor.hasDecorAnim(c.type)) {
+    if (decor.hasDecorAnim(c.type) && da > 0.001) {
       dOpts.still = reduced;
+      ctx.globalAlpha = a0 * da;
       decor.drawDecorAnim(ctx, c.type, box, unit, reduced ? 0 : time, c.uid, dOpts);
+      ctx.globalAlpha = a0;
     }
   }
 
@@ -2548,8 +2570,17 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   /** The queen herself, drawn after the worker sprites so attendants never hide her. */
   function drawQueen(ctx, s, unit) {
     cosmetics.syncAntTint(s);   // C149 palette cosmetic: amber-tinted ants (once per frame, before any ant is drawn)
-    const c = royalRect();
-    if (!c || !(c.uid >= 0) || !(c.status === 'active' || c.status === 'growing')) return;
+    let c = royalRect();
+    if (!c || !(c.uid >= 0)) return;
+    if (!(c.status === 'active' || c.status === 'growing')) {
+      // C271: a relocating Royal Chamber: the queen stays in her old room until halfway through the move
+      const e = c.status === 'relocating' ? relocMemo.get(c.uid) : null;
+      if (!e || e.overlap) return;
+      if (e.ph === 'dig' || (e.ph === 'move' && relocFrac(e) < 0.5)) {
+        if (!e.ghostOk) return;
+        c = relocGhost(e);
+      } else if (e.ph !== 'move') return;
+    }
     const r = chamberRectPx(c);
     if (r.y > layer.cssH || r.y + r.h < 0) return;
     const lvl = Math.max(1, c.level || 1);
@@ -2887,6 +2918,43 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       if (p.y < -30 || p.y > layer.cssH + 30) continue;
       const pulse = reduced ? 1 : ((time * 0.4 + hash01(m.uid, 1)) % 1);
       art.drawMoldSpot(ctx, p.x, p.y, v.cell, m.uid, pulse);
+    }
+  }
+
+  /** C290: the mole's caches (event objects 'mole_cache' on a tunnel cell): { uid, i, kind }. */
+  function moleCaches(s) {
+    const out = [];
+    for (const o of (s.run.events && s.run.events.objects) || []) {
+      if (o && o.kind === 'mole_cache' && o.cell >= 0 && o.cell < NCELL) out.push({ uid: o.uid, i: o.cell, kind: o.data && o.data.cache });
+    }
+    return out;
+  }
+
+  /** C290: a small dirt-brown bundle with a gold glint and a slow pulsing ring (no pulse with reduced motion). */
+  function drawMoleCaches(ctx, s) {
+    const v = view();
+    const u = v.cell;
+    for (const m of moleCaches(s)) {
+      const p = cellCenter(m.i);
+      if (p.y < -30 || p.y > layer.cssH + 30) continue;
+      const r = Math.max(3, u * 0.38);
+      const col = m.kind === 'fossil' ? '#d9d2bf' : m.kind === 'beetle_husk' ? '#3f5b4a' : '#a77a3c';
+      const pulse = reduced ? 0.5 : (time * 0.5 + hash01(m.uid, 2)) % 1;
+      ctx.strokeStyle = 'rgba(255,214,80,' + (0.9 * (1 - pulse)).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(1, u * 0.07);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r * (1.2 + pulse * 0.9), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.strokeStyle = 'rgba(40,24,10,0.9)';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y + r * 0.15, r, r * 0.75, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#ffd650';
+      ctx.beginPath();
+      ctx.arc(p.x + r * 0.35, p.y - r * 0.25, Math.max(1, r * 0.22), 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -3376,36 +3444,430 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.restore();
   }
 
-  /**
-   * Cells being backfilled (C98; DESIGN §7.3, 10 s each): a soil-coloured fill rising from the floor with the timer, a
-   * hatch and a dashed outline, so the player sees what is filling and how far along it is. Always drawn.
-   */
-  function drawPendingBackfill(ctx, s) {
-    const list = s.run.nest.backfill || [];
-    if (!list.length) return;
-    const v = view();
-    const total = Math.max(0.001, Number(DIG && DIG.backfillSec) || 10);
-    const cells = [];
-    for (const b of list) {
-      if (!b || !(b.i >= 0 && b.i < NCELL)) continue;
-      cells.push(b.i);
-      // C252: cells fill one after another; each entry carries its own duration (d)
-      const p = clamp(1 - (Number(b.t) || 0) / (Number(b.d) > 0 ? Number(b.d) : total), 0, 1);
-      const x = v.ox + (b.i % COLS) * v.cell;
-      const y = v.oy + ((b.i / COLS) | 0) * v.cell;
-      ctx.fillStyle = 'rgba(40,22,10,0.35)';
-      ctx.fillRect(x, y, v.cell, v.cell);
-      ctx.fillStyle = 'rgba(176,122,70,0.85)';
-      ctx.fillRect(x, y + v.cell * (1 - p), v.cell, v.cell * p);
+  // ---------------------------------------------------------------------------------------------------------------
+  // C270: backfill animation. C271: relocation animation (build first). Renderer-only state; the sim drives timing.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** Backfill: carrier spawn gap (s), speed (cells/s), pellets per cell, longest pack (s), puff (s), lean into the cell. */
+  const BF = Object.freeze({ spawn: 0.34, speed: 6.2, pellets: 3, pack: 0.45, puff: 0.7, maxAnts: 24, lean: 0.38, seed: 8 });
+  const bf = { ants: [], next: 0, prev: new Set(), puffs: [], pi: -1, pl: 0, rk: '', route: null, id: 0 };
+  /** Relocation haulers: trips, minimum speed (cells/s), departures over this share of the move, one leg ≤ this share. */
+  const RL = Object.freeze({ trips: 8, speed: 6, departSpan: 0.6, legFrac: 0.35, linger: 6 });
+  const RELOC_CARRY = Object.freeze({ granary: 'seed', nursery: 'pupa', hibernaculum: 'pupa', royal_chamber: 'pupa',
+    nuptial_chamber: 'pupa', fungus_garden: 'leaf', repletion_hall: 'honeydew', midden: 'chitin' });
+  /** uid → { from, cells, cellSet, ph: 'dig'|'move'|'closing', tau (move s, local), dur, k, ch, type, path, plan, ghostOk } */
+  const relocMemo = new Map();
+
+  function resetMoves() {
+    bf.ants.length = 0;
+    bf.puffs.length = 0;
+    bf.prev = new Set();
+    bf.pi = -1;
+    bf.rk = '';
+    bf.route = null;
+    bf.next = 0;
+    relocMemo.clear();
+  }
+
+  const easeOut = (x) => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
+  /** A cell's floor point in cell units (where walking ants are drawn). */
+  const floorPt = (i) => ({ x: (i % COLS) + 0.5, y: Math.floor(i / COLS) + 0.62 });
+
+  /** A polyline in cell units with arc-length lookup: at(d) → { x, y, ang }; `cell` = the cell it leads to. */
+  function polyRoute(pts, cell = -1) {
+    const acc = [0];
+    for (let k = 1; k < pts.length; k++) acc.push(acc[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y));
+    const len = acc[acc.length - 1];
+    return {
+      len,
+      cell,
+      at(d) {
+        const t = clamp(d, 0, len);
+        let k = 1;
+        while (k < pts.length - 1 && acc[k] < t) k++;
+        const a = pts[k - 1];
+        const b = pts[k] || a;
+        const u = clamp((t - acc[k - 1]) / Math.max(1e-6, (acc[k] || 0) - acc[k - 1]), 0, 1);
+        return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, ang: Math.atan2(b.y - a.y, b.x - a.x) };
+      },
+    };
+  }
+
+  /** Follow a distance field down from `from` (open cells) until it reaches 0; the cells visited, `from` first. */
+  function walkField(tf, from) {
+    const seq = [from];
+    let cur = from;
+    for (let n = 0; n < NCELL && tf[cur] > 0; n++) {
+      const nx = stepDown(tf, fields.open, cur, 0.5);
+      if (nx === cur) break;
+      seq.push(nx);
+      cur = nx;
     }
-    hatchCells(ctx, cells, v, 'rgba(255,214,150,0.55)', Math.max(4, v.cell * 0.4));
-    ctx.strokeStyle = 'rgba(255,214,150,0.9)';
-    ctx.lineWidth = 1;
+    return seq;
+  }
+
+  /** C270: the carriers' way from the nearest entrance mound (above its shaft) to `target`, stopping just inside it. */
+  function entranceRoute(target) {
+    let best = null;
+    let bd = Infinity;
+    for (const t of geo.tops) {
+      const tf = topField(t.col);
+      const dd = tf ? tf[target] : -1;
+      if (dd >= 0 && dd < bd) {
+        bd = dd;
+        best = { col: t.col, tf };
+      }
+    }
+    if (!best) return null;
+    const seq = walkField(best.tf, target).reverse();
+    const pts = [{ x: best.col + 0.5, y: -1.1 }];
+    for (let k = 0; k < seq.length - 1; k++) pts.push(floorPt(seq[k]));
+    const prev = pts[pts.length - 1];
+    const end = floorPt(target);
+    const lean = seq.length > 1 ? BF.lean : 1;
+    pts.push({ x: prev.x + (end.x - prev.x) * lean, y: prev.y + (end.y - prev.y) * lean });
+    return polyRoute(pts, target);
+  }
+
+  /** Soil pellets heaped on a cell's floor (n of them, left to right, the third on top). */
+  function drawPellets(ctx, i, x, y, u, n) {
+    for (let j = 0; j < n; j++) {
+      const px = x + u * (0.3 + 0.2 * j) + (hash01(i, j) - 0.5) * u * 0.08;
+      const py = y + u * (0.83 - (j === 2 ? 0.1 : 0));
+      ctx.fillStyle = CARRY.pellet;
+      ctx.beginPath();
+      ctx.ellipse(px, py, u * 0.11, u * 0.09, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,230,190,0.25)';
+      ctx.beginPath();
+      ctx.ellipse(px - u * 0.03, py - u * 0.03, u * 0.04, u * 0.03, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** Soil packing into cell i (k 0 → 1): the cell's own undisturbed soil grows in from the floor and walls. */
+  function packSoil(ctx, i, x, y, u, k) {
+    const pr = pristine();
+    const cpp = cache.cpp;
+    if (!pr || !pr.canvas || !(cpp > 0)) return;
+    const inset = (1 - k) * u * 0.42;
+    ctx.save();
+    rrect(ctx, x + inset * 0.6, y + inset * 1.4, u - inset * 1.2, u - inset * 1.4, u * 0.3 * (1 - k), u * 0.3 * (1 - k), 0, 0);
+    ctx.clip();
+    ctx.drawImage(pr.canvas, (i % COLS) * cpp, ((i / COLS) | 0) * cpp, cpp, cpp, x, y, u, u);
+    ctx.restore();
+  }
+
+  /** Where a head cell's pellets stop and its packing starts (fraction of its time; packing lasts ≤ BF.pack s). */
+  function packStart(dur) {
+    return 1 - Math.min(BF.pack, 0.4 * dur) / dur;
+  }
+
+  /** Head-of-list progress, smoothed between sim ticks (never behind the sim, at most one tick ahead). */
+  function backfillHead(list, dt) {
+    const head = list[0];
+    const dur = Number(head.d) > 0 ? Number(head.d) : Math.max(0.001, Number(DIG && DIG.backfillSec) || 10);
+    const pSim = clamp(1 - (Number(head.t) || 0) / dur, 0, 1);
+    if (head.i !== bf.pi) {
+      bf.pi = head.i;
+      bf.pl = pSim;
+    } else {
+      bf.pl = clamp(Math.max(pSim, Math.min(bf.pl + dt / dur, pSim + TICK / dur)), 0, 1);
+    }
+    return { head, p: bf.pl, packAt: packStart(dur) };
+  }
+
+  /**
+   * C270 (replaces the C98 rising bar): the backfill list fills from its head, the cell furthest from the entrance
+   * (C252). On the head cell soil pellets pile up on the floor (carriers bring them, drawBackfillAnts), then its own
+   * soil packs in from the floor and walls; the next cell gets its first pellet meanwhile; a finished cell gives a
+   * small dust puff. A pulsing dashed square marks the cell being filled. Cells further back show nothing yet.
+   */
+  function drawBackfillCells(ctx, s, dt) {
+    const nest = s.run.nest;
+    const list = [];
+    for (const b of nest.backfill || []) if (b && b.i >= 0 && b.i < NCELL) list.push(b);
+    const v = view();
+    const u = v.cell;
+    // cells that left the list as soil: a dust puff
+    const now = new Set();
+    for (const b of list) now.add(b.i);
+    for (const i of bf.prev) if (!now.has(i) && nest.cells[i] === CELL.SOIL && !reduced && bf.puffs.length < 40) bf.puffs.push({ i, age: 0 });
+    bf.prev = now;
+    for (let k = bf.puffs.length - 1; k >= 0; k--) {
+      const pf = bf.puffs[k];
+      pf.age += dt;
+      if (pf.age >= BF.puff) {
+        bf.puffs.splice(k, 1);
+        continue;
+      }
+      const c = cellCenter(pf.i);
+      const q = pf.age / BF.puff;
+      for (let j = 0; j < 7; j++) {
+        const a = (j / 7) * Math.PI * 2 + hash01(pf.i, j) * 0.6;
+        const r = u * (0.25 + 0.55 * easeOut(q)) * (0.8 + 0.4 * hash01(j, pf.i));
+        ctx.fillStyle = `rgba(214,176,128,${(0.55 * (1 - q)).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(c.x + Math.cos(a) * r, c.y + Math.sin(a) * r * 0.7, u * (0.09 + 0.08 * q), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = `rgba(255,226,170,${(0.6 * (1 - q)).toFixed(3)})`;
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(c.x - u / 2 + 0.5, c.y - u / 2 + 0.5, u - 1, u - 1);
+    }
+    if (!list.length) {
+      bf.pi = -1;
+      return;
+    }
+    const { head, p, packAt } = backfillHead(list, dt);
+    const x = v.ox + (head.i % COLS) * u;
+    const y = v.oy + ((head.i / COLS) | 0) * u;
+    if (p > packAt) packSoil(ctx, head.i, x, y, u, easeOut((p - packAt) / Math.max(1e-6, 1 - packAt)));
+    if (p < packAt + (1 - packAt) * 0.6) {
+      const n = p >= packAt ? BF.pellets : Math.min(BF.pellets, 1 + Math.floor((p / Math.max(1e-6, packAt)) * BF.pellets));
+      drawPellets(ctx, head.i, x, y, u, n);
+    }
+    const nx = list[1];
+    if (p >= packAt && nx && fields.open[nx.i]) drawPellets(ctx, nx.i, v.ox + (nx.i % COLS) * u, v.oy + ((nx.i / COLS) | 0) * u, u, 1);
+    // the frontier
+    const a = reduced ? 0.6 : 0.45 + 0.25 * Math.sin(time * 6);
+    ctx.strokeStyle = `rgba(255,210,122,${a.toFixed(3)})`;
+    ctx.lineWidth = 1.2;
     ctx.setLineDash([3, 2]);
-    ctx.beginPath();
-    for (const i of cells) ctx.rect(v.ox + (i % COLS) * v.cell + 0.5, v.oy + ((i / COLS) | 0) * v.cell + 0.5, v.cell - 1, v.cell - 1);
-    ctx.stroke();
+    ctx.strokeRect(x + 0.5, y + 0.5, u - 1, u - 1);
     ctx.setLineDash([]);
+  }
+
+  /**
+   * C270: workers file down from the entrance mound with a soil pellet each, walk to the cell being filled, drop it
+   * and head back out; when the backfill ends (or the cell they were walking to is filled) they turn back. Carriers
+   * already on the way are spread along the route when a backfill starts. None under reduced motion.
+   */
+  function updateBackfillAnts(s, dt) {
+    if (reduced) {
+      bf.ants.length = 0;
+      return;
+    }
+    const list = s.run.nest.backfill || [];
+    const head = list.length && list[0] && list[0].i >= 0 && list[0].i < NCELL ? list[0] : null;
+    if (head) {
+      const nx = list[1];
+      const dur = Number(head.d) > 0 ? Number(head.d) : 10;
+      const target = bf.pi === head.i && bf.pl >= packStart(dur) && nx && nx.i >= 0 && nx.i < NCELL && fields.open[nx.i] ? nx.i : head.i;
+      const rk = `${target}|${s.run.nest.rev}`;
+      if (bf.rk !== rk) {
+        bf.rk = rk;
+        bf.route = fields.open[target] ? entranceRoute(target) : null;
+      }
+      const route = bf.route;
+      if (route && route.len > 0) {
+        if (!bf.ants.length && bf.next <= 0) {
+          const m = Math.min(BF.seed, Math.floor(route.len / (BF.speed * BF.spawn)));
+          for (let j = 1; j <= m; j++) bf.ants.push({ r: route, d: (route.len * j) / (m + 1), dir: 1, id: bf.id++ });
+        }
+        bf.next -= dt;
+        if (bf.next <= 0) {
+          if (bf.ants.length < BF.maxAnts) bf.ants.push({ r: route, d: 0, dir: 1, id: bf.id++ });
+          bf.next = BF.spawn;
+        }
+      }
+    } else bf.next = 0;
+    for (const a of bf.ants) {
+      if (a.dir > 0) {
+        if (!head || !fields.open[a.r.cell]) a.dir = -1;
+        else {
+          a.d += BF.speed * dt;
+          if (a.d >= a.r.len) {
+            a.d = a.r.len;
+            a.dir = -1;
+          }
+        }
+      } else a.d -= BF.speed * dt;
+    }
+    if (bf.ants.some((a) => a.d < 0)) bf.ants = bf.ants.filter((a) => a.d >= 0);
+  }
+
+  function drawBackfillAnts(ctx, unit, H) {
+    if (!bf.ants.length || unit < 6) return;
+    const v = view();
+    for (const a of bf.ants) {
+      const p = a.r.at(a.d);
+      const x = v.ox + p.x * v.cell;
+      const y = v.oy + p.y * v.cell;
+      if (y < -unit * 3 || y > H + unit) continue;
+      atlas.drawAnt(ctx, KIND.minor, a.dir > 0 ? 'pellet' : 'none', a.dir > 0 ? p.ang : p.ang + Math.PI, Math.floor(time * 9 + a.id) & 1, x, y, unit, null, NEST.antOutline);
+    }
+  }
+
+  /**
+   * C271: follow every relocation (ch.reloc): its old room's rectangle and cells, the phase ('dig': the new room is
+   * being dug, the old one still works; 'move': the contents are carried across over reloc.dur seconds; 'closing':
+   * moved, the old room is being backfilled) and a local move clock smoothed between sim ticks.
+   */
+  function syncReloc(s, dt) {
+    const chs = s.run.nest.chambers || [];
+    const seen = new Set();
+    for (let k = 0; k < chs.length; k++) {
+      const ch = chs[k];
+      const R = ch && ch.reloc;
+      if (!R || !R.from || ch.status !== 'relocating') continue;
+      const f = R.from;
+      const key = `${f.x},${f.y},${f.w},${f.h}`;
+      let e = relocMemo.get(ch.uid);
+      if (!e || e.key !== key) {
+        const cells = [];
+        for (let y = f.y; y < f.y + f.h; y++) for (let x = f.x; x < f.x + f.w; x++) if (x >= 0 && y >= 0 && x < COLS && y < ROWS) cells.push(y * COLS + x);
+        e = { uid: ch.uid, key, from: { x: f.x, y: f.y, w: f.w, h: f.h }, cells, cellSet: new Set(cells), ph: 'dig', tau: 0, dur: 1,
+          k, ch, type: ch.type, pathKey: '', path: null, plan: null, ghostOk: false, closeAt: 0, pending: false, overlap: false };
+        relocMemo.set(ch.uid, e);
+      }
+      seen.add(ch.uid);
+      e.k = k;
+      e.ch = ch;
+      e.type = ch.type;
+      e.ph = R.ph === 'dig' ? 'dig' : 'move';
+      e.dur = Math.max(0.001, Number(R.dur) || 1);
+      const rt = clamp(Number(R.t) || 0, 0, e.dur);
+      e.tau = e.ph === 'dig' ? 0 : clamp(Math.max(rt, Math.min(e.tau + dt, rt + TICK)), 0, e.dur);
+      e.overlap = f.x < ch.x + ch.w && ch.x < f.x + f.w && f.y < ch.y + ch.h && ch.y < f.y + f.h;
+    }
+    for (const [uid, e] of relocMemo) {
+      if (seen.has(uid)) continue;
+      if (e.ph !== 'closing') {
+        e.ph = 'closing';
+        e.closeAt = time;
+        e.tau = Math.max(e.tau, e.dur);
+      }
+      e.tau += dt;
+      const k = chs.findIndex((c) => c && c.uid === uid);
+      e.k = k;
+      e.ch = k >= 0 ? chs[k] : null;
+      e.pending = (s.run.nest.backfill || []).some((b) => b && e.cellSet.has(b.i));
+      if (!e.ch || (!e.pending && time - e.closeAt > RL.linger)) relocMemo.delete(uid);
+    }
+  }
+
+  /** The old room drawn as its chamber (same uid: same set dressing) at its old rectangle. */
+  function relocGhost(e) {
+    const c = e.ch;
+    return { uid: e.uid, type: e.type, level: c ? c.level : 1, target: c ? c.level : 1, x: e.from.x, y: e.from.y, w: e.from.w,
+      h: e.from.h, status: 'active' };
+  }
+
+  /** Move progress 0..1 (1 once moved). */
+  function relocFrac(e) {
+    return e.ph === 'dig' ? 0 : e.ph === 'move' ? clamp(e.tau / e.dur, 0, 1) : 1;
+  }
+
+  /** Brood plan with every stage scaled by f (relocation: part of the brood carried across). */
+  function scalePlan(p, f) {
+    if (!p || f >= 1) return p;
+    return { ...p, egg: p.egg * f, larva: p.larva * f, pupa: p.pupa * f };
+  }
+
+  /**
+   * C271: the old room of a relocating chamber, while its cells are still plain open tunnel nobody else took: the
+   * organic cavity (rim, wall gradient, packed floor, as the strata cache paints chambers) with the chamber's set
+   * dressing and contents: all of them while the new room is dug (it still works), fading out as they are carried
+   * across, then an empty cavity while it is backfilled (clipped to the cells not yet filled). Not drawn when the old
+   * and new rectangles overlap (the old cells then read as plain tunnels).
+   */
+  function drawRelocGhosts(ctx, s, d, unit, W, H, o) {
+    if (!relocMemo.size) return;
+    const v = view();
+    for (const e of relocMemo.values()) {
+      e.ghostOk = false;
+      if (e.overlap || !e.ch) continue;
+      const cells = [];
+      let whole = true;
+      for (const i of e.cells) {
+        if (fields.open[i] && geo.at[i] < 0) cells.push(i);
+        else whole = false;
+      }
+      if (!cells.length || (e.ph !== 'closing' && !whole) || (e.ph === 'closing' && !e.pending)) continue;
+      e.ghostOk = e.ph !== 'closing';
+      if (e.ph === 'dig') {
+        const pl = o.plan.get(e.uid);
+        if (pl) e.plan = { ...pl };
+      }
+      const c = relocGhost(e);
+      const r = chamberRectPx(c);
+      if (r.y > H || r.y + r.h < 0 || r.x > W || r.x + r.w < 0) continue;
+      ctx.save();
+      ctx.beginPath();
+      for (const i of cells) ctx.rect(v.ox + (i % COLS) * v.cell, v.oy + ((i / COLS) | 0) * v.cell, v.cell + 0.5, v.cell + 0.5);
+      ctx.clip();
+      const cc = cavCols(Math.floor(c.y + c.h / 2));
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = cc.rim;
+      ctx.lineWidth = 2 * RIM * v.cell;
+      chamberPath(ctx, c, v);
+      ctx.stroke();
+      const grad = ctx.createLinearGradient(0, v.oy + c.y * v.cell, 0, v.oy + (c.y + c.h) * v.cell);
+      grad.addColorStop(0, cc.top);
+      grad.addColorStop(0.45, cc.mid);
+      grad.addColorStop(1, cc.chFloor);
+      ctx.fillStyle = grad;
+      chamberPath(ctx, c, v);
+      ctx.fill();
+      ctx.clip();
+      const b = art.cavityBox(c);
+      ctx.fillStyle = cc.dust;
+      ctx.fillRect(v.ox + b.x0 * v.cell, v.oy + (b.y1 - 0.14) * v.cell, (b.x1 - b.x0) * v.cell, 0.3 * v.cell);
+      const left = 1 - relocFrac(e);
+      if (left > 0.001) {
+        drawContent(ctx, s, d, c, -1, r, cavityPx(c, v), unit, { ...o, exposed: false, frac: left, decorAlpha: left,
+          planOverride: e.ph === 'move' ? e.plan : undefined });
+      }
+      ctx.restore();
+    }
+  }
+
+  /** C271: the hauler path from the old room's floor to the new room's floor (through open cells), cached per rev. */
+  function relocPath(e) {
+    const s = S();
+    const key = `${e.k}|${s ? s.run.nest.rev : 0}`;
+    if (e.ph !== 'move' || e.pathKey === key) return e.path;
+    e.pathKey = key;
+    const ch = e.ch;
+    if (!ch || e.k < 0) return e.path;
+    const start = (e.from.y + e.from.h - 1) * COLS + e.from.x + (e.from.w >> 1);
+    const end = (ch.y + ch.h - 1) * COLS + ch.x + (ch.w >> 1);
+    const tf = chamberField(e.k);
+    if (!fields.open[start] || !tf || !(tf[start] >= 0)) return e.path;
+    const seq = walkField(tf, start);
+    const pts = seq.map(floorPt);
+    if (seq[seq.length - 1] !== end && end >= 0 && end < NCELL) pts.push(floorPt(end));
+    e.path = polyRoute(pts, end);
+    return e.path;
+  }
+
+  /**
+   * C271: during the move, workers carry the contents (seeds, brood, leaves, honeydew, chitin by chamber type) from
+   * the old room's floor straight to the new room's and walk back empty: RL.trips trips leaving over the first
+   * RL.departSpan of the move, fast enough that each leg takes at most RL.legFrac of it. None under reduced motion.
+   */
+  function drawRelocHaulers(ctx, unit, H) {
+    if (reduced || unit < 6 || !relocMemo.size) return;
+    const v = view();
+    for (const e of relocMemo.values()) {
+      if (e.overlap || e.ph === 'dig') continue;
+      const path = relocPath(e);
+      if (!path || !(path.len > 0)) continue;
+      const speed = Math.max(RL.speed, path.len / (RL.legFrac * e.dur));
+      const gap = (RL.departSpan * e.dur) / Math.max(1, RL.trips - 1);
+      const carry = RELOC_CARRY[e.type] || 'none';
+      for (let j = 0; j < RL.trips; j++) {
+        const sd = (e.tau - j * gap) * speed;
+        if (sd < 0 || sd >= 2 * path.len) continue;
+        const inb = sd < path.len;
+        const p = path.at(inb ? sd : 2 * path.len - sd);
+        const x = v.ox + p.x * v.cell;
+        const y = v.oy + p.y * v.cell;
+        if (y < -unit || y > H + unit) continue;
+        atlas.drawAnt(ctx, KIND.minor, inb ? carry : 'none', inb ? p.ang : p.ang + Math.PI, Math.floor(time * 9 + j) & 1, x, y, unit, null, NEST.antOutline);
+      }
+    }
   }
 
   const BACKFILL_WHY = Object.freeze({ 'blocked:disconnect': 'would cut a chamber off', 'blocked:shaft': 'shafts stay open' });
@@ -3939,6 +4401,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     fields.sync(s.run.nest.cells, s.run.nest.rev);
     syncGeo(s);
     syncCache(s);
+    syncReloc(s, dt); // C271
     if (queenPulse > 0) queenPulse = Math.max(0, queenPulse - dt);
     for (const gl of glows) gl.t += dt;
 
@@ -3971,6 +4434,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     drawFrost(ctx, d, W);
     drawFlood(ctx, s);
     drawPupa(ctx, s, unit);
+    drawBackfillCells(ctx, s, dt); // C270: pellets, packing soil, puffs (under the ants)
 
     // sprites
     reallocIn -= dt;
@@ -3980,11 +4444,14 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     }
     updateSprites(s, d, dt);
     drawSprites(ctx, unit, H);
+    updateBackfillAnts(s, dt);
+    drawBackfillAnts(ctx, unit, H); // C270: pellet carriers
+    drawRelocHaulers(ctx, unit, H); // C271: contents carried to the new room
     drawQueen(ctx, s, unit);
     drawMold(ctx, s);
+    drawMoleCaches(ctx, s); // C290
     drawLabels(ctx, W);
 
-    drawPendingBackfill(ctx, s);
     drawToolPreviews(ctx, s, d, unit);
     drawDigQueue(ctx, s, d);
     drawDigCrew(ctx, s, d, unit, H); // C180: workers at the dig face (over the queue marks), soil carried out
@@ -4066,7 +4533,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
   }
 
   /**
-   * Hit-test (priority: pupa > mold > flood water > queen > dig face > chamber > reserved room cell (its chamber, C154) > cache hint > planned > pocket > shaft > cell).
+   * Hit-test (priority: pupa > mold > mole cache (C290) > flood water > queen > dig face > chamber > reserved room cell (its chamber, C154) > cache hint > planned > pocket > shaft > cell).
    * @param {number} cssX
    * @param {number} cssY
    * @returns {{ view: 'nest', kind: string, id?: number, i?: number } | null}
@@ -4091,6 +4558,11 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       const c = cellCenter(m.i);
       if (Math.hypot(cssX - c.x, cssY - c.y) <= Math.max(9, unit * 0.8)) return { view: 'nest', kind: 'mold', id: m.uid };
     }
+    // C290: the treasure mole's cache (click to collect)
+    for (const m of moleCaches(s)) {
+      const c = cellCenter(m.i);
+      if (Math.hypot(cssX - c.x, cssY - c.y) <= Math.max(9, unit * 0.8)) return { view: 'nest', kind: 'moleCache', id: m.uid, i: m.i };
+    }
     if (i < 0) return null;
     const y = Math.floor(i / COLS);
     const fr = (DIG && DIG.floodRows) || [0, 5];
@@ -4111,6 +4583,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     // C245: while a fungal blight can be cleaned, a click on a Fungus Garden scrapes it (cleanBlight)
     if (k >= 0 && chs[k] && chs[k].type === 'fungus_garden' && blightOn(s)) return { view: 'nest', kind: 'blight', id: chs[k].uid };
     if (k >= 0 && chs[k]) return { view: 'nest', kind: chs[k].type === 'nursery' ? 'nursery' : 'chamber', id: chs[k].uid };
+    // C271: the old room of a relocating chamber (drawn until the move is over) inspects that chamber
+    for (const e of relocMemo.values()) if (e.ghostOk && e.cellSet.has(i)) return { view: 'nest', kind: 'chamber', id: e.uid };
     // C154: a cell of a chamber's reserved full-size room (discoloured fresh-dug soil, an old tunnel or a cache hint in
     // it) selects / inspects that chamber (kind 'chamber' even for a Nursery: a click here never grooms). A revealed water
     // pocket inside keeps its own inspect view (drain / move it to clear the room).

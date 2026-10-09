@@ -179,6 +179,16 @@ export const ANT = Object.freeze({
   ghost: { body: '#f6ead2', head: '#f6ead2', leg: '#e8dcc0' },
 });
 
+/**
+ * C262: job colours, identical to the Colony-tab job chips (styles/panels.css .ico-job-* with the base.css dark-theme
+ * tokens; soldier = .ico-soldier). Surface ants carry theirs on the gaster (atlas drawAnt `gaster`). Lycaenid trails
+ * are worked by herders (honeydew), so they use the herder colour.
+ */
+export const JOB_COLORS = Object.freeze({
+  forager: '#c58b4a', digger: '#a87a4f', nurse: '#efe2c4', scout: '#9fbcf0', herder: '#f2a63c', leafcutter: '#7cb852',
+  gardener: '#e9e2d1', soldier: '#9b4a2f', lycaenid: '#f2a63c',
+});
+
 /** Carried item colours (ARCHITECTURE §13.4). */
 export const CARRY = Object.freeze({
   none: null, seed: '#e8d6a8', honeydew: '#f0a830', leaf: '#4caf50', chitin: '#1a1a1a', pupa: '#f8f4ea',

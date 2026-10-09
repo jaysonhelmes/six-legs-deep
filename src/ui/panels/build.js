@@ -273,7 +273,7 @@ export function dugByText(info) {
   if (!db) return '';
   const ch = db.type ? nameOf('chamber', db.type) : '';
   const what = {
-    mole: 'a mole (Mole Tunnel event): a free tunnel',
+    mole: 'a mole (Mole Tunnel event): a free tunnel, unneeded, so auto-backfill fills it in unless something comes to use it',
     access: 'access tunnel for the planned ' + (ch || 'chamber') + ' (blueprint)',
     blueprint: 'your blueprint\'s saved tunnels',
     route: 'auto-route to the ' + (ch || 'chamber') + ' (it did not touch an open cell)',
@@ -313,6 +313,7 @@ export function moundProgressText(g, L, capped, free) {
 /**
  * C254: the inspect bar of a relocating chamber: the combined fraction of its two phases (clearing the old room, digging
  * the new one) and what is left ("Clearing the old room: 4s left · new room 60% dug"). Inactive until both are done.
+ * C271: with a phase, "Old room still working · new room 60% dug" while digging, then "Moving in: 4s left".
  * @param {{ clearing: boolean, clearFrac: number, clearLeft: number, digging: boolean, digFrac: number }} rl
  *   nest.relocationInfo
  * @returns {{ frac: number, text: string }}
@@ -320,6 +321,13 @@ export function moundProgressText(g, L, capped, free) {
 export function relocationProgress(rl) {
   if (!rl) return { frac: 0, text: '' };
   const frac = (num(rl.clearFrac) + num(rl.digFrac)) / 2;
+  // C271 (build first): while the new room is dug the old one keeps working; then the move itself
+  if (rl.phase === 'dig') {
+    return { frac, text: 'Old room still working · new room ' + fmtPct(num(rl.digFrac), { signed: false }) + ' dug' };
+  }
+  if (rl.phase === 'move' && !rl.digging) {
+    return { frac, text: rl.clearing ? 'Moving in: ' + fmtTime(num(rl.clearLeft)) + ' left' : 'Moved in' };
+  }
   const parts = [];
   parts.push(rl.clearing ? 'Clearing the old room: ' + fmtTime(num(rl.clearLeft)) + ' left' : 'Old room cleared');
   parts.push(rl.digging ? 'new room ' + fmtPct(num(rl.digFrac), { signed: false }) + ' dug' : 'new room dug');
@@ -359,27 +367,42 @@ export function saveHideMaxed(on, store = browserStore()) {
 }
 
 /**
- * C212: is an unlock condition "known" to the player before it is met — a research node that can be bought now
- * (its prerequisites owned; visible and buyable in the Research tab) or already owned, or a combination (any / all)
- * of known parts. Milestones (adult counts, run time, custom triggers, built chambers) are not: the chamber they
- * unlock stays hidden until it arrives.
+ * C291: "one step away" — the player can take the last step of an unlock condition now: a research node buyable now
+ * (prerequisites owned, Research tab shown); a flag already shown, or whose own unlock is one step away; `any`: one
+ * of its parts is; `all`: every part is met except at most one, and that one is one step away. Milestones (adult
+ * counts, run time, food earned, custom triggers, built chambers) are never a step the player takes: they unlock by
+ * themselves, so a chamber behind one stays hidden until it arrives. Applied the same way to every chamber
+ * (chamberListing); chambers further away stay hidden. (Was C212 condKnown, which also let an `all` of several
+ * buyable parts through; the name is kept.)
  * @param {Object} s
  * @param {Object} cond data/unlocks.js condition
+ * @param {number} [depth] recursion guard for flags
  * @returns {boolean}
  */
-export function condKnown(s, cond) {
-  if (!cond || typeof cond !== 'object') return false;
-  if (Array.isArray(cond.any)) return cond.any.some((c) => condKnown(s, c));
-  if (Array.isArray(cond.all)) return cond.all.length > 0 && cond.all.every((c) => condKnown(s, c) || condMet(s, c));
+export function condKnown(s, cond, depth = 0) {
+  if (!cond || typeof cond !== 'object' || depth > 4) return false;
+  if (Array.isArray(cond.any)) return cond.any.some((c) => condMet(s, c) || condKnown(s, c, depth + 1));
+  if (Array.isArray(cond.all)) {
+    if (!cond.all.length) return false;
+    const unmet = cond.all.filter((c) => !condMet(s, c));
+    return unmet.length <= 1 && unmet.every((c) => condKnown(s, c, depth + 1));
+  }
   if (typeof cond.research === 'string') {
     if (!isShown(s, 'panel_research')) return false;
     return hasResearch(s, cond.research) || q(() => researchAvailable(s, cond.research), false);
   }
-  if (typeof cond.flag === 'string') return isShown(s, cond.flag);
+  if (typeof cond.flag === 'string') {
+    if (isShown(s, cond.flag)) return true;
+    const u = UNLOCKS.find((x) => x && x.key === cond.flag);
+    return !!u && condKnown(s, u.cond, depth + 1);
+  }
   return false;
 }
 
-/** A simple part already met (a flag shown, a research owned); used by condKnown's `all`. */
+/** C291 alias: the one-step-away rule of the Build list (condKnown). */
+export const unlockOneStep = condKnown;
+
+/** A simple part already met (a flag shown, a research owned); used by condKnown's `any` / `all`. */
 function condMet(s, cond) {
   if (!cond || typeof cond !== 'object') return false;
   if (typeof cond.research === 'string') return hasResearch(s, cond.research);
@@ -388,9 +411,9 @@ function condMet(s, cond) {
 }
 
 /**
- * C212: the Build tab's chamber list (the Royal Chamber has its own pinned row): every type that is unlocked, already
- * built, or locked behind a known unlock (condKnown; shown greyed with its requirement). Types whose unlock is not yet
- * revealed are left out entirely. Order: placeable types first, then types at their instance limit (dropped with
+ * C212 / C291: the Build tab's chamber list (the Royal Chamber has its own pinned row): every type that is unlocked,
+ * already built, or locked with its unlock one step away (condKnown; shown greyed with its requirement). Types further
+ * away are left out entirely. Order: placeable types first, then types at their instance limit (dropped with
  * hideMaxed when every built one is also at its max level, C251), then locked ones; data order within each group.
  * @param {Object} s
  * @param {{ hideMaxed?: boolean, ids?: string[] }} [opts]

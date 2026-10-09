@@ -10,6 +10,30 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.14.0',
+    date: '2026-10-08',
+    title: 'New look, quest book and treasure moles',
+    sections: [
+      { heading: "Map", notes: [
+        "Lone stones on the map are now small rock piles sitting in the grass, sand or leaves instead of grey tiles, and big boulders no longer look sliced off at tile edges.",
+        "Fallen logs that cover several tiles are now drawn as one long log, with a snapped-off branch where they bend.",
+        "Rival alates now really fly: they flap their wings, face where they are going and cast a shadow as they circle.",
+        "Ants on the map have an abdomen in their job colour from the Colony tab, so you can tell foragers, herders, leafcutters, scouts and soldiers apart at a glance.",
+      ] },
+      { heading: "Nest", notes: [
+        "Backfilling is animated: workers carry soil pellets down from the mound and the tunnel packs shut cell by cell, from the far end back toward the entrance.",
+        "Relocating a chamber now digs the new room first while the old one keeps working; workers then carry everything across, and the empty old room is filled back in afterwards.",
+        "A mole now always leaves a treasure at the end of its tunnel: a seed cache, a fossil or a beetle husk. Click it in the nest to collect it; it grows with your colony, and auto-backfill tidies up the tunnel afterwards.",
+      ] },
+      { heading: "Interface", notes: [
+        "Every section on every tab can be folded by clicking its heading, with Collapse all and Expand all at the top; your choices are remembered. Research branches are now stacked foldable sections.",
+        "Jobs are easier to read: each job has its own row with an aligned cap meter, a Fill to cap button, and a warning (with Clamp to cap) when a target asks for more ants than the job can hold.",
+        "New Quest book replaces Next goals: suggested next steps that tick themselves off. Track one to keep it on screen, and turn its pages like a real book.",
+        "The Build list now shows a locked chamber only when you are one step from it (for example, its research is ready to buy), along with what it needs.",
+      ] },
+    ],
+  },
+  {
     version: '0.13.0',
     date: '2026-10-08',
     title: 'Fixes and quality of life',
