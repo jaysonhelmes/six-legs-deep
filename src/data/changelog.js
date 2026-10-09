@@ -10,6 +10,38 @@
 /** @type {ReadonlyArray<ChangelogEntry>} */
 export const CHANGELOG = deepFreeze([
   {
+    version: '0.13.0',
+    date: '2026-10-08',
+    title: 'Fixes and quality of life',
+    sections: [
+      { heading: "Fixes", notes: [
+        "Fungal blight can now actually be cleaned: click the Fungus Garden; the warning chip counts the clicks and time left.",
+        "Mass Recruit is now usable on trails to a termite swarm or picnic spill.",
+        "Rival territory and nest patterns now move and zoom with the map; clicking a rival alate several times no longer shows a confusing message.",
+      ] },
+      { heading: "Colony and automation", notes: [
+        "\"Keep berths filled\" is on by default for soldiers, supermajors and repletes (unless you set your own target).",
+        "The Adaptation and chamber autobuyers each have their own switch and run on their own; the Mound autobuyer is gone (the Mound grows by itself).",
+      ] },
+      { heading: "Map and combat", notes: [
+        "Click the red raid arrow to jump to that raid in Map > War. Right-clicking a rival shows the bribe cost.",
+        "Right-clicking a flower, seed patch or other spot also offers that hex’s options; useless Claim and Flag options are gone.",
+        "Attacking a rival you have a truce with now asks first; breaking the truce loses the bribe and they raid again sooner.",
+      ] },
+      { heading: "Nest and build", notes: [
+        "Dragging a tunnel digs exactly where you drag; if something blocks it, it stops there and says why.",
+        "Digging and backfilling have a top speed, and backfill fills from the far end inward. New: auto-backfill unneeded tunnels (Build tab).",
+        "Relocating a chamber now takes time: the old room is cleared first and the chamber is inactive until the move is done. R relocates the chamber under your cursor; R again or right-click cancels.",
+        "\"Hide maxed\" only hides chambers you can neither build nor level further. The dig queue no longer makes the chamber list jump.",
+        "Stone and Mound tooltips explain more; water pockets can be moved anywhere.",
+        "Blueprints need Ancestral Blueprint or Blueprint Library to be applied; \"Clear active blueprint\" turns one off at any time.",
+      ] },
+      { heading: "Interface", notes: [
+        "Settings > Cosmetics shows how to unlock each cosmetic.",
+      ] },
+    ],
+  },
+  {
     version: '0.12.2',
     date: '2026-10-08',
     title: 'Classic map tiles',

@@ -32,9 +32,9 @@ test('top-level shape, version and seed handling', () => {
   const a = createState();
   const b = createState();
   a.run.res.food = 99;
-  a.meta.automation.autobuy.priority.push('x');
+  a.meta.automation.autobuy.chambers = true;
   assert.equal(b.run.res.food, 5);
-  assert.deepEqual(b.meta.automation.autobuy.priority, ['adaptations', 'chambers', 'mound']);
+  assert.deepEqual(b.meta.automation.autobuy, { adaptations: false, chambers: false });   // C246
 });
 
 test('meta defaults per ARCHITECTURE §4', () => {

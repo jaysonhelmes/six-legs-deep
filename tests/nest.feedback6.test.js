@@ -43,6 +43,7 @@ function settle(s, d, sec = 1) {
   s.run.time += sec;
   d.stats.digW = 1e9;
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, sec, env);
   nest.derive(s, d);
   return env.events || [];
@@ -348,7 +349,7 @@ test('C180: the Blueprints lock hint when layouts are saved but nothing can save
   const { s } = setup();
   assert.equal(blueprintLockHint(s), '');
   s.era.blueprints = [{ name: 'Old', tunnels: [], chambers: [] }];
-  assert.equal(blueprintLockHint(s), 'Blueprint saving needs Ancestral Blueprint (Bloodline) or Blueprint Library (Federation). Your saved layouts are kept.');
+  assert.equal(blueprintLockHint(s), 'Blueprint saving needs Ancestral Blueprint (Bloodline) or Blueprint Library (Federation). Your saved layouts are kept, but none is applied after a flight until then.'); // C258
   s.cycle.traits.ancestral_blueprint = 1;
   assert.equal(blueprintLockHint(s), '');
 });

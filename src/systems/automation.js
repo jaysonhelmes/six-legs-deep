@@ -1,9 +1,11 @@
-// Automation: 1 Hz autobuyers (Adaptations, chamber level-ups, Mound) in the player's priority order, Auto-Flight,
+// Automation: 1 Hz autobuyers (Adaptations, chamber level-ups; each independent, C246), Auto-Flight,
 // Auto-Supercolony, the setAutomation patch handler and the Diapause toggle. Owner: WP7.
 // Contract: ARCHITECTURE §8.6, §9 (DESIGN §14.5 autobuyers / auto_flight, §15.5 deep_time_automation, §21.5).
-// ARCH-R: autobuyers also need meta.automation.autobuy.on (the player's master toggle). Every autobuyer, the Adaptation
-//   one included, needs the Federation node autobuyers (C166: Automaton Instincts no longer grants it). Turning a toggle
-//   ON for a feature that is not owned is refused 'locked'.
+// C246: each autobuyer has its own switch (meta.automation.autobuy.adaptations / .chambers) and runs on its own, once a
+//   second, with no shared priority list and no master switch (the Mound grows by itself since C220, so there is no Mound
+//   autobuyer). Saves from before C246 keep their choice: a legacy master `on` that was not true switches both off, then
+//   `on`, `priority` and `mound` are dropped (normalizeAutobuy). Every autobuyer needs the Federation node autobuyers
+//   (C166: Automaton Instincts no longer grants it). Turning a toggle ON for a feature that is not owned is refused 'locked'.
 // C166: auto-flight 'peak' mode fires once the run is AUTO_FLIGHT.minSec old and the weather-free alates/min has stayed
 //   below AUTO_FLIGHT.drop of this run's best weather-free rate for AUTO_FLIGHT.holdSec (run.prestige.belowAt, tracked by
 //   prestige.tick). The landing is picked by pickLanding (AUTO_LANDING scores). Auto-Supercolony runs online only, like
@@ -16,12 +18,14 @@ import { AUTOMATION, AUTO_FLIGHT, AUTO_LANDING } from '../data/prestige.js';
 import { CLAMP_MAX } from '../data/balance.js';
 import * as adaptations from './adaptations.js';
 import * as nest from './nest.js';
-import * as surface from './surface.js';
 import * as seasons from './seasons.js';
 import { doFlight, doSupercolony, startRun, flightRequirements, superRequirements, projectAlates, projectKinship, landingCarry } from './prestige.js';
 
-/** Autobuyer categories (meta.automation.autobuy.priority is a permutation of these). */
-const CATEGORIES = Object.freeze(['adaptations', 'chambers', 'mound']);
+/** C246: autobuyer categories, each with its own switch in meta.automation.autobuy. */
+export const AUTOBUY_CATEGORIES = Object.freeze(['adaptations', 'chambers']);
+const CATEGORIES = AUTOBUY_CATEGORIES;
+/** C246: pre-C246 autobuy keys (master switch, shared priority, Mound autobuyer), dropped by normalizeAutobuy. */
+const LEGACY_AUTOBUY_KEYS = Object.freeze(['on', 'priority', 'mound']);
 const FLIGHT_MODES = Object.freeze(['peak', 'alates', 'minutes']);
 const SUPER_MODES = Object.freeze(['kinship', 'hours']);
 
@@ -41,37 +45,46 @@ function isAmount(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= CLAMP_MAX;
 }
 
-/** A valid priority list: a permutation of CATEGORIES. */
-function isPriority(v) {
-  return Array.isArray(v) && v.length === CATEGORIES.length && CATEGORIES.every((c) => v.includes(c));
-}
-
 /** Default autobuyer step functions (cross-callable [x] exports of WP2 / WP3 / WP4). */
 const DEFAULT_STEPS = Object.freeze({
   adaptations: (s, d, env) => adaptations.autobuyStep(s, d, env),
   chambers: (s, d, env) => nest.autoLevelStep(s, d, env),
-  mound: (s, d, env) => surface.autoMoundStep(s, d, env),
 });
 
 /**
- * One autobuyer pass: tries the enabled categories in autobuy.priority order and stops after the first purchase.
- * Package-internal (exported for tests; `steps` replaces the cross-package step functions).
+ * [x] C246: bring a pre-C246 autobuy map to the per-category form in place: a legacy master switch that was not on turns
+ * every category off (the player had them off); then the master switch, the shared priority and the Mound switch are
+ * removed. Idempotent; returns the map (null when missing).
+ * @param {Object} a meta.automation.autobuy
+ * @returns {Object|null}
+ */
+export function normalizeAutobuy(a) {
+  if (!isObj(a)) return null;
+  if (Object.prototype.hasOwnProperty.call(a, 'on') && a.on !== true) for (const c of CATEGORIES) a[c] = false;
+  for (const k of LEGACY_AUTOBUY_KEYS) delete a[k];
+  for (const c of CATEGORIES) if (typeof a[c] !== 'boolean') a[c] = false;
+  return a;
+}
+
+/**
+ * One autobuyer pass (C246): every switched-on category tries one purchase of its own, independently of the others (no
+ * shared priority). Package-internal (exported for tests; `steps` replaces the cross-package step functions).
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {import('../core/types.js').Env} env
- * @param {{ adaptations: Function, chambers: Function, mound: Function }} [steps]
+ * @param {{ adaptations: Function, chambers: Function }} [steps]
  * @returns {boolean} true if something was bought
  */
 export function autobuyPass(s, d, env, steps = DEFAULT_STEPS) {
-  const a = s.meta.automation.autobuy;
-  if (!a || a.on !== true) return false;
+  const a = normalizeAutobuy(s.meta.automation.autobuy);
+  if (!a) return false;
   if (!(lv(s.era.federation, 'autobuyers') > 0)) return false;
-  const order = isPriority(a.priority) ? a.priority : CATEGORIES;
-  for (const cat of order) {
-    if (a[cat] !== true) continue;
-    if (steps[cat](s, d, env)) return true;
+  let bought = false;
+  for (const cat of CATEGORIES) {
+    if (a[cat] !== true || typeof steps[cat] !== 'function') continue;
+    if (steps[cat](s, d, env)) bought = true;
   }
-  return false;
+  return bought;
 }
 
 /** Auto-Flight condition (federation auto_flight, toggle on, flight requirements met, mode condition). */
@@ -181,7 +194,7 @@ export function passCount(t0, dt) {
 }
 
 /**
- * 1 Hz automation: autobuyer passes (one purchase each), then (online only) Auto-Supercolony or Auto-Flight.
+ * 1 Hz automation: autobuyer passes (at most one purchase per switched-on category each, C246), then (online only) Auto-Supercolony or Auto-Flight.
  * @param {import('../core/types.js').State} s
  * @param {import('../core/types.js').Derived} d
  * @param {number} dt
@@ -211,7 +224,7 @@ function checkSub(patch, schema) {
 
 const isBool = (v) => typeof v === 'boolean';
 const SCHEMA = Object.freeze({
-  autobuy: { on: isBool, adaptations: isBool, chambers: isBool, mound: isBool, priority: isPriority },
+  autobuy: { adaptations: isBool, chambers: isBool },   // C246: no master switch, no priority, no Mound
   autoFlight: { on: isBool, mode: (v) => FLIGHT_MODES.includes(v), alates: isAmount, minutes: isAmount },
   autoSuper: { on: isBool, mode: (v) => SUPER_MODES.includes(v), kinship: isAmount, hours: isAmount },
 });
@@ -233,7 +246,7 @@ export const handlers = {
         const r = checkSub(p[k], SCHEMA[k]);
         if (r) return r;
       }
-      if (p.autobuy && p.autobuy.on === true && !(lv(s.era.federation, 'autobuyers') > 0)) return 'locked';
+      if (p.autobuy && CATEGORIES.some((c) => p.autobuy[c] === true) && !(lv(s.era.federation, 'autobuyers') > 0)) return 'locked';
       if (p.autoFlight && p.autoFlight.on === true && !(lv(s.era.federation, 'auto_flight') > 0)) return 'locked';
       if (p.autoSuper && p.autoSuper.on === true && !(lv(s.meta.genome, 'deep_time_automation') > 0)) return 'locked';
       return null;
@@ -241,6 +254,7 @@ export const handlers = {
     apply(s, d, cmd) {
       const auto = s.meta.automation;
       const p = cmd.patch;
+      if (p.autobuy) normalizeAutobuy(auto.autobuy);   // C246: legacy keys go before the patch lands
       for (const k of Object.keys(p)) {
         if (FLAG_KEYS.includes(k)) {
           auto[k] = p[k];

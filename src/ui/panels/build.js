@@ -9,7 +9,7 @@ import { nameOf, CHAMBER_TIPS, CHAMBER_ABOUT, chamberAboutText, DIG_KIND_NAMES, 
   plannedWaitText, blueprintLockHint, BLUEPRINT_EDIT_LOCKED } from '../text.js';
 import { isShown, hasResearch, traitLevel, fedLevel, num, arr, obj } from '../reveal.js';
 import { placementCost, levelInfo, placementRows, levelGain, cheapestLevel, chamberLinks, unneededTunnels, pocketAction, pocketAt,
-  rootCap, rootCost, plannedWaits, plannedWait, upgradeAffordable } from '../../systems/nest.js';
+  rootCap, rootCost, plannedWaits, plannedWait, upgradeAffordable, typeFullyLeveled, relocationInfo, blueprintsAllowed } from '../../systems/nest.js';
 import { isAvailable as researchAvailable } from '../../systems/research.js';
 import { UNLOCKS } from '../../data/unlocks.js';
 import { DRAINAGE, ROOT_CULT } from '../../data/soilFeatures.js';
@@ -285,6 +285,47 @@ export function dugByText(info) {
   return what ? 'Dug by: ' + what + '.' : '';
 }
 
+/**
+ * C251: the Build tab's Mound bar label and note. label: "Progress to Mound L5: 45%" (or, at the free cap without
+ * Mound Building, "Progress to Mound L6: waiting for Mound Building"); note: what feeds it (surface.moundGrowth, C220:
+ * peak adults this run, summed active chamber levels, cells dug this run, each with the levels it adds; every whole
+ * point of the total is a level), plus the research line when capped.
+ * @param {Object|null} g surface.moundGrowth result
+ * @param {number} L stored Mound level
+ * @param {boolean} capped at the free cap without Mound Building
+ * @param {number} free the free cap (MOUND.freeMax)
+ * @returns {{ label: string, note: string }}
+ */
+export function moundProgressText(g, L, capped, free) {
+  const next = 'Progress to Mound L' + fmtCount(num(L) + 1) + ': ';
+  const label = next + (capped ? 'waiting for Mound Building' : fmtPct(g ? num(g.prog) : 0, { signed: false }));
+  let note = '';
+  if (g && g.inputs && g.parts) {
+    const one = (v) => (Math.round(num(v) * 10) / 10).toFixed(1);
+    note = 'Fed by peak adults ' + fmtCount(num(g.inputs.adults)) + ' (+' + one(g.parts.adults) + '), chamber levels '
+      + fmtCount(num(g.inputs.chambers)) + ' (+' + one(g.parts.chambers) + ') and cells dug ' + fmtCount(num(g.inputs.dug)) + ' (+'
+      + one(g.parts.dug) + '): ' + one(g.value) + ' in all; each whole point is a level.';
+  }
+  if (capped) note = (note ? note + ' ' : '') + 'Levels above ' + fmtCount(num(free)) + ' need Mound Building research; the Mound keeps growing once you have it.';
+  return { label, note };
+}
+
+/**
+ * C254: the inspect bar of a relocating chamber: the combined fraction of its two phases (clearing the old room, digging
+ * the new one) and what is left ("Clearing the old room: 4s left · new room 60% dug"). Inactive until both are done.
+ * @param {{ clearing: boolean, clearFrac: number, clearLeft: number, digging: boolean, digFrac: number }} rl
+ *   nest.relocationInfo
+ * @returns {{ frac: number, text: string }}
+ */
+export function relocationProgress(rl) {
+  if (!rl) return { frac: 0, text: '' };
+  const frac = (num(rl.clearFrac) + num(rl.digFrac)) / 2;
+  const parts = [];
+  parts.push(rl.clearing ? 'Clearing the old room: ' + fmtTime(num(rl.clearLeft)) + ' left' : 'Old room cleared');
+  parts.push(rl.digging ? 'new room ' + fmtPct(num(rl.digFrac), { signed: false }) + ' dug' : 'new room dug');
+  return { frac, text: parts.join(' · ') };
+}
+
 /** C217: the queen's tooltip line about the soft glow on her abdomen (each egg she lays). */
 export function queenGlowLine() {
   return 'Her abdomen glows softly each time she lays eggs.';
@@ -350,7 +391,7 @@ function condMet(s, cond) {
  * C212: the Build tab's chamber list (the Royal Chamber has its own pinned row): every type that is unlocked, already
  * built, or locked behind a known unlock (condKnown; shown greyed with its requirement). Types whose unlock is not yet
  * revealed are left out entirely. Order: placeable types first, then types at their instance limit (dropped with
- * hideMaxed), then locked ones; data order within each group.
+ * hideMaxed when every built one is also at its max level, C251), then locked ones; data order within each group.
  * @param {Object} s
  * @param {{ hideMaxed?: boolean, ids?: string[] }} [opts]
  * @returns {{ ids: string[], hidden: number, states: Object<string, 'open'|'maxed'|'locked'> }}
@@ -372,7 +413,9 @@ export function chamberListing(s, { hideMaxed = false, ids = null } = {}) {
       if (!u || !condKnown(s, u.cond)) continue;
       st = 'locked';
     }
-    if (st === 'maxed' && hideMaxed) { hidden++; continue; }
+    // C251: hidden only when no more can be placed and every one built is at its max level (a Granary that can still
+    // level stays listed; a maxed Thermal Chimney goes)
+    if (st === 'maxed' && hideMaxed && q(() => typeFullyLeveled(s, id), false)) { hidden++; continue; }
     states[id] = st;
     groups[st].push(id);
   }
@@ -386,14 +429,19 @@ export function chamberListing(s, { hideMaxed = false, ids = null } = {}) {
  * null = not a chamber hotkey.
  * @param {string} key KeyboardEvent.key
  * @param {boolean} shift
+ * C257: R picks the chamber under the cursor first (ctx.hover, a nest chamber), else the selected one; R while the
+ * relocate tool is on cancels it ({ kind: 'cancelTool' }), like Q puts the placing tool away.
  * @param {Object|null} sel uistate selection
- * @returns {null | { kind: 'level'|'levelCheapest'|'levelDir'|'relocate', uid: number }}
+ * @param {{ hover?: Object|null, tool?: Object|null }} [ctx] uistate hover and tool
+ * @returns {null | { kind: 'level'|'levelCheapest'|'levelDir'|'relocate'|'cancelTool', uid: number }}
  */
-export function chamberHotkey(key, shift, sel) {
-  if (!sel || sel.view !== 'nest' || !(sel.kind === 'chamber' || sel.kind === 'nursery' || sel.kind === 'queen')) return null;
-  const uid = num(sel.id, 0);
-  if (!(uid > 0)) return null;
+export function chamberHotkey(key, shift, sel, ctx = null) {
   const k = String(key || '').toLowerCase();
+  const isCh = (r) => !!r && r.view === 'nest' && (r.kind === 'chamber' || r.kind === 'nursery' || r.kind === 'queen') && num(r.id, 0) > 0;
+  if (k === 'r' && !shift && ctx && ctx.tool && ctx.tool.kind === 'relocate') return { kind: 'cancelTool', uid: num(ctx.tool.uid, 0) };
+  if (k === 'r' && !shift && ctx && isCh(ctx.hover)) return { kind: 'relocate', uid: num(ctx.hover.id, 0) };
+  if (!isCh(sel)) return null;
+  const uid = num(sel.id, 0);
   if (k === 'l') return { kind: shift ? 'level' : 'levelCheapest', uid };
   if (k === 'g' && !shift) return { kind: 'levelDir', uid };
   if (k === 'r' && !shift) return { kind: 'relocate', uid };
@@ -406,10 +454,11 @@ export function chamberHotkey(key, shift, sel) {
  * @param {Object} s
  * @param {Object} d
  * @param {{ kind: string, uid: number }} hk chamberHotkey result
- * @returns {null | { cmd?: { type: string, args: Object }, tool?: Object, reject?: string }}
+ * @returns {null | { cmd?: { type: string, args: Object }, tool?: Object, reject?: string, clear?: boolean }} (clear: put the tool away, C257)
  */
 export function chamberHotkeyAction(s, d, hk) {
   if (!hk || !s || !s.run) return null;
+  if (hk.kind === 'cancelTool') return { clear: true }; // C257
   const ch = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.uid === hk.uid);
   if (!ch) return null;
   if (hk.kind === 'level') return { cmd: { type: 'levelChamber', args: { uid: ch.uid } } };
@@ -583,6 +632,11 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
       unneededBtn.classList.add('armed');
       setText(unneededBtn, 'Backfill ' + fmtCount(n) + ' unneeded tunnel cell' + (n === 1 ? '' : 's') + '? Click again');
     } } });
+  // C253: auto-backfill: every DIG.autoBackfillSec the unneeded tunnels are backfilled (same rules; off by default, kept)
+  const autoBfBox = h('input', { type: 'checkbox', class: 'check' });
+  autoBfBox.addEventListener('change', (ev) => act('setAutoBackfill', { on: !!autoBfBox.checked }, ev, autoBfBox));
+  const autoBfRow = h('label', { class: 'toggle-row auto-backfill', dataset: { tip: 'Fills tunnels nothing needs, every ' + fmtCount(num(DIG && DIG.autoBackfillSec, 30)) + ' s. Free.' } },
+    autoBfBox, h('span', { text: 'Auto-backfill unneeded tunnels (every ' + fmtCount(num(DIG && DIG.autoBackfillSec, 30)) + ' s)' }));
   const queueList = h('div', { class: 'queue' });
   const queueEmpty = note('Nothing queued. Diggers do maintenance and still yield soil.');
   // Queued work with no dig rate never finishes: say why and where to fix it (a new player can place a Gallery before
@@ -591,7 +645,9 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     h('span', { text: 'No diggers: this work will not progress.' }),
     h('button', { type: 'button', class: 'btn btn-small', text: 'Assign diggers', on: { click: () => bridge.openTab('colony') } }));
   const queueSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title' }, 'Dig queue ', queueMeta),
-    h('div', { class: 'row-between' }, digRate, h('span', { class: 'btn-row' }, helpBtn, backfillBtn, unneededBtn)), noDiggers, queueList, queueEmpty);
+    h('div', { class: 'row-between' }, digRate, h('span', { class: 'btn-row' }, helpBtn, backfillBtn, unneededBtn)), autoBfRow,
+    // C251: a fixed-height box (scrolls inside) so jobs coming and going never move the chamber list below
+    h('div', { class: 'queue-box' }, noDiggers, queueList, queueEmpty));
 
   // --- chambers ---
   // C212: the Royal Chamber is a full chamber row (level up / level cheapest with its cost, ▲ when affordable, place
@@ -607,7 +663,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   hideMaxedBox.checked = hideMaxed;
   hideMaxedBox.addEventListener('change', () => { hideMaxed = !!hideMaxedBox.checked; saveHideMaxed(hideMaxed); });
   const hiddenMaxed = h('span', { class: 'muted hide-owned-count' });
-  const hideMaxedRow = h('label', { class: 'toggle-row hide-maxed', dataset: { tip: 'Hide chamber types you have built to their limit. They can still be levelled from the nest (L) or the Inspect tab.' } },
+  const hideMaxedRow = h('label', { class: 'toggle-row hide-maxed', dataset: { tip: 'Hide types at their limit with every chamber at max level.' } },
     hideMaxedBox, h('span', { text: 'Hide maxed' }), hiddenMaxed);
   const chamberSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'Chambers' }), royalRow, hideMaxedRow, chamberList);
 
@@ -621,6 +677,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
       h('div', { class: 'buy-main' }, h('span', { class: 'buy-name', text: 'Mound' }), moundLvl,
         h('span', { class: 'buy-desc', text: 'Grows by itself as the colony grows: more ants, bigger chambers, more digging.' }))),
     moundBar.el, moundNote);
+  moundBar.el.dataset.tip = 'Grows with peak adults, total chamber levels and cells dug.';
 
   // --- cultivated roots (C118) ---
   const rootMeta = h('span', { class: 'lvl' });
@@ -646,7 +703,11 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const bpLockNote = h('p', { class: 'note bp-lock' });
   const bpEditNote = h('p', { class: 'note bp-edit-lock', text: BLUEPRINT_EDIT_LOCKED });
   const bpIntro = h('p', { class: 'note', text: 'Saved layouts auto-queue after each flight and dig faster. Use applies one now as well.' });
-  const bpSec = h('section', { class: 'sec bp-sec' }, h('h3', { class: 'sec-title', text: 'Blueprints' }), bpIntro, bpLockNote, plannedBox, bpList, bpEditNote);
+  // C258: drop the active blueprint (nothing queues at the next run start); always allowed, even without an unlock
+  const bpClearBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost bp-clear', text: 'Clear active blueprint',
+    dataset: { tip: 'Stop using a layout after each flight. Saved layouts stay.' },
+    on: { click: (ev) => act('clearBlueprint', {}, ev, bpClearBtn) } });
+  const bpSec = h('section', { class: 'sec bp-sec' }, h('h3', { class: 'sec-title', text: 'Blueprints' }), bpIntro, bpLockNote, plannedBox, bpList, bpClearBtn, bpEditNote);
 
   // camera help for the nest view (render/nestInput.js; the full list is in Settings → Keyboard and view controls)
   const viewHelp = note('Nest view: wheel scrolls, Ctrl + wheel or pinch zooms, the crown button (top-right) frames the queen.');
@@ -919,11 +980,16 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     setText(r.name, bp ? bp.name || 'Layout ' + (slot + 1) : 'Empty slot ' + (slot + 1));
     setText(r.meta, bp ? fmtCount(arr(bp.chambers).length) + ' chambers' + (num(s.era.activeBlueprint, -1) === slot ? ' · active' : '') : '');
     // C180: without Ancestral Blueprint / Blueprint Library the saved layouts are only listed (kept, not usable)
-    const canUse = traitLevel(s, 'ancestral_blueprint') > 0 || fedLevel(s, 'blueprint_memory') > 0;
-    show(r.btns, canUse);
+    // C258: the buttons stay in view, disabled (Save / name hidden) until an unlock is owned again
+    const canUse = q(() => blueprintsAllowed(s), false);
+    show(r.input, canUse);
+    show(r.save, canUse);
     show(r.load, !!bp);
     show(r.del, !!bp);
     show(r.edit, !!bp && fedLevel(s, 'architects_table') > 0);
+    for (const b of [r.load, r.edit, r.del]) setProp(b, 'disabled', !canUse);
+    r.load.dataset.tip = canUse ? 'Apply now: queue what fits, plan the rest. Also after every flight.'
+      : 'Needs ' + nameOf('trait', 'ancestral_blueprint') + ' or ' + nameOf('federation', 'blueprint_memory') + '.';
     toggleClass(row, 'active', !!bp && num(s.era.activeBlueprint, -1) === slot);
   }
 
@@ -966,7 +1032,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
       const info = q(() => pocketAction(s, d, k, null), null);
       const owned = hasResearch(s, DRAINAGE ? DRAINAGE.research : 'drainage');
       setText(featText, 'Cannot be dug. A Water Well must touch one.' + (info && info.wells ? ' A Water Well uses this pocket.' : '')
-        + (owned ? ' Drain it (the cells become soil) or move it up to ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows into plain soil (tunnels there that nothing needs are filled in).'
+        + (owned ? ' Drain it (the cells become soil) or move it anywhere into plain soil (tunnels there that nothing needs are filled in).'
           : ' ' + nameOf('research', 'drainage') + ' research lets you drain or move it.'));
       show(drainBtn, owned);
       show(moveBtn, owned);
@@ -1009,8 +1075,11 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
     toggleClass(inspStatus, 'badge-good', ch.status === 'active');
     toggleClass(inspStatus, 'badge-warn', ch.status !== 'active');
     const digging = ch.status !== 'active';
-    show(inspProgress.el, digging && num(dc.cellsTotal) > 0);
-    if (digging) inspProgress.set(num(dc.cellsTotal) > 0 ? num(dc.cellsDug) / num(dc.cellsTotal) : 0, fmtCount(num(dc.cellsDug)) + ' / ' + fmtCount(num(dc.cellsTotal)) + ' cells');
+    // C254: a relocation shows its two phases: the old room being cleared, the new one being dug
+    const rl = ch.status === 'relocating' ? q(() => relocationInfo(s, d, uid), null) : null;
+    show(inspProgress.el, !!rl || (digging && num(dc.cellsTotal) > 0));
+    if (rl) inspProgress.set(relocationProgress(rl).frac, relocationProgress(rl).text);
+    else if (digging) inspProgress.set(num(dc.cellsTotal) > 0 ? num(dc.cellsDug) / num(dc.cellsTotal) : 0, fmtCount(num(dc.cellsDug)) + ' / ' + fmtCount(num(dc.cellsTotal)) + ' cells');
     setText(kv.layer.dd, dc.layer ? nameOf('layer', dc.layer) : '—');
     // C109: live adjacency links (bonus and partner), then the rules of this type
     const links = q(() => chamberLinks(s, d, uid), []);
@@ -1100,7 +1169,7 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
           : tool.kind === 'relocate' ? 'Relocating: click a new spot in the nest.'
             : tool.kind === 'backfill' ? 'Backfill: click or drag a box over tunnels. Red cells stay open (a chamber needs them). B or Esc ends.'
               : tool.kind === 'growRoot' ? 'Grow a root: click a column in the nest. The preview shows how deep it reaches.'
-                : tool.kind === 'movePocket' ? 'Move the water pocket: click a spot of plain soil within ' + num(DRAINAGE && DRAINAGE.moveRows, 12) + ' rows (spare tunnels there are filled in).'
+                : tool.kind === 'movePocket' ? 'Move the water pocket: click a spot of plain soil anywhere (spare tunnels there are filled in).'
               : 'Click the edge to grow toward: the new row or column is shown.');
         if (tool.kind === 'placeChamber') {
           const rules = chamberRuleText(s, d, tool.chamber);
@@ -1120,8 +1189,9 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
       syncList(queueList, queue, (j) => j.uid, createQueueChip, (chip, j, i) => updateQueueChip(chip, j, i, s, info));
       show(queueEmpty, queue.length === 0);
       show(noDiggers, queue.length > 0 && !(num(d && d.stats && d.stats.digW) > 0));
-      show(helpBtn, queue.length > 0);
+      setProp(helpBtn, 'disabled', queue.length === 0); // C251: kept in place (no layout shift), greyed when idle
       toggleClass(backfillBtn, 'active', !!(tool && tool.kind === 'backfill'));
+      setProp(autoBfBox, 'checked', !!(s.meta && s.meta.autoBackfill === true)); // C253
       if (unneededArmed && Date.now() - unneededArmed >= 6000) {
         unneededArmed = 0;
         unneededBtn.classList.remove('armed');
@@ -1151,8 +1221,10 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
         const g = q(() => moundGrowth(s), null);   // C220
         const free = num(MOUND && MOUND.freeMax, 5);
         const capped = L >= free && !hasResearch(s, 'mound_building');
-        moundBar.set(g && !capped ? num(g.prog) : 1, capped ? 'Waiting for Mound Building' : fmtPct(g ? num(g.prog) : 0, { signed: false }) + ' to L' + fmtCount(L + 1));
-        setText(moundNote, capped ? 'Levels above ' + free + ' need Mound Building research; the Mound keeps growing once you have it.' : '');
+        // C251: a labelled bar ("Progress to Mound L5: 45%") and what feeds it (the C220 inputs and their share)
+        const mt = moundProgressText(g, L, capped, free);
+        moundBar.set(g && !capped ? num(g.prog) : 1, mt.label);
+        setText(moundNote, mt.note);
       }
       // cultivated roots (C118)
       const rootsOn = hasResearch(s, ROOT_CULT ? ROOT_CULT.research : 'root_cultivation');
@@ -1180,6 +1252,8 @@ export function createPanel(root, { game, ui, bridge, dialogs = null }) {
       show(bpLockNote, !!lockHint);
       setText(bpLockNote, lockHint);
       show(bpEditNote, bpOn && savedN > 0 && fedLevel(s, 'architects_table') <= 0);
+      const activeBp = num(s.era && s.era.activeBlueprint, -1);
+      show(bpClearBtn, activeBp >= 0 && !!arr(s.era && s.era.blueprints)[activeBp]); // C258
       show(plannedBox, pend.length > 0);
       if (pend.length) {
         if (plannedAll.__disarm) plannedAll.__disarm();

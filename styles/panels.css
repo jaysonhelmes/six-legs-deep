@@ -651,6 +651,11 @@
 
 /* build: dig queue */
 .queue { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+/* C251: the dig queue keeps a fixed height (about two and a half jobs, scrolling inside) so jobs coming and going never
+   move the chamber list below it */
+.queue-box { height: 8.5rem; overflow-y: auto; overscroll-behavior: contain; margin-top: 6px; }
+.queue-box > .queue { margin-top: 0; }
+.queue-box > .alert { margin: 0 0 6px; }
 .q-chip { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'main btns' 'bar bar'; gap: 2px 8px; align-items: center; padding: 6px 8px; border-radius: var(--r-md);
   background: var(--surface-2); border: 1px solid var(--line-soft); cursor: grab; }
 .q-chip.first { border-color: color-mix(in srgb, var(--c-soil) 70%, transparent); }

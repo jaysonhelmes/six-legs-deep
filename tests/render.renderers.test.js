@@ -385,7 +385,9 @@ test('surface pick returns the documented Target kinds in priority order', () =>
   assert.deepEqual(at(10), { view: 'surface', kind: 'hex', hex: 10 });
   const a = surf.hexToScreen(0);
   const b = surf.hexToScreen(3);
-  assert.deepEqual(surf.pick((a.x + b.x) / 2, (a.y + b.y) / 2 + 2), { view: 'surface', kind: 'trail', id: 2 });
+  const tp = surf.pick((a.x + b.x) / 2, (a.y + b.y) / 2 + 2);   // C249: a trail pick also names the hex under it
+  assert.deepEqual({ view: tp.view, kind: tp.kind, id: tp.id }, { view: 'surface', kind: 'trail', id: 2 });
+  assert.ok(Number.isInteger(tp.hex));
   assert.equal(surf.hexAt(-5000, -5000), -1);
   assert.equal(surf.hexAt(a.x, a.y), 0);
   s.run.rivals.list.push({ uid: 3, type: 'black_garden_ants', tier: 1, hex: 40, radius: 2, base: 15, n: 15, atk: 3, hp: 15, traits: [], alive: true,
@@ -462,16 +464,16 @@ test('nest input dispatches only through actions / uistate / bridge', () => {
   drag(nc, from.x, from.y, to.x, to.y);
   const dt = game.calls.pop();
   assert.equal(dt.type, 'digTunnel');
-  // contiguous soil path from next to an open cell to the drop cell (nestgeom.routeTo or the straight fallback)
+  // C256: exactly the dragged cells (no auto-route): from the open cell the drag started on, a contiguous straight
+  // line to the drop cell; every cell after the start is soil
   const cells0 = game.s.run.nest.cells;
   const tc = dt.args.cells;
-  assert.ok(tc.length >= 4);
+  assert.equal(tc.length, 5);
+  assert.equal(tc[0], 10 * COLS + GRID.mainCol, 'starts on the open shaft cell');
   assert.equal(tc[tc.length - 1], 10 * COLS + GRID.mainCol + 4);
   const adj4 = (a, b) => (Math.abs(a - b) === COLS) || (Math.abs(a - b) === 1 && Math.floor(a / COLS) === Math.floor(b / COLS));
-  const openAt = (i) => cells0[i] === CELL.TUNNEL || cells0[i] === CELL.CHAMBER;
-  assert.ok([tc[0] - 1, tc[0] + 1, tc[0] - COLS, tc[0] + COLS].some((n) => n >= 0 && adj4(n, tc[0]) && openAt(n)), 'starts next to an open cell');
   for (let k = 1; k < tc.length; k++) assert.ok(adj4(tc[k - 1], tc[k]), 'contiguous');
-  for (const i of tc) assert.equal(cells0[i], CELL.SOIL);
+  for (const i of tc.slice(1)) assert.equal(cells0[i], CELL.SOIL);
   // placement tool: click places at the ghost's top-left and clears the tool
   ui.setUI({ tool: { kind: 'placeChamber', chamber: 'gallery' } });
   const pc = cellPt(nest, 30 * COLS + 10);
@@ -489,6 +491,12 @@ test('nest input dispatches only through actions / uistate / bridge', () => {
   assert.equal(ui.getUI().tool, null);
   nc.fire('contextmenu', ev(ch.x, ch.y, { button: 2 }));
   assert.equal(bridge.of('contextMenu').pop()[1].kind, 'chamber');
+  // C257: right-click while relocating a chamber cancels the relocation (no context menu)
+  ui.setUI({ tool: { kind: 'relocate', uid: 1 } });
+  const menus = bridge.of('contextMenu').length;
+  nc.fire('contextmenu', ev(ch.x, ch.y, { button: 2 }));
+  assert.equal(ui.getUI().tool, null, 'relocation cancelled');
+  assert.equal(bridge.of('contextMenu').length, menus);
   // hover writes uistate.hover and calls bridge.hover
   nc.fire('pointermove', ev(q.x, q.y));
   assert.equal(ui.getUI().hover.kind, 'queen');

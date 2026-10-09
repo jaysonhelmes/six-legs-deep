@@ -10,6 +10,7 @@ import {
   sourceTipLines, detourText, FIND_NAMES, FIND_TIPS, honeydewCapText, territoryBenefitLines, trailDistanceLines,
 } from './text.js';
 import { detourInfo } from '../systems/trails.js';
+import { blightStatus } from '../systems/events.js';   // C245
 import { num, arr, obj } from './reveal.js';
 import { ribbonInfo, activeThreats } from './hud.js';
 import { getUI } from './uistate.js';
@@ -21,7 +22,7 @@ import { TERRAIN_ORDER } from '../data/surface.js';
 import { GRID } from '../data/balance.js';
 import { SOURCES } from '../data/sources.js';
 import { EVENTS } from '../data/events.js';
-import { ACTIONS } from '../data/combat.js';
+import { ACTIONS, TRUCE } from '../data/combat.js';
 import { topFlowLines } from './resourceStats.js';
 import { layBreakdown, layTipLines } from './layParts.js';
 
@@ -156,6 +157,21 @@ export function hexTerrainLines(terrId, hex, d) {
 }
 
 /**
+ * C251: tooltip lines of an underground stone (boulder) cell, like the water pocket's: whether it can be dug or built
+ * on now and, if not, the research that allows it (Acid Excavation; then ×3 dig work).
+ * @param {{ stoneOk?: boolean, work?: number, reserved?: string|null }} info nest.cellInfo
+ * @returns {string[]}
+ */
+export function stoneTipLines(info) {
+  const acid = nameOf('research', 'acid_excavation');
+  const lines = info && info.stoneOk
+    ? ['Can be dug and built over now (' + acid + '): ×3 dig work.', 'Dig work ' + fmt(num(info.work)) + ' per cell']
+    : ['Cannot be dug or built on yet.', acid + ' research lets you dig through it.'];
+  if (info && info.reserved) lines.push('Reserved: the ' + nameOf('chamber', info.reserved) + ' grows here once it is cleared.');
+  return lines;
+}
+
+/**
  * C154: tooltip title for a cell of a chamber's reserved full-size room: "Reserved for Gallery (L3 → full size at L8)".
  * @param {Object} c the chamber
  * @param {{ level: number, fullL: number }|null} rb nest.reservedBy
@@ -254,6 +270,14 @@ export function tipForTarget(t, s, d) {
     // C216: the yellow house pip over the Royal Chamber (housing full)
     if (k === 'housePip') return { title: 'Housing full', lines: housePipLines(s, d) };
     if (k === 'mold') return { title: 'Mold', lines: ['Halves this chamber. Click to scrape it off.'] };
+    // C245: a blighted Fungus Garden: every click scrapes the blight
+    if (k === 'blight') {
+      const bl = blightStatus(s);
+      if (!bl) return { title: 'Fungus Garden', lines: ['Click to inspect.'] };
+      return { title: 'Fungal blight', lines: bl.phase === 'card'
+        ? ['Click to start cleaning: ' + fmtCount(bl.need) + ' clicks within ' + fmtTime(num(EVENTS.ev_fungal_blight.num.cleanSec)) + '.']
+        : ['Click to scrape: ' + fmtCount(bl.left) + ' click' + (bl.left === 1 ? '' : 's') + ' left, ' + fmtTime(bl.t) + ' to go.'] };
+    }
     if (k === 'flood') {
       const rs = EVENTS.ev_rainstorm;
       const bail = num(rs && rs.num ? rs.num.bailSec : NaN, 5);
@@ -265,6 +289,11 @@ export function tipForTarget(t, s, d) {
       let info = null;
       try { info = cellInfo(s, d, num(t.i)); } catch { info = null; }
       if (!info) return null;
+      // C251: a boulder: what it is, whether it can be dug or built on now, else the research that allows it
+      if (info.stone) {
+        const row = Math.floor(num(t.i) / num(GRID && GRID.cols, 40));
+        return { title: 'Stone · ' + nameOf('layer', info.layer) + ' · row ' + row, lines: stoneTipLines(info) };
+      }
       const lines = [];
       if (num(info.work) > 0) lines.push('Dig work ' + fmt(num(info.work)) + ' per cell');
       if (info.root) lines.push(info.rootOwn ? 'Cultivated root: grown by your colony. Root Aphid Pens can touch it.' : 'A root grows down here.');
@@ -313,12 +342,19 @@ export function tipForTarget(t, s, d) {
       else if (f.open) lines.push('Take it within ' + left + ' or the fallen nests regrow.');
       else lines.push('All ' + f.total + ' Front nests must fall within ' + spanText(f.windowSec) + ' of each other.');
     }
+    if (r.alive !== false && num(r.truce) > 0) lines.push('Truce: ' + fmtTime(Math.ceil(num(r.truce))) + ' left' + (TRUCE.attackPolicy === 'block' ? '.' : ' — attacking breaks it.'));   // C247
     lines.push(r.alive === false ? 'Conquered.' : 'Click for the war panel.');
     return { title: nameOf('rival', r.type) + frontLabel(s, r) + ' · tier ' + fmtCount(num(r.tier)), lines };
   }
   if (k === 'party') {
     const p = arr(s.run.war && s.run.war.parties).find((x) => x && x.uid === t.id);
     return p ? { title: PARTY_NAMES[p.kind] || 'War party', lines: [fmtCount(num(p.soldier) + num(p.supermajor)) + ' ants · ' + (p.state || '')] } : null;
+  }
+  // C248: an incoming raid's warning arrow
+  if (k === 'raid') {
+    const rd = arr(s.run.war && s.run.war.raids).find((x) => x && x.uid === t.id);
+    if (!rd) return null;
+    return { title: 'Incoming raid · ' + fmtTime(Math.max(0, Math.ceil(num(rd.warn)))), lines: [fmtCount(num(rd.raiders)) + ' raiders.', 'Click to see your defence in Map → War.'] };
   }
   if (k === 'beetle') return { title: 'Golden Beetle', lines: ['Click it before it scuttles away!'] };
   if (k === 'gift') return { title: 'Saved Find', lines: ['A gift from your time away. Click to open.'] };

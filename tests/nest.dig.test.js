@@ -33,6 +33,7 @@ function run(s, d, cmd, env = fakeEnv()) {
 function stepNest(s, d, dt = 1, opts = {}) {
   const env = fakeEnv({ dt, ...opts });
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, dt, env);
   return env.events;
 }
@@ -261,8 +262,19 @@ test('relocate: old cells become tunnel, chamber inactive until dug, work = 50 %
   nest.derive(s, d);
   assert.equal(d.nest.agg.housingBase, 10, 'inactive while relocating');
   d.stats.digW = 1000;
-  const ev = stepNest(s, d, 1);
+  // C254: the new room is dug, but the old one is still being cleared (3 s + 0.5 s × 6 cells): still inactive
+  let ev = stepNest(s, d, 1);
+  assert.equal(ch.status, 'relocating', 'the old room takes a while to clear');
+  const ri = nest.relocationInfo(s, d, ch.uid);
+  assert.equal(ri.clearing, true);
+  assert.equal(ri.digging, false, 'new room dug');
+  assert.ok(Math.abs(ri.clearLeft - 5) < 1e-9, 'about 5 s of clearing left');
+  assert.deepEqual(ri.from, { x: 21, y: 12, w: 3, h: 2 });
+  assert.ok(ev.some((e) => e.type === 'relocCellCleared' && e.uid === ch.uid), 'old cells cleared one by one (animation hook)');
+  ev = stepNest(s, d, 5);
   assert.equal(ch.status, 'active');
+  assert.equal(ch.reloc, undefined);
+  assert.equal(nest.relocationInfo(s, d, ch.uid), null);
   assert.ok(ev.some((e) => e.type === 'chamberActivated' && e.uid === ch.uid));
   assert.equal(s.run.stats.chambersDone, 1, 'relocation does not count as a new chamber');
 });
@@ -362,9 +374,14 @@ test('backfill: refused when it would disconnect a chamber; dead-ends refill to 
   assert.equal(run(s, d, { type: 'backfill', cells: [idx(5, 5)] }), 'invalid:cell');
   assert.equal(run(s, d, { type: 'backfill', cells: [idx(22, 8), idx(22, 9)] }), null);
   assert.equal(run(s, d, { type: 'backfill', cells: [idx(22, 8)] }), 'invalid:pending');
-  stepNest(s, d, 5);
+  // C252: one after another, furthest from the entrance first, the batch still taking 10 s (5 s per cell here)
+  stepNest(s, d, 4);
   assert.equal(s.run.nest.cells[idx(22, 8)], CELL.TUNNEL);
-  stepNest(s, d, 5);
+  let ev = stepNest(s, d, 1);
+  assert.equal(s.run.nest.cells[idx(22, 8)], CELL.SOIL, 'the far end first');
+  assert.equal(s.run.nest.cells[idx(22, 9)], CELL.TUNNEL);
+  assert.ok(ev.some((e) => e.type === 'cellBackfilled' && e.i === idx(22, 8)), 'per-cell event (animation hook)');
+  ev = stepNest(s, d, 5);
   assert.equal(s.run.nest.cells[idx(22, 8)], CELL.SOIL);
   assert.equal(s.run.nest.cells[idx(22, 9)], CELL.SOIL);
   assert.equal(s.run.nest.backfill.length, 0);

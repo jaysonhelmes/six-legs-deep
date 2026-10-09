@@ -64,12 +64,12 @@ test('C166: automatic jobs and the Adaptation autobuyer are Federation-only', ()
   assert.equal(v('setAutoJobs', { on: true }), 'locked', 'Automaton Instincts alone: no automatic jobs');
   assert.equal(v('setThresholdJobs', { on: true }), 'locked');
   assert.equal(v('setJobTargets', { targets: { scout: 0 } }), null, 'targets (carried into each run) still settable');
-  assert.equal(autoHandlers.setAutomation.validate(s, d, { type: 'setAutomation', patch: { autobuy: { on: true } } }), 'locked');
+  assert.equal(autoHandlers.setAutomation.validate(s, d, { type: 'setAutomation', patch: { autobuy: { adaptations: true } } }), 'locked');
   s.era.federation.automated_brood = 1;
   assert.equal(v('setAutoJobs', { on: true }), null);
   assert.equal(v('setThresholdJobs', { on: true }), null);
   s.era.federation.autobuyers = 1;
-  assert.equal(autoHandlers.setAutomation.validate(s, d, { type: 'setAutomation', patch: { autobuy: { on: true, adaptations: true } } }), null);
+  assert.equal(autoHandlers.setAutomation.validate(s, d, { type: 'setAutomation', patch: { autobuy: { adaptations: true } } }), null);
 });
 
 test('C166 peak rule: never before 8 min, waits while the rate rises, needs 30 s below 97 % of the best', () => {
@@ -211,13 +211,13 @@ test("C172: Architect's Table (3 kinship) needs Blueprint Library", () => {
 test('C166 UI helpers: per-tab autobuyer switches; C170 blueprint hint; peak text', () => {
   const s = newState(8);
   const a = s.meta.automation.autobuy;
-  assert.deepEqual(autobuyPatch(s, 'chambers', true), { autobuy: { on: true, adaptations: false, chambers: true, mound: false } });
-  Object.assign(a, { on: true, adaptations: false, chambers: true, mound: false });
-  assert.ok(autobuyOn(s, 'chambers') && !autobuyOn(s, 'mound'));
-  assert.deepEqual(autobuyPatch(s, 'mound', true), { autobuy: { mound: true } });
-  assert.deepEqual(autobuyPatch(s, 'chambers', false), { autobuy: { chambers: false, on: false } }, 'the last one off turns the master off');
-  a.mound = true;
+  // C246: one switch per autobuyer; a patch touches only its own category
+  assert.deepEqual(autobuyPatch(s, 'chambers', true), { autobuy: { chambers: true } });
   assert.deepEqual(autobuyPatch(s, 'chambers', false), { autobuy: { chambers: false } });
+  Object.assign(a, { adaptations: false, chambers: true });
+  assert.ok(autobuyOn(s, 'chambers') && !autobuyOn(s, 'adaptations'));
+  a.on = false;   // a pre-C246 save with the master switch off: shown off
+  assert.ok(!autobuyOn(s, 'chambers'));
   assert.equal(blueprintSaveHint(s), '', 'nothing saved');
   s.era.blueprints = [{ name: 'A', chambers: [] }];
   assert.match(blueprintSaveHint(s), /Ancestral Blueprint/);

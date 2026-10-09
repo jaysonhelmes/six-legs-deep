@@ -181,7 +181,7 @@ export const OUTCOMES = f({
   'ev_horned_lizard:mob': 'Mobbed the horned lizard: it left, +{food} food.',
   'ev_horned_lizard:ignore': 'Ignored the horned lizard: its trail loses workers for {time}.',
   'ev_fungal_blight:quarantine': 'Quarantined the blight: lost {fungus} fungus.',
-  'ev_fungal_blight:clean': 'Cleaning the garden: click it {n} times within {time}.',
+  'ev_fungal_blight:clean': 'Cleaning the garden: click the Fungus Garden (Below) {n} times within {time}.',
   'ev_fungal_blight:cleaned': 'Cleaned the fungus garden: nothing lost.',
   'ev_fungal_blight:failed': 'The blight took {fungus} fungus.',
   'ev_army_ant_column:evacuate': 'Evacuated the trails: no foraging for {time}, lost {food} food.',

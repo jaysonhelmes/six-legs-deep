@@ -693,7 +693,8 @@ export class Bot {
   automationToggles() {
     const s = this.g.s;
     const on = (s.era.federation.autobuyers || 0) > 0; // C166: the Adaptation autobuyer is Federation-only
-    if (on && !s.meta.automation.autobuy.on) this.act('setAutomation', { patch: { autobuy: { on: true } } });
+    const a = s.meta.automation.autobuy;   // C246: both autobuyers, as the old master switch did
+    if (on && !(a.adaptations && a.chambers)) this.act('setAutomation', { patch: { autobuy: { adaptations: true, chambers: true } } });
   }
 
   satellites() {

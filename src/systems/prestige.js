@@ -577,7 +577,9 @@ export function startRun(s, d, opts) {
   const startSeason = typeof o.startSeason === 'string' && Object.prototype.hasOwnProperty.call(SEASON_MODS, o.startSeason)
     ? o.startSeason : seasons.chronoStart(s);
   if (startSeason) seasons.setSeason(s, startSeason);
-  if (Number.isInteger(s.era.activeBlueprint) && s.era.activeBlueprint >= 0 && s.era.blueprints[s.era.activeBlueprint]) {
+  // C258: an active blueprint is applied only with Ancestral Blueprint (Bloodline) or Blueprint Library (Federation)
+  if (Number.isInteger(s.era.activeBlueprint) && s.era.activeBlueprint >= 0 && s.era.blueprints[s.era.activeBlueprint]
+    && nest.blueprintsAllowed(s)) {
     nest.applyBlueprint(s, d);
   }
   if (o.env && typeof o.env.emit === 'function') o.env.emit('runStarted', { index: run.index });

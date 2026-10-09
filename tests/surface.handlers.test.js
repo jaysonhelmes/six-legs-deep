@@ -266,12 +266,12 @@ test('flagHex needs antennation; toggles a fogged hex in the flag list', () => {
   assert.deepEqual(s.run.surface.flagged, []);
 });
 
-test('C220: there is no buyMound command; autoMoundStep buys nothing (the Mound grows on its own)', () => {
+test('C220 / C246: there is no buyMound command and no Mound autobuyer step (the Mound grows on its own)', () => {
   const { s, d } = world();
   s.run.unlocked.mound = true;
   s.run.res.soil = 1e6;
   assert.equal(surface.handlers.buyMound, undefined);
-  assert.equal(surface.autoMoundStep(s, d, fakeEnv()), false);
+  assert.equal(surface.autoMoundStep, undefined);
   assert.equal(surface.moundCost(s), null);
   assert.equal(s.run.res.soil, 1e6);
 });

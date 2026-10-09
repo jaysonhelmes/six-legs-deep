@@ -160,7 +160,6 @@ const SAT_MIN_DIST = num0(SAT_FX.minDist, 3);
 const SAT_COL_GAP = num0(SAT_FX.colGap, 4);
 const ROYAL_LEVEL = num0(FLIGHT.royalLevel, 5);
 const SHAFT_GAP = num0(GEOM.shaftGap, 3);
-const DRAIN_ROWS = num0(DRAINAGE && DRAINAGE.moveRows, 12);
 const nameOr = (table, id, fb) => (table[id] && table[id].name) || fb;
 
 function num0(v, fb) {
@@ -296,7 +295,8 @@ export const REASON_DETAILS = Object.freeze({
   // war
   'blocked:immune': 'Immune to assault until you own ' + OLD_RIDGE_HEXES + ' hexes.',
   'blocked:unsighted': 'Not scouted yet: your scouts must find it first.',
-  'blocked:truce': 'You have a truce with this colony.',
+  'blocked:truce': 'You have a truce with this colony: wait until it ends.',
+  'confirm:truce': 'You have a truce with this colony: attacking breaks it (confirm first).',   // C247
   'invalid:hex': 'Pick a border hex of that rival, next to your land.',
   'invalid:nest': 'Your garrison defends the nest on its own.',
   'invalid:kind': 'Not possible in this situation.',
@@ -345,15 +345,18 @@ export const REASON_BY_COMMAND = Object.freeze({
   // C117–C121
   cancelPlanned: { notFound: 'That planned chamber is gone.', invalid: 'Pick a planned chamber.' },
   backfillUnneeded: { 'invalid:empty': 'No unneeded tunnels: every tunnel keeps something connected.' },
+  // C253 / C258
+  clearBlueprint: { notFound: 'No blueprint is active.' },
   drainPocket: { locked: 'Needs ' + nameOr(RESEARCH, 'drainage', 'Drainage') + ' research.', busy: 'Already being drained or moved.',
     notFound: 'Pick a revealed water pocket.', 'blocked:route': 'No tunnel route reaches that pocket.' },
   relocatePocket: { locked: 'Needs ' + nameOr(RESEARCH, 'drainage', 'Drainage') + ' research.', busy: 'Already being drained or moved.',
-    notFound: 'Pick a revealed water pocket.', 'invalid:row': 'Too far: keep it within ' + DRAIN_ROWS + ' rows of where it is.',
+    notFound: 'Pick a revealed water pocket.', 'invalid:row': 'A pocket cannot sit in the top row.', // C255: no distance limit
     'blocked:royalRoom': 'That would wall in the Royal Chamber.' },
   growRoot: { locked: 'Needs ' + nameOr(RESEARCH, 'root_cultivation', 'Root Cultivation') + ' research.',
     max: 'Root limit reached: higher Mound levels allow more.', 'invalid:root': 'A root already grows in that column.',
     'blocked:shaft': 'A shaft runs down that column.', blocked: 'Something blocks the top of that column.' },
   launchParty: { invalid: 'Send at least one soldier or supermajor.' },
+  massRecruit: { requirements: 'Draw a trail to it first.', cantAfford: 'Not enough pheromone.', invalid: 'Only for a termite swarm or picnic spill.' },   // C250
   reinforce: { invalid: 'No soldiers at home to send.' },
   tournament: { invalid: 'Send at least one ant.' },
   backfill: { blocked: 'That would cut a chamber off from every entrance.', invalid: 'Drag over tunnel cells to backfill them.' },
@@ -875,7 +878,7 @@ export const FED_TIPS = Object.freeze({
   automated_brood: 'Automatic jobs every run; caste and job targets carry over.',
   blueprint_memory: 'Five blueprint slots; blueprint cells dig ×5.',
   architects_table: 'Edit saved blueprint layouts by hand. Needs Blueprint Library.',
-  autobuyers: 'Auto-buy Adaptations, chamber levels and Mound levels.',
+  autobuyers: 'Auto-buy Adaptations and chamber levels, each on its own switch.',
   auto_flight: 'Fly automatically at your chosen trigger.',
   aquifer_access: 'Dig the aquifer, rows 74–79.',
   heirloom_bloodline: 'Keep three Bloodline traits through Supercolonies.',
@@ -1083,7 +1086,7 @@ export const EVENT_COPY = Object.freeze({
   ev_footstep: 'A shoe shadow looms! Click it to scatter.',
   ev_brood_mites: 'Mites infest the brood: brood time ×1.5.',
   ev_phorid_flies: 'Phorid flies hunt soldiers and foragers.',
-  ev_fungal_blight: 'Blight greys the fungus garden!',
+  ev_fungal_blight: 'Blight greys the fungus garden! Click it (Below) to clean it.',
   ev_army_ant_column: 'An army ant column is crossing your land!',
   ev_frost_snap: 'A frost snap creeps over the top rows.',
 });
@@ -1105,7 +1108,7 @@ export const CHOICE_TIPS = Object.freeze({
   ev_ladybug_raid: { send: 'Five garrison soldiers chase them off.', wait: 'That aphid colony yields half for 5 min.' },
   ev_antlion_pit: { send: 'Three garrison soldiers clear the pit.', wait: 'Losses go on until you reroute or click the pit.' },
   ev_horned_lizard: { reroute: 'Reroute the trail around it, free.', mob: 'Drive it off and gain food.', ignore: 'The trail loses workers.' },
-  ev_fungal_blight: { quarantine: 'Lose 30% of your fungus.', clean: 'Click the garden 20 times within 15 s.' },
+  ev_fungal_blight: { quarantine: 'Lose 30% of your fungus.', clean: 'Click the Fungus Garden (Below) 20 times in 15 s.' },
   ev_army_ant_column: { evacuate: 'No foraging for 60 s, lose 5% food.', fight: 'Battle the column for huge loot.' },
 });
 
@@ -1401,6 +1404,40 @@ export function colonyTitle(s, fallback = 'Six Legs Deep') {
   return name || fallback;
 }
 
+/**
+ * C241: how a cosmetic is unlocked — the achievement whose `cosmetic` grants it. A secret achievement the player has not
+ * earned keeps its name and requirement hidden (as in the Achievements tab).
+ * @param {string} id cosmetic id
+ * @param {Object} [s] state (meta.achievements decides "earned")
+ * @returns {{ achId: string|null, name: string, req: string, secret: boolean, earned: boolean, text: string }}
+ */
+export function cosmeticUnlock(id, s) {
+  let achId = null;
+  for (const k of Object.keys(ACHIEVEMENTS)) if (ACHIEVEMENTS[k] && ACHIEVEMENTS[k].cosmetic === id) { achId = k; break; }
+  if (!achId) return { achId: null, name: '', req: '', secret: false, earned: false, text: 'Unlock source unknown.' };
+  const a = ACHIEVEMENTS[achId];
+  const ach = s && s.meta && s.meta.achievements && typeof s.meta.achievements === 'object' ? s.meta.achievements : {};
+  const earned = ach[achId] !== undefined && ach[achId] !== null;
+  const secret = !!(a.secret || a.cat === 'secret') && !earned;
+  const name = secret ? '???' : a.name;
+  const req = secret ? 'A secret achievement.' : String(a.desc || '');
+  const text = secret ? 'Unlocked by a secret achievement.' : 'Unlocked by the achievement ' + a.name + ': ' + req;
+  return { achId, name, req, secret, earned, text };
+}
+
+/**
+ * C244: click commands a player spams on a map / nest object. Two clicks inside one tick are both queued; the second is
+ * re-validated when it applies and finds the object already taken ('notFound'). That is not a failure the player
+ * caused, so its commandRejected stays silent (no toast, no buzz).
+ */
+export const STALE_CLICK_TYPES = Object.freeze(new Set(['clickEventObject', 'clearAntlion', 'scrapeMold', 'bailFlood', 'cleanBlight',
+  'clickBeetle', 'clickPupa', 'openGift']));
+
+/** C244 [pure]: true for an apply-time rejection of an already-collected clicked object (silent). */
+export function staleClickReject(e) {
+  return !!(e && e.reason === 'notFound' && e.cmd && STALE_CLICK_TYPES.has(e.cmd.type));
+}
+
 /** Render variant of the equipped cosmetic of a slot ('' when none). */
 export function cosmeticVariant(s, slot) {
   const id = equippedCosmeticId(s, slot);
@@ -1494,6 +1531,7 @@ export function eventToast(e, s = null) {
       ? { text: 'A forked trail now starts at the nearest entrance (trails no longer fork).', kind: 'info', priority: 'low' }
       : { text: 'A forked trail could not reach any entrance and was removed.', kind: 'bad', priority: 'high' };
     case 'rivalSighted': return { text: rivalName(e.uid, e.rivalType) + ' spotted!', kind: 'danger', priority: 'low' };
+    case 'truceBroken': return { text: 'Truce broken: ' + rivalName(e.rival) + ' will raid again sooner.', kind: 'bad', priority: 'high' };   // C247
     case 'adultsDied':
       if (e.cause === 'battle') return null;
       return { text: fmtCount(e.n || 0) + ' ' + (nameOf('caste', e.caste) || 'ants').toLowerCase() + ' lost (' + humanize(e.cause || '') + ').', kind: 'bad', priority: 'low' };
@@ -1508,7 +1546,7 @@ export function eventToast(e, s = null) {
     case 'findClaimed': return { text: e.text || 'Find claimed.', kind: 'good', priority: 'high' };
     // C182: a trail that cannot get round a temporary obstacle
     case 'trailDetour': return e.mode === 'paused' ? { text: 'A trail is blocked with no way round: paused until it clears.', kind: 'bad', priority: 'low' } : null;
-    case 'commandRejected': return { text: reasonText(e.reason, e.cmd && e.cmd.type), kind: 'bad', priority: 'low' };
+    case 'commandRejected': return staleClickReject(e) ? null : { text: reasonText(e.reason, e.cmd && e.cmd.type), kind: 'bad', priority: 'low' };
     default: return null;
   }
 }
@@ -1597,7 +1635,7 @@ export const AUTO_SUPER_TEXT = "Merges automatically once the trigger is met and
 
 /** C166: where the automation toggles live (the old Federation Automation box). */
 export const AUTO_POINTER_TEXT = 'Automation switches sit where they act: Auto-Flight in Flight, Auto-Supercolony in Supercolony, '
-  + 'the Adaptation autobuyer in Adaptations, chamber and Mound autobuyers in Build.';
+  + 'the Adaptation autobuyer in Adaptations, the chamber autobuyer in Build.';
 
 /** C171: landing-chooser notes for traits that do not apply to the landing itself. */
 export const LANDING_SHOP_NOTES = Object.freeze({
@@ -1632,7 +1670,7 @@ export function blueprintLockHint(s) {
   const saved = Array.isArray(s && s.era && s.era.blueprints) ? s.era.blueprints.filter(Boolean).length : 0;
   if (canSave || saved === 0) return '';
   return 'Blueprint saving needs ' + nameOf('trait', 'ancestral_blueprint') + ' (Bloodline) or ' + nameOf('federation', 'blueprint_memory')
-    + ' (Federation). Your saved layouts are kept.';
+    + ' (Federation). Your saved layouts are kept, but none is applied after a flight until then.'; // C258
 }
 
 /** C180: the Blueprints section line while the Architect's Table (Federation) is not owned. */

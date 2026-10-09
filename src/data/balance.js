@@ -80,6 +80,13 @@ export const GRID = deepFreeze({
   colsPerSide: 4,
 });
 
+/**
+ * C252: hard cap on how fast the nest changes, however strong the diggers get (ARCHITECTURE §18 C252): at most
+ * digCellsPerSec dug cells per second of game time (each Help Dig click may finish up to helpCells more) and at most
+ * backfillCellsPerSec backfilled cells per second. Dig work past the cap becomes maintenance (soil is still earned).
+ */
+export const DIG_CAP = deepFreeze({ digCellsPerSec: 25, backfillCellsPerSec: 20, helpCells: 2 });
+
 /** Nest cell codes stored in s.run.nest.cells. */
 export const CELL = deepFreeze({ SOIL: 0, TUNNEL: 1, CHAMBER: 2, STONE: 3, WATER: 4 });
 

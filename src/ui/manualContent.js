@@ -455,9 +455,9 @@ function extraText(extra) {
 
 const CASTE_HOW = {
   minor: 'Every egg is a minor worker once each caste has reached its target (Colony tab → Castes).',
-  soldier: 'Set a soldier target on the Colony tab (−/+, type a number, or Max = your Barracks berths), or tick Keep berths filled to follow the berths. It switches on by itself when your first Barracks opens. The queen lays soldiers until soldiers plus soldier brood reach the target, then workers. Each egg needs a free berth and chitin above the chitin reserve.',
-  supermajor: 'Set a supermajor target on the Colony tab (or Max = your War Hall berths), or tick Keep berths filled; it switches on by itself when your first War Hall opens. Each egg needs a free War Hall berth, chitin above the chitin reserve, and fungus.',
-  replete: 'Set a replete target on the Colony tab (or Max = your Repletion Hall berths), or tick Keep berths filled. Each egg needs honeydew. Repletes hang from the ceiling and do not work.',
+  soldier: 'Set a soldier target on the Colony tab (−/+, type a number, or Max = your Barracks berths), or tick Keep berths filled to follow the berths (on by default until you set a soldier target yourself). The queen lays soldiers until soldiers plus soldier brood reach the target, then workers. Each egg needs a free berth and chitin above the chitin reserve.',
+  supermajor: 'Set a supermajor target on the Colony tab (or Max = your War Hall berths), or tick Keep berths filled (on by default until you set your own target). Each egg needs a free War Hall berth, chitin above the chitin reserve, and fungus.',
+  replete: 'Set a replete target on the Colony tab (or Max = your Repletion Hall berths), or tick Keep berths filled (on by default until you set your own target). Each egg needs honeydew. Repletes hang from the ceiling and do not work.',
   alate: 'Rear them in Prestige → Flight (Rear 1 / Rear 5, or Auto-rear). Each one boosts your next Flight.',
 };
 
@@ -599,7 +599,7 @@ const DEF_AUTOMATION = {
     }
     if (fedLevel(s, 'automated_brood') > 0) list.push('Automated Brood (Federation): automatic jobs and Respond to bottlenecks are on from the start of every run, and your job and caste targets carry over.');
     if (fedLevel(s, 'autobuyers') > 0) {
-      list.push('Autobuyers (Federation): the Adaptation autobuyer is switched in the Adaptations tab; chamber-level and Mound autobuyers, and the order all three are tried in, in the Build tab. One purchase per second.');
+      list.push('Autobuyers (Federation): the Adaptation autobuyer is switched in the Adaptations tab, the chamber-level autobuyer in the Build tab. Each runs on its own and buys at most once a second. The Mound grows by itself.');
     }
     if (fedLevel(s, 'auto_flight') > 0) list.push('Auto-Flight (Federation, Prestige → Flight): ' + autoFlightPeakText() + ' ' + AUTO_LANDING_TEXT);
     if (genomeLevel(s, 'deep_time_automation') > 0) list.push('Auto-Supercolony (Genome, Prestige → Supercolony): ' + AUTO_SUPER_TEXT);
@@ -925,8 +925,8 @@ const DEF_NEST = [
         ['Roots hang ' + ROOTS.yMin + '–' + ROOTS.yMax + ' rows deep from plants near the entrance, straight down through any chamber in their way. A Root Aphid Pen must touch one.', (s2) => chamberShown(s2, 'root_aphid_pen')],
         'Water pockets hide in the deep soil and show up when a tunnel comes close. They cannot be dug. If you place a chamber or dig into one nobody has found yet, you strike water: the pocket shows and you pick another spot.',
         ['A Water Well must touch a revealed water pocket.', (s2) => chamberShown(s2, 'water_well')],
-        ['Drainage: drain a revealed pocket (×' + DRAINAGE.drainWork + ' layer work and ' + DRAINAGE.drainSoil + ' soil per water cell) or move it up to ' + DRAINAGE.moveRows
-          + ' rows (×' + DRAINAGE.moveWork + ' layer work per cell).', (s2) => hasResearch(s2, 'drainage')],
+        ['Drainage: drain a revealed pocket (×' + DRAINAGE.drainWork + ' layer work and ' + DRAINAGE.drainSoil + ' soil per water cell) or move it anywhere'
+          + ' (×' + DRAINAGE.moveWork + ' layer work per cell).', (s2) => hasResearch(s2, 'drainage')],
         ['Cultivated roots: grow a root down a column you choose. Cost ×' + ROOT_CULT.growth + ' for each one this run.', (s2) => hasResearch(s2, 'root_cultivation')],
       ]);
       const kv = [];

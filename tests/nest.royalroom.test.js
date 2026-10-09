@@ -219,6 +219,7 @@ test('an active blueprint never places a chamber that walls the queen in', () =>
     { type: 'gallery', x: 21, y: 12, w: 3, h: 2, level: 1 },
   ] }];
   s.era.activeBlueprint = 0;
+  s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(s, d);
   const types = s.run.nest.chambers.map((c) => c.type);
   assert.ok(types.includes('gallery'), 'the harmless chamber is queued');

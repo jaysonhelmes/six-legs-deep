@@ -39,6 +39,7 @@ function settle(s, d, sec = 1, digW = 1e9) {
   s.run.time += sec;
   d.stats.digW = digW;
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, sec, env);
   nest.derive(s, d);
   return env.events || [];
@@ -221,7 +222,7 @@ test('C137: a relocated chamber takes its reservation along (same corner unless 
   assert.equal(run(s, d, { type: 'relocateChamber', uid: g.uid, x: 30, y: 50 }), null);
   assert.equal(anchorOf(g, g.res), 'tr');
   assert.deepEqual(g.res, anchorRect({ x: 30, y: 50, w: 3, h: 2 }, 'tr', 8, 4));
-  settle(s, d);
+  settle(s, d, 10); // C254: the old room takes a few seconds to clear
   assert.equal(run(s, d, { type: 'relocateChamber', uid: g.uid, x: 10, y: 50, anchor: 'bl' }), null);
   assert.equal(anchorOf(g, g.res), 'bl');
 });

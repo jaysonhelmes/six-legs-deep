@@ -28,6 +28,7 @@ function run(s, d, cmd) {
 
 function settle(s, d) {
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, 1, fakeEnv({ dt: 1 }));
   nest.derive(s, d);
   recompute(s, d, fakeEnv()); // d.stats as the real step has them (colony multipliers)

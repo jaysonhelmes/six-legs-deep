@@ -34,6 +34,7 @@ function run(s, d, cmd, env = fakeEnv()) {
 function stepNest(s, d, dt = 1) {
   const env = fakeEnv({ dt });
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, dt, env);
   return env.events;
 }
@@ -142,6 +143,7 @@ test('C125: an active blueprint places a nursery over the main shaft (the player
   const { s, d } = setup();
   s.era.blueprints = [{ name: 'over shaft', tunnels: [], chambers: [{ type: 'nursery', x: 19, y: 17, w: 3, h: 2, level: 1 }] }];
   s.era.activeBlueprint = 0;
+  s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(s, d);
   const nur = s.run.nest.chambers.find((c) => c.type === 'nursery');
   assert.ok(nur && nur.blueprint, 'placed');
@@ -155,6 +157,7 @@ test('C125: a blueprint spot over a shaft top is dropped; a Nuptial Chamber with
   const { s, d } = setup();
   s.era.blueprints = [{ name: 'top', tunnels: [], chambers: [{ type: 'gallery', x: 19, y: 1, w: 3, h: 2, level: 1 }] }];
   s.era.activeBlueprint = 0;
+  s.cycle.traits.ancestral_blueprint = 1; // C258: blueprints apply only with the unlock
   nest.applyBlueprint(s, d);
   assert.ok(!s.run.nest.chambers.some((c) => c.type === 'gallery'));
   assert.deepEqual(s.run.nest.bpPending, [], 'dropped (permanent)');

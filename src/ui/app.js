@@ -28,7 +28,7 @@ import { openPatchNotes, updateNotice, createUpdatePill, versionLabel, markSeen 
 import { CURRENT_VERSION } from '../data/changelog.js';
 import { openWelcome } from './welcome.js';
 import { createOnboarding, createCallout } from './onboarding.js';
-import { isClickableSource, escortMenuItems, eventObjectMenuItems, aphidMenuItems } from './panels/map.js';
+import { isClickableSource, escortMenuItems, eventObjectMenuItems, aphidMenuItems, hexMenuItems, rivalMenuItems, massRecruitItem } from './panels/map.js';
 import { satelliteHexWhy, frontWindows, frontWindowSec, spanText } from './rules.js';
 import * as colonyPanel from './panels/colony.js';
 import * as buildPanel from './panels/build.js';
@@ -66,6 +66,7 @@ const TOAST_EVENTS = ['achievement', 'fieldGuide', 'unlock', 'raidWarning', 'rai
   'hardshipTier', 'entranceOpened', 'rivalSighted', 'adultsDied', 'broodDied', 'giftOpened', 'commandRejected', 'flightComplete',
   'supercolonyComplete', 'speciationComplete', 'blueprintDropped', 'trailRehomed',
   'expeditionFind', 'findClaimed', 'trailDetour',   // C182 / C188 (map and combat pass)
+  'truceBroken',   // C247
   'waterStruck'];   // C173 (nest pass): "You struck water!"
 /**
  * Panel unlock keys and their tabs. A reveal never steals the open tab (the onboarding glow could otherwise point at
@@ -289,6 +290,7 @@ export function mountUI(root, game, opts = {}) {
     manual: (o) => openManual(manualCtx, o),  // C131: the Manual (book button, H / ?)
     patchNotes: () => openPatchNotes(patchCtx), // C150: patch notes (version label, Settings, update pill)
     blueprintEditor: (slot) => openBlueprintEditor(mctx, slot), // C180: Architect's Table blueprint editor (Build tab)
+    confirm: (o) => modals.confirm(o),   // C247: yes/no question (Map → War: breaking a truce)
   };
   /** C150: patch notes context. The last-seen version is a per-browser key outside the save (try/catch inside). */
   const browserStorage = (() => { try { return win && win.localStorage ? win.localStorage : null; } catch { return null; } })();
@@ -321,6 +323,7 @@ export function mountUI(root, game, opts = {}) {
       setUI({ selection: target || null });
       if (!target) return;
       if (target.view === 'surface' && target.kind === 'rival') pendingFocus = { type: 'rival', uid: target.id };
+      if (target.view === 'surface' && target.kind === 'raid') pendingFocus = { type: 'raid', uid: target.id };   // C248
       if (target.view === 'surface' && target.kind === 'source') {
         const src = arr(game.s.run.surface && game.s.run.surface.sources).find((x) => x && x.uid === target.id);
         if (src && !isClickableSource(src.type)) pendingFocus = { type: 'source', uid: src.uid };
@@ -785,7 +788,8 @@ export function mountUI(root, game, opts = {}) {
     const A = (type, args, label) => ({ label, run: (ev) => runAct(type, args, ev) });
     // C236 / C237: a menu entry from a panel helper: a command, a tool to arm, or a disabled note
     const M = (it) => (it.disabled ? { label: it.label, disabled: true, run: () => {} }
-      : it.tool ? { label: it.label, run: () => setUI({ tool: it.tool }) } : A(it.type, it.args, it.label));
+      : it.tool ? { label: it.label, run: () => setUI({ tool: it.tool }) }
+        : it.chooser ? { label: it.label, run: () => bridge.openChooser(it.chooser.kind, it.chooser.data) } : A(it.type, it.args, it.label));
     const items = [];
     if (!t) return items;
     if (t.kind === 'chamber' || t.kind === 'nursery' || t.kind === 'queen') { // nursery/queen picks carry the chamber uid
@@ -798,12 +802,14 @@ export function mountUI(root, game, opts = {}) {
       // C185: a Lycaenid trail takes escorts straight from the menu
       const tr = arr(s.run.surface.trails).find((x) => x && x.uid === t.id);
       for (const it of escortMenuItems(s, game.d, tr)) items.push(M(it));
+      const mr = massRecruitItem(s, game.d, tr);   // C250
+      if (mr) items.push(M(mr));
       items.push({ label: 'Reroute', run: () => setUI({ tool: { kind: 'reroute', uid: t.id } }) });
       items.push(A('deleteTrail', { uid: t.id }, 'Delete trail'));
+      for (const it of hexMenuItems(s, game.d, Number.isInteger(t.hex) ? t.hex : -1)) items.push(M(it));   // C249
     } else if (t.kind === 'rival') {
-      items.push({ label: 'Raid…', run: () => bridge.openChooser('war', { kind: 'raid', target: { type: 'rival', uid: t.id } }) });
-      items.push({ label: 'Assault…', run: () => bridge.openChooser('war', { kind: 'assault', target: { type: 'rival', uid: t.id } }) });
-      items.push(A('bribe', { rival: t.id }, 'Bribe'));
+      // C249 / C247: Raid / Assault (marked when they would break a truce) and the bribe with its honeydew cost
+      for (const it of rivalMenuItems(s, game.d, t.id)) items.push(M(it));
       if (getUI().tool === null) items.push({ label: 'Tournament…', run: () => setUI({ tool: { kind: 'tournament', rival: t.id } }) });
     } else if (t.kind === 'source' || t.kind === 'eventObject') {
       // C115: a fallen fruit's event object sits on its source, so right-clicking the fruit offers the source's actions
@@ -820,6 +826,8 @@ export function mountUI(root, game, opts = {}) {
       // one trail per destination (C100): a source that already has a trail offers to remove it instead (player request)
       const existing = src ? arr(s.run.surface.trails).find((x) => x && x.src === src.uid) : null;
       if (existing) for (const it of escortMenuItems(s, game.d, existing)) items.push(M(it));   // C185 / C236
+      const mr = existing ? massRecruitItem(s, game.d, existing) : null;   // C250
+      if (mr) items.push(M(mr));
       if (src) for (const it of aphidMenuItems(s, game.d, src)) items.push(M(it));   // C237: Aphid Shepherding moves a colony
       if (existing) items.push(A('deleteTrail', { uid: existing.uid }, 'Remove trail to here'));
       // C185: an antlion pit is cleared by garrison soldiers, any time while it is there
@@ -835,13 +843,12 @@ export function mountUI(root, game, opts = {}) {
         items.push({ label: src.type === 'termite_mound' ? 'Raid mound…' : 'Hunt…',
           run: () => bridge.openChooser('war', { kind: src.type === 'termite_mound' ? 'termite' : 'hunt', target: { type: 'source', uid: src.uid } }) });
       }
+      // C249: a source or object sits on a hex: its hex options follow (claim, flag, satellite)
+      const hx = Number.isInteger(t.hex) ? t.hex : src ? src.hex : -1;
+      for (const it of hexMenuItems(s, game.d, hx)) items.push(M(it));
     } else if (t.kind === 'hex') {
-      if (isShown(s, 'hex_claim')) items.push(A('claimHex', { hex: t.hex }, 'Claim hex'));
-      if (s.run.research && s.run.research.antennation) {
-        const on = !arr(s.run.surface.flagged).includes(t.hex);
-        items.push(A('flagHex', { hex: t.hex, on }, on ? 'Flag for scouts' : 'Unflag'));
-      }
-      if (fedLevel(s, 'satellite_nest') > 0) items.push({ label: 'Place satellite…', run: () => bridge.openChooser('satelliteColumn', { hex: t.hex }) });
+      // C249: no Claim on land already yours for good (trail-held land can still be claimed), no Flag on revealed hexes
+      for (const it of hexMenuItems(s, game.d, t.hex)) items.push(M(it));
     } else if (t.kind === 'party') {
       items.push(A('recallParty', { uid: t.id }, 'Recall'));
       const b = arr(s.run.war && s.run.war.battles).find((x) => x && x.party === t.id);
@@ -1060,6 +1067,16 @@ export function mountUI(root, game, opts = {}) {
   // C190: how an event ended (the card choice, or the outcome the events system reports) toasts with a "Log" link
   sub('eventResolved', (e) => {
     const id = e.eventId || e.id;
+    // C245: cleaning a fungal blight: show where to click (switch to the nest when it is hidden; ping the garden)
+    if (id === 'ev_fungal_blight' && e.choice === 'clean') {
+      const g = arr(game.s.run.nest && game.s.run.nest.chambers).find((c) => c && c.type === 'fungus_garden');
+      if (g) {
+        const loc = { view: 'nest', chamber: g.uid, cell: (num(g.y) + Math.floor(num(g.h, 1) / 2)) * num(GRID && GRID.cols, 40) + num(g.x) };
+        const st = getUI();
+        if (!viewShows(st.view, st.layout).below) locate(loc);
+        else if (renderers && renderers.nest && typeof renderers.nest.ping === 'function') safe(() => renderers.nest.ping(loc.cell));
+      }
+    }
     const outcome = typeof e.outcomeText === 'string' && e.outcomeText.trim() !== '';
     const cardChoice = arr(EVENTS[id] && EVENTS[id].choices).some((c) => c && c.id === e.choice);
     if (!outcome && !cardChoice) return;
@@ -1250,10 +1267,12 @@ export function mountUI(root, game, opts = {}) {
     }
     // C108 / C142: chamber hotkeys with a nest chamber selected: L level the cheapest of the type, Shift+L level it,
     // G growth side (chambers without a reservation), R relocate.
-    const hk = buildPanel.chamberHotkey(ev.key, ev.shiftKey, sel);
+    // C257: R acts on the chamber under the cursor first (else the selected one); R with the relocate tool on cancels it
+    const hk = buildPanel.chamberHotkey(ev.key, ev.shiftKey, sel, { hover: getUI().hover, tool: getUI().tool });
     if (hk) {
       const a = buildPanel.chamberHotkeyAction(game.s, game.d, hk);
       if (a && a.cmd) runAct(a.cmd.type, a.cmd.args, null);
+      else if (a && a.clear) setUI({ tool: null });
       else if (a && a.tool) setUI({ tool: a.tool });
       else if (a && a.reject) popReject(a.reject);
       ev.preventDefault();

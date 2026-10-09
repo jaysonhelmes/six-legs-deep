@@ -108,6 +108,11 @@ test('C212: Build list: placeable types first, then maxed (hidden on request), t
     assert.ok(!L.ids.includes('barracks'));
     // Hide maxed
     s.run.unlocked.panel_research = true;
+    // C251: hidden only once every Gate is also at its max level (it can still be levelled before that)
+    L = chamberListing(s, { hideMaxed: true });
+    assert.ok(L.ids.includes('gate'), 'at its limit but still levelable: listed');
+    assert.equal(L.hidden, 0);
+    s.run.nest.chambers.find((c) => c.type === 'gate').level = CHAMBERS.gate.maxL;
     L = chamberListing(s, { hideMaxed: true });
     assert.ok(!L.ids.includes('gate'));
     assert.equal(L.hidden, 1);

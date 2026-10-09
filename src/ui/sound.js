@@ -6,6 +6,7 @@
 // without Web Audio (or a Node test) simply gets silence.
 
 import { EVENTS } from '../data/events.js';
+import { staleClickReject } from './text.js';   // C244: an already-collected spam click stays silent
 
 /** localStorage key of the sound settings (per browser, not in the save). */
 export const SOUND_KEY = 'sld.sound';
@@ -107,7 +108,7 @@ export const EVENT_SOUNDS = Object.freeze({
   pupaSpawned: 'beetle',
   seasonChanged: 'season',
   chamberActivated: 'chamber',
-  commandRejected: (e) => (quietReason(e.reason) || (e.cmd && SILENT_REJECT.has(e.cmd.type)) ? null : 'buzz'),
+  commandRejected: (e) => (quietReason(e.reason) || staleClickReject(e) || (e.cmd && SILENT_REJECT.has(e.cmd.type)) ? null : 'buzz'),
 });
 
 /**

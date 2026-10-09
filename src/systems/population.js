@@ -51,8 +51,9 @@ import { releaseMinors, jobCap } from './jobs.js';
 const EPS = 1e-9;
 const ADULT_CASTES = ['minor', 'soldier', 'supermajor', 'replete'];
 const SLIDER_CASTES = ['soldier', 'supermajor', 'replete'];
-/** C151: castes whose "Keep berths filled" switches on by itself when their first berth exists in a run. */
-const AUTO_FILL_CASTES = ['soldier', 'supermajor'];
+/** C151 / C243: castes whose "Keep berths filled" is on by default (switches on by itself once the caste is unlocked in a run,
+ * unless the player set that caste; repletes too since C243). */
+const AUTO_FILL_CASTES = ['soldier', 'supermajor', 'replete'];
 /** d.stats capacity key per target caste (C151). */
 const CAP_KEY = Object.freeze({ soldier: 'berths', supermajor: 'warBerths', replete: 'repleteBerths' });
 
@@ -215,14 +216,15 @@ export function convertLegacyCasteTargets(s, d) {
 }
 
 /**
- * C151: "Keep berths filled" switches on by itself for soldiers / supermajors the first step their berths exist in a run
- * (first active Barracks / War Hall), unless the player already set that caste this run. Respects locks and hardships.
+ * C151 / C243: "Keep berths filled" is on by default: it switches on by itself for soldiers, supermajors and repletes as soon
+ * as the caste is unlocked in a run (C151 waited for the first berth; existing saves catch up on their next step)
+ * unless the player already set that caste (casteTouched). Respects locks and hardships.
  */
 function autoFill(s, d) {
   const col = s.run.colony;
   ensureCasteMaps(col);
   for (const c of AUTO_FILL_CASTES) {
-    if (col.casteTouched[c] === true || !(casteCap(d, c) > 0) || !casteAllowed(s, c)) continue;
+    if (col.casteTouched[c] === true || !casteAllowed(s, c)) continue;
     col.casteFill[c] = true;
     col.casteTouched[c] = true;
   }

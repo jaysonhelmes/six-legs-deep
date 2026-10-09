@@ -6,7 +6,7 @@
 
 import { h, setText, setProp, show, clear, doc } from '../dom.js';
 import { fmt, fmtCount, fmtTime, fmtPct, setNotation } from '../format.js';
-import { cosmeticSlot, COSMETIC_SLOTS, cosmeticName, equippedCosmeticId } from '../text.js';
+import { cosmeticSlot, COSMETIC_SLOTS, cosmeticName, equippedCosmeticId, cosmeticUnlock } from '../text.js';
 import { COSMETICS, COSMETIC_SLOT_ORDER } from '../../data/cosmetics.js';
 import { num, obj } from '../reveal.js';
 import { adultsTotal } from '../../core/state.js';
@@ -19,12 +19,27 @@ import { getActiveSound, SOUND_CATEGORIES } from '../sound.js';
 const NOTATIONS = [['suffix', 'Suffixes (1.23M)'], ['scientific', 'Scientific (1.23e6)'], ['engineering', 'Engineering (1.23e6)']];
 const AUTOSAVE = [[15, 'Every 15 s'], [30, 'Every 30 s'], [60, 'Every minute'], [0, 'Off (still saves on hide)']];
 const NAME_MAX = 40;
+
+/**
+ * C241 [pure]: one "how to unlock" line of a cosmetic, e.g. "✓ Crown (Queen, owned): Unlocked by the achievement
+ * Queen's Favourite: Click the queen 500 times." Secret, unearned achievements stay hidden.
+ * @param {string} id
+ * @param {Object} s
+ * @returns {string}
+ */
+export function cosmeticUnlockLine(id, s) {
+  const owned = !!(s && s.meta && s.meta.cosmetics && s.meta.cosmetics.owned && s.meta.cosmetics.owned[id] === true);
+  const def = COSMETICS[id];
+  const slot = def ? (COSMETIC_SLOTS[def.slot] || def.slot) : '';
+  return (owned ? '✓ ' : '• ') + cosmeticName(id) + ' (' + (slot ? slot + ', ' : '') + (owned ? 'owned' : 'locked') + '): '
+    + cosmeticUnlock(id, s).text;
+}
 /**
  * Keyboard shortcuts (DESIGN §25.4, ARCHITECTURE §14.2) and the view camera controls (render/nestInput.js,
  * render/surfaceInput.js) for the Settings reference list. View keys act on the view you clicked last.
  */
 export const SHORTCUTS = Object.freeze([['1–9', 'Open a tab: Colony, Build, Map, Adaptations, Research, Prestige, Achievements, Field Guide, Stats'], ['Space', 'Hand-forage the selected source'], ['M', 'Mark the selected trail'],
-  ['R', 'Rally the selected trail; relocate the selected chamber'],
+  ['R', 'Rally the selected trail; relocate the chamber under the cursor (or the selected one); R again or right-click cancels'],
   ['L / Shift + L', 'Level the cheapest chamber of the selected type / the selected chamber'], ['Q', 'Place another chamber of the type under the cursor (or selected); Q again puts the tool away'],
   ['F / right-click', 'While placing: pick the corner the new chamber starts in'], ['G', 'Pick the growth side (older chambers without a reserved space)'], ['V', 'Cycle views: Above, Below, Stacked, Side by side'], ['Esc', 'Cancel a tool, deselect, close panels'],
   ['Wheel', 'Map: zoom. Nest: scroll (Shift + wheel pans)'], ['Ctrl + wheel / pinch', 'Zoom the nest view'],
@@ -301,10 +316,23 @@ export function createPanel(root, { game, ui, bridge, dialogs = null, appRoot = 
     if (cosBox.__sig === sig) return;
     cosBox.__sig = sig;
     clear(cosBox);
-    if (!owned.length) {
-      cosBox.appendChild(note('Earn achievements to unlock palettes, mound skins, flags and more.'));
-      return;
-    }
+    if (!owned.length) cosBox.appendChild(note('Earn achievements to unlock palettes, mound skins, flags and more.'));
+    else renderOwnedSlots(s, owned);
+    cosBox.appendChild(cosmeticUnlockList(s));
+  }
+
+  /** C241: every cosmetic with how it is unlocked (owned and locked). */
+  function cosmeticUnlockList(s) {
+    const owned = obj(s.meta.cosmetics && s.meta.cosmetics.owned);
+    const rank = (id) => COSMETIC_SLOT_ORDER.indexOf(COSMETICS[id].slot) + 1 || 99;
+    const ids = Object.keys(COSMETICS).sort((a, b) => rank(a) - rank(b));
+    return h('div', { class: 'cos-unlocks', dataset: { role: 'cos-unlocks' } },
+      h('p', { class: 'note', text: 'How to unlock:' }),
+      ids.map((id) => h('p', { class: 'note cos-unlock ' + (owned[id] === true ? 'owned' : 'locked'), dataset: { id },
+        text: cosmeticUnlockLine(id, s) })));
+  }
+
+  function renderOwnedSlots(s, owned) {
     const bySlot = {};
     for (const id of owned) (bySlot[cosmeticSlot(id)] ||= []).push(id);
     const slots = Object.keys(bySlot).sort((a, b) => (COSMETIC_SLOT_ORDER.indexOf(a) + 1 || 99) - (COSMETIC_SLOT_ORDER.indexOf(b) + 1 || 99));

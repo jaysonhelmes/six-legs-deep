@@ -757,7 +757,7 @@ test('C166: the Adaptation autobuyer switch sits in the Adaptations tab and need
   const input = sec.querySelector('input');
   input.checked = true;
   input.dispatchEvent(new FEvent('change'));
-  assert.deepEqual(calls.at(-1), { type: 'setAutomation', args: { patch: { autobuy: { on: true, adaptations: true, chambers: false, mound: false } } } });
+  assert.deepEqual(calls.at(-1), { type: 'setAutomation', args: { patch: { autobuy: { adaptations: true } } } });   // C246
   delete game.s.era.federation.autobuyers;
   delete game.s.cycle.traits.automaton_instincts;
   assert.deepEqual(errors, []);

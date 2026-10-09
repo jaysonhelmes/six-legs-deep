@@ -1,50 +1,41 @@
 // Automation boxes (C166): each automation switch sits where it acts and appears only when owned — Auto-Flight in the
 // Prestige Flight view, Auto-Supercolony in the Supercolony view, the Adaptation autobuyer in the Adaptations tab, and the
-// chamber-level / Mound autobuyers (+ the shared autobuyer priority and the C170 blueprint hint) in the Build tab.
+// chamber-level autobuyer in the Build tab (C246: each autobuyer has its own switch and runs on its own; no priority list).
 // Owner: WP9 (prestige engineer). Contract: ARCHITECTURE §14.5, §8.6 (setAutomation), DESIGN §14.5, §15.5.
 
-import { h, setText, setProp, show, clear } from '../dom.js';
+import { h, setText, setProp, show } from '../dom.js';
 import { fmt, fmtTime } from '../format.js';
 import { autoFlightPeakText, AUTO_LANDING_TEXT, AUTO_SUPER_TEXT, blueprintSaveHint } from '../text.js';
-import { fedLevel, genomeLevel, num, arr, obj } from '../reveal.js';
+import { fedLevel, genomeLevel, num, obj } from '../reveal.js';
 import { AUTO_FLIGHT } from '../../data/prestige.js';
 import { makeAct } from './common.js';
 
-/** Autobuyer categories (systems/automation.js CATEGORIES). */
-export const AUTOBUY_CATS = Object.freeze(['adaptations', 'chambers', 'mound']);
+/** Autobuyer categories (systems/automation.js AUTOBUY_CATEGORIES). */
+export const AUTOBUY_CATS = Object.freeze(['adaptations', 'chambers']);
 /** Labels of the autobuyer categories. */
-export const AUTOBUY_NAMES = Object.freeze({ adaptations: 'Adaptations', chambers: 'Chamber levels', mound: 'Mound levels' });
+export const AUTOBUY_NAMES = Object.freeze({ adaptations: 'Adaptations', chambers: 'Chamber levels' });
 
 /**
- * Is one autobuyer category running (master switch on and the category on)?
+ * Is one autobuyer category running? C246: its own switch; a pre-C246 save whose master switch is off counts as off
+ * (systems/automation.js normalizeAutobuy drops the master switch on the next pass).
  * @param {Object} s
  * @param {string} cat
  * @returns {boolean}
  */
 export function autobuyOn(s, cat) {
   const a = obj(s && s.meta && s.meta.automation && s.meta.automation.autobuy);
-  return a.on === true && a[cat] === true;
+  return a[cat] === true && !(Object.prototype.hasOwnProperty.call(a, 'on') && a.on !== true);
 }
 
 /**
- * The setAutomation patch for one category switch now that each category has its own switch in its own tab: switching
- * one ON while the master is off turns the master on with only that category; switching the last running one OFF also
- * turns the master off.
+ * The setAutomation patch for one category switch (C246: only that category changes; the others keep running on their own).
  * @param {Object} s
  * @param {string} cat
  * @param {boolean} on
  * @returns {{ autobuy: Object }}
  */
-export function autobuyPatch(s, cat, on) {
-  const a = obj(s && s.meta && s.meta.automation && s.meta.automation.autobuy);
-  if (on) {
-    if (a.on === true) return { autobuy: { [cat]: true } };
-    const p = { on: true };
-    for (const c of AUTOBUY_CATS) p[c] = c === cat;
-    return { autobuy: p };
-  }
-  const others = AUTOBUY_CATS.some((c) => c !== cat && a[c] === true);
-  return { autobuy: a.on === true && others ? { [cat]: false } : { [cat]: false, on: false } };
+export function autobuyPatch(s, cat, on) { // eslint-disable-line no-unused-vars
+  return { autobuy: { [cat]: !!on } };
 }
 
 function toggle(label, onChange, tip = '') {
@@ -82,7 +73,7 @@ export function adaptAutoBox({ game, bridge }) {
   const act = makeAct(game, bridge);
   const t = catToggle(game, act, 'adaptations', 'Adaptation autobuyer', 'Buys the cheapest affordable Adaptation level once a second.');
   const el = h('section', { class: 'sec auto-box auto-adapt' }, h('h3', { class: 'sec-title', text: 'Automation' }), t.el,
-    h('p', { class: 'note', text: 'Buys the cheapest affordable Adaptation level once a second. The order against chamber and Mound autobuyers is set in the Build tab.' }));
+    h('p', { class: 'note', text: 'Buys the cheapest affordable Adaptation level once a second. It runs on its own, next to the chamber autobuyer in the Build tab.' }));
   return {
     el,
     update(s) {
@@ -94,35 +85,17 @@ export function adaptAutoBox({ game, bridge }) {
 }
 
 /**
- * Build tab: chamber-level and Mound autobuyers, the shared priority, and the C170 blueprint hint.
+ * Build tab: the chamber-level autobuyer (C246: its own switch, independent of the Adaptation autobuyer).
  * @param {{ game: Object, bridge: Object }} ctx
  * @returns {{ el: HTMLElement, update: (s: Object) => void }}
  */
 export function buildAutoBox({ game, bridge }) {
   const act = makeAct(game, bridge);
   const ch = catToggle(game, act, 'chambers', 'Auto-level chambers', 'Levels the cheapest chamber you can afford, once a second.');
-  const md = catToggle(game, act, 'mound', 'Auto-level the Mound', 'Buys Mound levels when affordable, once a second.');
-  const prioList = h('ol', { class: 'prio-list' });
-  const prioBox = h('div', { class: 'auto-prio' }, h('p', { class: 'note', text: 'Autobuyer order (tried first to last, one purchase per second):' }), prioList);
   const bpHint = h('p', { class: 'note bp-hint' });
-  const autoPart = h('div', null, ch.el, md.el, prioBox);
+  const autoPart = h('div', null, ch.el,
+    h('p', { class: 'note', text: 'Levels the cheapest chamber you can afford once a second. It runs on its own, next to the Adaptation autobuyer in the Adaptations tab.' }));
   const el = h('section', { class: 'sec auto-box auto-build' }, h('h3', { class: 'sec-title', text: 'Automation' }), autoPart, bpHint);
-  const renderPrio = (s) => {
-    // C220: the Mound grows on its own, so its autobuyer is hidden; it stays last in the saved order
-    const full = arr(obj(s.meta && s.meta.automation && s.meta.automation.autobuy).priority);
-    const prio = full.filter((c) => c !== 'mound');
-    const tail = full.filter((c) => c === 'mound');
-    const sig = prio.join(',');
-    if (prioList.__sig === sig) return;
-    prioList.__sig = sig;
-    clear(prioList);
-    prio.forEach((p, i) => {
-      const move = (j) => { const n = prio.slice(); [n[i], n[j]] = [n[j], n[i]]; act('setAutomation', { patch: { autobuy: { priority: n.concat(tail) } } }); };
-      prioList.appendChild(h('li', null, h('span', { text: AUTOBUY_NAMES[p] || p }),
-        h('button', { type: 'button', class: 'btn btn-icon', text: '↑', disabled: i === 0, attrs: { 'aria-label': 'Earlier' }, on: { click: () => move(i - 1) } }),
-        h('button', { type: 'button', class: 'btn btn-icon', text: '↓', disabled: i === prio.length - 1, attrs: { 'aria-label': 'Later' }, on: { click: () => move(i + 1) } })));
-    });
-  };
   return {
     el,
     update(s) {
@@ -133,9 +106,6 @@ export function buildAutoBox({ game, bridge }) {
       show(bpHint, false);
       if (!own) return;
       setProp(ch.input, 'checked', autobuyOn(s, 'chambers'));
-      setProp(md.input, 'checked', autobuyOn(s, 'mound'));
-      show(md.el, false);   // C220
-      renderPrio(s);
     },
   };
 }

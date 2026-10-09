@@ -269,6 +269,8 @@ export const COMMAND_ARGS = {
   relocatePocket: { pocket: 'smallCount', x: 'col', y: 'row' },
   growRoot: { col: 'col' },
   editBlueprint: { slot: 'slot', blueprint: 'name' },
+  setAutoBackfill: { on: 'bool' },
+  clearBlueprint: {},
   claimHex: { hex: 'hex' },
   cancelChannel: {},
   flagHex: { hex: 'hex', on: 'bool' },
@@ -425,8 +427,8 @@ function genArg(h, kind, s) {
     case 'genomeId': return pick(h, IDS.genome);
     case 'hardshipId': return pick(h, IDS.hardships);
     case 'automationPatch': return pick(h, [
-      { autobuy: { on: true } }, { autoGuard: true }, { autoRear: true }, { autoFlight: { on: true, mode: 'alates', alates: 10 } },
-      { autobuy: { priority: ['mound', 'chambers', 'adaptations'] } }, { bogus: 1 }, null]);
+      { autobuy: { adaptations: true } }, { autoGuard: true }, { autoRear: true }, { autoFlight: { on: true, mode: 'alates', alates: 10 } },
+      { autobuy: { chambers: true } }, { autobuy: { on: true } }, { bogus: 1 }, null]);
     default: return null;
   }
 }

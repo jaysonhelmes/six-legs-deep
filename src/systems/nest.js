@@ -4,7 +4,7 @@
 // blueprints, and the cross-calls queueShaft / applyBlueprint / autoLevelStep / moleTunnel. Owner: WP3.
 // Contract: ARCHITECTURE §8.2 (nest.js), §4 (s.run.nest, era.blueprints), §5 (d.nest), §9, §10; DESIGN §7, §17.3.
 
-import { GRID, CELL, CLAMP_MAX, validCols } from '../data/balance.js';
+import { GRID, CELL, CLAMP_MAX, validCols, DIG_CAP } from '../data/balance.js';
 import { MICRO, DIG, GEOM, ADVISOR, BLUEPRINT, AUTO_TUNNEL } from '../data/strata.js';
 import { CHAMBERS, CHAMBER_RULES, ADJACENCY, ADJACENCY_ORDER, CHAMBER_CODES, HISTORY_CHAMBERS_MAX } from '../data/chambers.js';
 import { CACHES, MOLE, DRAINAGE, ROOT_CULT, DEEP_SPRING, ROOT_MEMORY } from '../data/soilFeatures.js';
@@ -92,7 +92,13 @@ function bonusOwned(s, b) {
 }
 
 /** Blueprints are available with ancestral_blueprint or blueprint_memory. */
-function blueprintsAllowed(s) {
+/**
+ * [q] Blueprints can be saved, used and applied: Ancestral Blueprint (Bloodline) or Blueprint Library (Federation).
+ * C258: without either, saved layouts are kept but never applied at run start.
+ * @param {import('../core/types.js').State} s
+ * @returns {boolean}
+ */
+export function blueprintsAllowed(s) {
   return G.traitLevel(s, 'ancestral_blueprint') > 0 || G.fedLevel(s, 'blueprint_memory') > 0;
 }
 
@@ -132,6 +138,24 @@ function effRowMin(s, d, type) {
 function effMaxL(s, def) {
   if (def.maxLBonus && bonusOwned(s, def.maxLBonus)) return def.maxLBonus.maxL;
   return def.maxL;
+}
+
+/**
+ * [q] C251: every built chamber of this type is at its max level (its level, or the level it is digging toward), and the
+ * type has a max level at all. With no chamber of the type built, false. The Build tab's "Hide maxed" hides a type
+ * only when this holds and no more can be placed.
+ * @param {import('../core/types.js').State} s
+ * @param {string} type
+ * @returns {boolean}
+ */
+export function typeFullyLeveled(s, type) {
+  const def = CHAMBERS[type];
+  if (!def) return false;
+  const maxL = effMaxL(s, def);
+  if (!(maxL > 0)) return false;
+  const list = s.run.nest.chambers.filter((c) => c && c.type === type);
+  if (!list.length) return false;
+  return list.every((c) => Math.max(num(c.level), num(c.target)) >= maxL);
 }
 
 /** Instance limit (DESIGN §7.6): maxInst + owned bonuses; water wells: one per revealed pocket. */
@@ -531,6 +555,7 @@ function finishJob(s, d, job, env) {
     ch.target = ch.level;
     emit(env, 'chamberLeveled', { uid: ch.uid, level: ch.level });
   } else if (job.kind === 'relocate' && ch) {
+    if (ch.reloc) return; // C254: its old room is still being cleared; relocClearTick activates it
     ch.status = 'active';
     emit(env, 'chamberActivated', { uid: ch.uid, chamberType: ch.type, level: ch.level });
     if (env && env.offline && d.offlineLog && Array.isArray(d.offlineLog.chambers)) d.offlineLog.chambers.push(ch.uid);
@@ -566,8 +591,8 @@ function pocketBusy(s, p) {
 }
 
 /**
- * Reason a pocket rectangle cannot move to `rect`, or null: inside the grid, top row ≥ 1 and within DRAINAGE.moveRows
- * rows of the pocket, every cell plain undug SOIL (no stone, water, tunnel, chamber, shaft, queued or backfilling cell,
+ * Reason a pocket rectangle cannot move to `rect`, or null: inside the grid, top row ≥ 1 (C255: any distance from
+ * the pocket), every cell plain undug SOIL (no stone, water, tunnel, chamber, shaft, queued or backfilling cell,
  * no buried cache), Shallow Soil's depth limit, and no chamber's reserved room (C137). The pocket's own water cells
  * count as free (player report: moving a pocket one tile over was refused because it overlapped its old cells; they
  * turn to soil before the pocket refills its new spot).
@@ -578,7 +603,8 @@ function pocketBusy(s, p) {
 function pocketSpotBlock(s, geo, rect, p, fill = null) {
   if (!rect || !isInt(rect.x) || !isInt(rect.y)) return 'invalid';
   if (rect.x < 0 || rect.y < 0 || rect.x + rect.w > COLS || rect.y + rect.h > ROWS) return 'invalid:bounds';
-  if (rect.y < 1 || Math.abs(rect.y - p.y) > DRAINAGE.moveRows) return 'invalid:row';
+  // C255: no distance limit (a limit was easily bypassed by moving twice): anywhere valid, top row ≥ 1
+  if (rect.y < 1) return 'invalid:row';
   if (s.run.hardship === 'shallow_soil' && rect.y + rect.h - 1 > DIG.shallowSoilRow) return 'hardship';
   const cells = s.run.nest.cells;
   const cache = new Set();
@@ -882,7 +908,7 @@ function skipDone(s, job) {
  * Spend `work` on the queue (all work goes to the first job, DESIGN §7.2). firstOnly stops after the first job.
  * @returns {number} leftover work
  */
-function digWork(s, d, work, env, firstOnly = false) {
+function digWork(s, d, work, env, firstOnly = false, lim = null) {
   const nest = s.run.nest;
   let ctx = null;
   let w = work > 0 ? work : 0;
@@ -901,7 +927,16 @@ function digWork(s, d, work, env, firstOnly = false) {
     if (!ctx) ctx = G.workCtx(s);
     const c = job.cells[job.cur];
     const ch = jobChamber(s, job);
-    const need = Math.max(0, jobCellWork(s, ctx, job, ch, c) - num(job.prog));
+    const full = jobCellWork(s, ctx, job, ch, c);
+    const need = Math.max(0, full - num(job.prog));
+    // C252: the cell cap is reached: bank what fits on this cell (it finishes within the next allowance), stop.
+    if (lim && lim.n >= lim.max) {
+      const bank = Math.max(0, Math.min(w, full * 0.999 - num(job.prog)));
+      job.prog = num(job.prog) + bank;
+      w -= bank;
+      break;
+    }
+    if (lim && w >= need) lim.n++;
     if (w >= need) {
       w -= need;
       job.cur++;
@@ -913,6 +948,125 @@ function digWork(s, d, work, env, firstOnly = false) {
     }
   }
   return w;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// Backfill, relocation clearing, auto-backfill (C252–C254)
+// ------------------------------------------------------------------------------------------------------------------
+
+/**
+ * C252: queue cells for backfill, one after another: furthest from the entrance first (path distance, then deepest),
+ * each taking max(DIG.backfillSec / n, 1 / DIG_CAP.backfillCellsPerSec) seconds once it is at the head of the list, so a
+ * batch takes DIG.backfillSec as before (longer when it is big: never more than the cap per second). Entries:
+ * { i, t: seconds left, d: its full duration (the renderer's fill fraction), q: 1 (sequential) }.
+ */
+function queueBackfill(s, geo, list) {
+  const nest = s.run.nest;
+  if (!Array.isArray(list) || !list.length) return 0;
+  const key = (c) => (geo.entDist[c] >= 0 ? geo.entDist[c] : N + 1);
+  const order = list.slice().sort((a, b) => key(b) - key(a) || b - a);
+  const per = Math.max(DIG.backfillSec / order.length, 1 / DIG_CAP.backfillCellsPerSec);
+  for (const c of order) nest.backfill.push({ i: c, t: per, d: per, q: 1 });
+  return order.length;
+}
+
+/**
+ * C252: the backfill list fills from its head, one cell at a time (older saves' parallel 10 s entries are shortened
+ * to the per-cell time of their batch). A filled cell becomes SOIL and emits 'cellBackfilled' { i } (online only).
+ */
+function backfillTick(s, d, geo, step, env) {
+  const nest = s.run.nest;
+  const list = nest.backfill.filter((b) => b && isCell(b.i));
+  const per = Math.max(DIG.backfillSec / Math.max(1, list.length), 1 / DIG_CAP.backfillCellsPerSec);
+  for (const b of list) {
+    if (b.q) continue;
+    b.t = Math.min(num(b.t), per);
+    b.d = per;
+    b.q = 1;
+  }
+  let left = step;
+  let k = 0;
+  while (k < list.length && left > 0) {
+    const b = list[k];
+    const t = num(b.t);
+    if (t > left) { b.t = t - left; break; }
+    left -= Math.max(0, t);
+    k++;
+    if (nest.cells[b.i] === CELL.TUNNEL && geo.chamberAt[b.i] < 0) {
+      nest.cells[b.i] = CELL.SOIL;
+      if (!(env && env.offline)) emit(env, 'cellBackfilled', { i: b.i });
+    }
+    nest.rev++;
+  }
+  nest.backfill = list.slice(k);
+}
+
+/**
+ * C254: a relocated chamber's old room is cleared over ch.reloc.dur seconds (DIG.relocateClearBase + relocateClearPerCell
+ * × its cells), its cells one after another ('relocCellCleared' { uid, i } as each goes, online only). The chamber stays
+ * 'relocating' (inactive) until both the clearing and the dig of its new room are done; then it activates.
+ */
+function relocClearTick(s, d, step, env) {
+  const nest = s.run.nest;
+  for (const ch of nest.chambers) {
+    const R = ch && ch.reloc;
+    if (!R) continue;
+    const dur = Math.max(0.001, num(R.dur));
+    const cells = Array.isArray(R.cells) ? R.cells : [];
+    const before = Math.floor(Math.min(1, num(R.t) / dur) * cells.length);
+    R.t = Math.min(dur, num(R.t) + step);
+    const after = Math.floor(Math.min(1, R.t / dur) * cells.length);
+    if (!(env && env.offline)) for (let k = before; k < after; k++) emit(env, 'relocCellCleared', { uid: ch.uid, i: cells[k] });
+    if (R.t < dur) continue;
+    delete ch.reloc;
+    nest.rev++;
+    const digging = nest.queue.some((j) => j && j.kind === 'relocate' && j.chamber === ch.uid);
+    if (!digging && ch.status === 'relocating') {
+      ch.status = 'active';
+      emit(env, 'chamberActivated', { uid: ch.uid, chamberType: ch.type, level: ch.level });
+      if (env && env.offline && d.offlineLog && Array.isArray(d.offlineLog.chambers)) d.offlineLog.chambers.push(ch.uid);
+    }
+  }
+}
+
+/**
+ * C253: with auto-backfill on (s.meta.autoBackfill, off by default), every DIG.autoBackfillSec the unneeded tunnels
+ * (unneededTunnels: the "Backfill unneeded" rules, never cutting anything off) are queued for backfill. Emits
+ * 'autoBackfilled' { n } when it queued any (online only).
+ */
+function autoBackfillTick(s, d, step, env) {
+  const nest = s.run.nest;
+  if (!(s.meta && s.meta.autoBackfill === true)) { if (nest.autoBfT) nest.autoBfT = 0; return; }
+  nest.autoBfT = num(nest.autoBfT) + step;
+  if (nest.autoBfT < DIG.autoBackfillSec) return;
+  nest.autoBfT = 0;
+  const list = unneededTunnels(s, d);
+  if (!list.length) return;
+  const n = queueBackfill(s, G.getGeom(s, d), list);
+  nest.rev++;
+  rebuild(s, d);
+  if (!(env && env.offline)) emit(env, 'autoBackfilled', { n });
+}
+
+/**
+ * [q] C254: relocation progress of chamber uid: { clearing, clearFrac, clearLeft (s), digging, digFrac, cells } or null
+ * when it is not relocating. The inspect panel shows it; the renderer may animate the old room from `from` / `cells`.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number} uid
+ * @returns {null | { clearing: boolean, clearFrac: number, clearLeft: number, digging: boolean, digFrac: number,
+ *   from: { x: number, y: number, w: number, h: number } | null }}
+ */
+export function relocationInfo(s, d, uid) {
+  const f = findChamber(s, uid);
+  if (!f || f.ch.status !== 'relocating') return null;
+  const R = f.ch.reloc;
+  const dur = R ? Math.max(0.001, num(R.dur)) : 1;
+  const job = s.run.nest.queue.find((j) => j && j.kind === 'relocate' && j.chamber === uid);
+  const cells = job ? job.cells.length : 0;
+  return { clearing: !!R, clearFrac: R ? Math.min(1, num(R.t) / dur) : 1, clearLeft: R ? Math.max(0, dur - num(R.t)) : 0,
+    digging: !!job, digFrac: job ? (cells > 0 ? Math.min(1, num(job.cur) / cells) : 1) : 1,
+    from: R && R.from ? { ...R.from } : null };
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -1161,21 +1315,18 @@ export function tick(s, d, dt, env) {
     if (r1 && !r1.res && !r1.noRes) assignReservations(s, d);
     if (royalResStale(s)) upgradeRoyalRes(s, d);
   }
-  if (nest.backfill.length && step > 0) {
-    const keep = [];
-    for (const b of nest.backfill) {
-      if (!b || !isCell(b.i)) continue;
-      b.t = num(b.t) - step;
-      if (b.t > 0) { keep.push(b); continue; }
-      if (nest.cells[b.i] === CELL.TUNNEL && geo.chamberAt[b.i] < 0) nest.cells[b.i] = CELL.SOIL;
-      nest.rev++;
-    }
-    nest.backfill = keep;
-  }
+  if (nest.backfill.length && step > 0) backfillTick(s, d, geo, step, env);
+  if (step > 0) relocClearTick(s, d, step, env);
+  if (step > 0) autoBackfillTick(s, d, step, env);
   const econDt = env && Number.isFinite(env.econDt) ? env.econDt : step;
   const eff = env && Number.isFinite(env.eff) ? env.eff : 1;
   const W = Math.max(0, num(d.stats && d.stats.digW)) * Math.max(0, eff) * Math.max(0, econDt);
-  const left = digWork(s, d, W, env, false);
+  // C252: at most DIG_CAP.digCellsPerSec cells per second of game time (a fractional allowance carries over, at most one
+  // cell, so the rate holds at any tick length without a burst after an idle spell).
+  const allow = Math.max(0, num(nest.digAllow)) + DIG_CAP.digCellsPerSec * Math.max(0, econDt);
+  const lim = { max: Math.floor(allow + 1e-9), n: 0 };
+  const left = digWork(s, d, W, env, false, lim);
+  nest.digAllow = Math.min(1, Math.max(0, allow - lim.n));
   if (left > 0) nest.maint = Math.min(CLAMP_MAX, num(nest.maint) + left);
   if (step > 0) growRoots(s, d, step);
   const g2 = ensureGeom(s, d);
@@ -1863,7 +2014,12 @@ function executeRelocation(s, d, P, env) {
   const ch = P.rel.ch;
   const nr = P.rect;
   markShaftPass(s, d, nr);
-  for (const c of G.rectCells(ch.x, ch.y, ch.w, ch.h)) {
+  // C254: the old room is cleared over a short time (its cells, in reading order, are the renderer's to animate); the
+  // cells become tunnel at once so nothing loses its connection meanwhile.
+  const oldCells = G.rectCells(ch.x, ch.y, ch.w, ch.h);
+  ch.reloc = { from: { x: ch.x, y: ch.y, w: ch.w, h: ch.h }, cells: oldCells.filter((c) => !G.inRect(nr, c)), t: 0,
+    dur: DIG.relocateClearBase + DIG.relocateClearPerCell * oldCells.length };
+  for (const c of oldCells) {
     if (!G.inRect(nr, c) && nest.cells[c] === CELL.CHAMBER) nest.cells[c] = CELL.TUNNEL;
   }
   ch.x = nr.x;
@@ -3007,7 +3163,7 @@ export function chamberAtCell(s, d, i) {
  * @param {import('../core/types.js').Derived} d
  * @param {number} i
  * @returns {{ layer: string, code: number, work: number, cache: string|null, water: boolean, root: boolean, rootOwn: boolean,
- *   reserved: string|null }}
+ *   reserved: string|null, stone?: boolean, stoneOk?: boolean }} (C251: stone = a boulder cell, stoneOk = Acid Excavation owned)
  */
 export function cellInfo(s, d, i) {
   if (!isCell(i)) return { layer: G.layerOf(0), code: CELL.SOIL, work: 0, cache: null, water: false, root: false, rootOwn: false, reserved: null };
@@ -3027,6 +3183,8 @@ export function cellInfo(s, d, i) {
   const rch = rj >= 0 && geo.chamberAt[i] < 0 ? s.run.nest.chambers[rj] : null;
   return { layer: G.layerOf(y), code: s.run.nest.cells[i], work: G.cellWork(s, i, 'tunnel'), cache, water, root: geo._root[i] === 1, rootOwn,
     reserved: rch ? rch.type : null,
+    // C251: a boulder cell: diggable (and buildable over) only with Acid Excavation, then at ×3 work
+    stone: s.run.nest.cells[i] === CELL.STONE, stoneOk: s.run.nest.cells[i] === CELL.STONE && G.hasResearch(s, 'acid_excavation'),
     // C214: who dug it (open tunnel or a cell still queued), when it was not a tunnel the player drew
     dugBy: s.run.nest.cells[i] === CELL.TUNNEL || (geo._queued && geo._queued[i]) ? dugBy(s, i) : null };
 }
@@ -3374,8 +3532,8 @@ function wellMoveRunning(s, sp) {
 /**
  * C176: with Drainage, a planned Water Well with no valid spot within BLUEPRINT.wellReach of its saved one moves the
  * nearest free revealed pocket (no Well uses it, no other Well of this pass took it, not busy) next to its saved spot:
- * the target is the pocket-sized rectangle touching the Well's L1 room nearest the pocket's current place, within
- * DRAINAGE.moveRows rows (the normal move rules, planPocket). The move is queued as a normal pocket move (dig work, no
+ * the target is the pocket-sized rectangle touching the Well's L1 room nearest the pocket's current place (the normal
+ * move rules, planPocket). The move is queued as a normal pocket move (dig work, no
  * soil) marked bpWell; the Well waits ('wait:waterMove') and then takes its saved spot. Announced as blueprintAdjusted
  * (reason 'water:moved'). Returns the pocket index or −1.
  */
@@ -3657,6 +3815,7 @@ export function applyBlueprint(s, d, { now = false } = {}) {
   const era = s.era;
   const bi = era.activeBlueprint;
   if (!isInt(bi) || bi < 0 || !Array.isArray(era.blueprints) || !era.blueprints[bi]) return 0;
+  if (!blueprintsAllowed(s)) return 0; // C258: kept, but never applied without the unlock
   ensureGeom(s, d); // C215: the active width is this nest's
   const bp = blueprintForCols(era.blueprints[bi], COLS); // C215: moved into this nest's width (centred)
   const nest = s.run.nest;
@@ -4333,6 +4492,54 @@ function planTunnel(s, d, list) {
   return { reason: null, soil };
 }
 
+/**
+ * [q] C256: preview of a free-drawn tunnel (the drag in the nest view digs exactly the cells dragged over; no
+ * auto-route). `list` is the dragged path: 4-connected cells starting on (or next to) an open cell. The path is cut at
+ * the first cell a tunnel may not go through (the same per-cell rules as the digTunnel command, so the cut path is a
+ * valid command as it is) and the reason is returned with it, for the player to see why it stops there.
+ * @param {import('../core/types.js').State} s
+ * @param {import('../core/types.js').Derived} d
+ * @param {number[]} list
+ * @returns {{ path: number[], soil: number[], work: number, reason: string|null, ok: boolean }}
+ *   path = the valid prefix (the command's cells), soil = its cells to dig, reason = why the rest was cut (or a
+ *   whole-path refusal such as 'invalid:start' / 'queueFull'), ok = path is a valid digTunnel now
+ */
+export function tunnelPath(s, d, list) {
+  const out = { path: [], soil: [], work: 0, reason: null, ok: false };
+  if (!Array.isArray(list) || !list.length) return out;
+  const geo = G.getGeom(s, d);
+  const cells = s.run.nest.cells;
+  const ctx = G.workCtx(s);
+  const seen = new Set();
+  for (let k = 0; k < list.length && k < N; k++) {
+    const c = list[k];
+    let why = null;
+    if (!isCell(c) || seen.has(c) || (k > 0 && !adj4(list[k - 1], c))) why = 'invalid:path';
+    else if (!geo.open[c]) {
+      const code = cells[c];
+      const hidden = code === CELL.WATER && G.hiddenWater(geo, c);
+      if (code === CELL.WATER && !hidden) why = 'blocked:water';
+      else if (code === CELL.STONE && !G.hasResearch(s, 'acid_excavation')) why = 'blocked:stone';
+      else if (geo.chamberAt[c] >= 0) why = 'blocked:chamber';
+      else if (geo._resv && geo._resv[c] >= 0) why = 'blocked:reserved';
+      else if (s.run.hardship === 'shallow_soil' && Math.floor(c / COLS) > DIG.shallowSoilRow) why = 'hardship';
+      else if (!G.diggableKnown(s, geo, c)) why = 'blocked:layer';
+    }
+    if (why) { out.reason = why; break; }
+    seen.add(c);
+    out.path.push(c);
+    if (!geo.open[c]) {
+      out.soil.push(c);
+      out.work += G.workAt(ctx, c, 'tunnel');
+    }
+  }
+  if (!out.path.length) return out;
+  const P = planTunnel(s, d, out.path);
+  if (P.reason && P.reason !== 'invalid:empty') out.reason = P.reason; // e.g. 'invalid:start', 'queueFull'
+  out.ok = !P.reason;
+  return out;
+}
+
 function planDigTo(s, d, cell) {
   if (!isCell(cell)) return { reason: 'invalid' };
   const geo = G.getGeom(s, d);
@@ -4858,7 +5065,7 @@ export const handlers = {
     },
   },
 
-  /** backfill { cells }: tunnel cells refill (become SOIL) after 10 s; refused if it disconnects anything. */
+  /** backfill { cells }: tunnel cells refill (become SOIL), one after another over ~10 s (C252); refused if it disconnects anything. */
   backfill: {
     validate(s, d, cmd) {
       return planBackfill(s, d, cmd.cells);
@@ -4866,7 +5073,7 @@ export const handlers = {
     apply(s, d, cmd) {
       if (planBackfill(s, d, cmd.cells)) return;
       const nest = s.run.nest;
-      for (const c of cmd.cells) nest.backfill.push({ i: c, t: DIG.backfillSec });
+      queueBackfill(s, G.getGeom(s, d), cmd.cells); // C252: one after another, furthest first
       nest.rev++;
       rebuild(s, d);
     },
@@ -4982,7 +5189,8 @@ export const handlers = {
       if (!consumeClick(s)) return;
       const amount = DIG.helpFlat + DIG.helpFracW * Math.max(0, num(d.stats && d.stats.digW));
       ensureGeom(s, d);
-      const left = digWork(s, d, amount, env, true);
+      // C252: one click finishes at most DIG_CAP.helpCells cells, however strong the diggers are
+      const left = digWork(s, d, amount, env, true, { max: DIG_CAP.helpCells, n: 0 });
       if (left > 0) s.run.nest.maint = Math.min(CLAMP_MAX, num(s.run.nest.maint) + left);
       grant(s, d, 'soil', amount);
       ensureGeom(s, d);
@@ -5063,6 +5271,30 @@ export const handlers = {
     },
   },
 
+  /**
+   * clearBlueprint {} (C258): no active blueprint any more (nothing is queued at the next run start). Always allowed,
+   * with or without a blueprint unlock; the saved layouts and this run's planned chambers stay.
+   */
+  clearBlueprint: {
+    validate(s) {
+      return isInt(s.era.activeBlueprint) && s.era.activeBlueprint >= 0 ? null : 'notFound';
+    },
+    apply(s) {
+      s.era.activeBlueprint = -1;
+    },
+  },
+
+  /** setAutoBackfill { on } (C253): auto-backfill unneeded tunnels every DIG.autoBackfillSec (kept across runs). */
+  setAutoBackfill: {
+    validate(s, d, cmd) {
+      return typeof cmd.on === 'boolean' ? null : 'invalid';
+    },
+    apply(s, d, cmd) {
+      s.meta.autoBackfill = cmd.on === true;
+      s.run.nest.autoBfT = cmd.on === true ? DIG.autoBackfillSec : 0; // switching it on checks at the next tick
+    },
+  },
+
   /** cancelPlanned { cell?, all? } (C120): drop a pending blueprint chamber (top-left cell), or all of them. */
   cancelPlanned: {
     validate(s, d, cmd) {
@@ -5088,7 +5320,7 @@ export const handlers = {
       const list = unneededTunnels(s, d);
       if (!list.length) return;
       const nest = s.run.nest;
-      for (const c of list) nest.backfill.push({ i: c, t: DIG.backfillSec });
+      queueBackfill(s, G.getGeom(s, d), list); // C252
       nest.rev++;
       rebuild(s, d);
     },

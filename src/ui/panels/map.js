@@ -11,13 +11,13 @@ import {
   WAR_KIND_EXPLAIN, trailHelpLines, TRAIL_LEGEND, TRAIL_LINE_NOTE, territoryBenefitLines, trailDistanceLines,
 } from '../text.js';
 import { isShown, hasResearch, fedLevel, num, arr, obj } from '../reveal.js';
-import { previewTrail, bestOrigin, trailOverlap, detourInfo, escortMax } from '../../systems/trails.js';
-import { claimCost, canClaim, sourceAt, expeditionInfo, dNavFor, aphidTargets } from '../../systems/surface.js';
-import { previewAction, garrison as garrisonOf, rivalPower } from '../../systems/rivals.js';
+import { previewTrail, bestOrigin, trailOverlap, detourInfo, escortMax, handlers as trailHandlers } from '../../systems/trails.js';
+import { claimCost, canClaim, sourceAt, expeditionInfo, dNavFor, aphidTargets, OWN_TRAIL } from '../../systems/surface.js';
+import { previewAction, garrison as garrisonOf, rivalPower, truceAttackReason, bribeCost } from '../../systems/rivals.js';
 import { ringOf } from '../../core/hex.js';
 import { SOURCES } from '../../data/sources.js';
 import { TERRAIN_ORDER, TRAIL, ABILITIES, SCOUT } from '../../data/surface.js';
-import { ACTIONS } from '../../data/combat.js';
+import { ACTIONS, TRUCE } from '../../data/combat.js';
 import { EVENTS } from '../../data/events.js';
 import { RESEARCH } from '../../data/research.js';
 import { makeAct, sliderRow, progressBar, note, armedButton, subTabStrip } from './common.js';
@@ -182,6 +182,8 @@ function frontRule(f) {
 export function warNotes(s, d, rival, kind) {
   const out = [];
   if (!rival) return out;
+  const tn = truceNote(rival, kind);   // C247
+  if (tn) out.push(tn);
   const imm = kind === 'assault' ? oldRidgeImmunity(s, d, rival) : null;
   if (imm) {
     out.push('Immune to assault until you own ' + imm.need + ' hexes: ' + imm.owned + '/' + imm.need + ' owned. Raids still work.');
@@ -193,6 +195,23 @@ export function warNotes(s, d, rival, kind) {
   }
   return out;
 }
+
+/**
+ * C247: the truce line of the war form for a raid / assault on a rival under truce: "Truce: 4:12 left — attacking
+ * breaks it" (policy 'break') or "… — no attacks until it ends" (policy 'block'); '' otherwise.
+ * @param {Object} rival
+ * @param {string} kind
+ * @param {'break'|'block'} [policy]
+ * @returns {string}
+ */
+export function truceNote(rival, kind, policy = TRUCE.attackPolicy) {
+  if (!rival || !(num(rival.truce) > 0) || (kind !== 'raid' && kind !== 'assault')) return '';
+  return 'Truce: ' + fmtTime(Math.ceil(num(rival.truce))) + ' left — ' + (policy === 'block' ? 'no attacks until it ends.' : 'attacking breaks it.');
+}
+
+/** C247: the confirmation shown before an attack breaks a truce. */
+export const TRUCE_BREAK_CONFIRM = Object.freeze({ title: 'Break the truce?',
+  message: 'The bribe is lost and they will retaliate sooner (their next raid comes in half the time).', confirmLabel: 'Attack anyway', danger: true });
 
 /**
  * C228: a rival's strength, labelled so the map and the War tab agree. `short` = "Nest strength X" (all its defenders,
@@ -355,6 +374,99 @@ export function eventObjectMenuItems(s, d, uid) {
 }
 
 /**
+ * C249: right-click items for a hex (also offered under a source / object on that hex): "Claim hex" unless the hex is
+ * already permanently yours (a trail-held hex, C162, can still be claimed for good), "Flag for scouts" only on unrevealed
+ * hexes ("Unflag" on a flagged one), and "Place satellite…". Items: { label, type, args } | { label, chooser: { kind, data } }.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {number} hex
+ * @returns {Array<Object>}
+ */
+export function hexMenuItems(s, d, hex) {
+  const out = [];
+  if (!(Number.isInteger(hex) && hex >= 0)) return out;
+  const S = (s.run && s.run.surface) || {};
+  if (isShown(s, 'hex_claim')) {
+    const own = d && d.surface && d.surface.owned ? num(d.surface.owned[hex]) : 0;
+    const perm = (own > 0 && own !== OWN_TRAIL) || !!(S.claimed && S.claimed[hex]);
+    if (!perm) out.push({ label: own === OWN_TRAIL ? 'Claim hex for good' : 'Claim hex', type: 'claimHex', args: { hex } });
+  }
+  if (s.run.research && s.run.research.antennation) {
+    const flagged = arr(S.flagged).includes(hex);
+    if (flagged) out.push({ label: 'Unflag', type: 'flagHex', args: { hex, on: false } });
+    else if (!(S.revealed && S.revealed[hex])) out.push({ label: 'Flag for scouts', type: 'flagHex', args: { hex, on: true } });
+  }
+  if (fedLevel(s, 'satellite_nest') > 0) out.push({ label: 'Place satellite…', chooser: { kind: 'satelliteColumn', data: { hex } } });
+  return out;
+}
+
+/**
+ * C249: the bribe item of a rival's right-click menu with its honeydew cost and your honeydew; disabled with the reason
+ * while a truce runs, during the bribe cooldown, before the nest is scouted or when you cannot afford it.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {Object} r rival
+ * @returns {{ label: string, type: string|null, args: Object|null, disabled?: boolean }}
+ */
+export function bribeMenuItem(s, d, r) {
+  const no = (label) => ({ label, type: null, args: null, disabled: true });
+  if (!r) return no('Bribe');
+  if (num(r.truce) > 0) return no('Bribe: truce active (' + fmtTime(Math.ceil(num(r.truce))) + ' left)');
+  if (num(r.bribeCd) > 0) return no('Bribe again in ' + fmtTime(Math.ceil(num(r.bribeCd))));
+  if (!r.sighted) return no('Bribe: scout their nest first');
+  let c = null;
+  try { c = bribeCost(s, d, r); } catch { c = null; }
+  if (!c) return no('Bribe: they cannot be bought');
+  const cost = num(c.honeydew);
+  const have = num(s.run.res && s.run.res.honeydew);
+  const label = 'Bribe: ' + fmt(cost) + ' honeydew (you have ' + fmt(have) + ')';
+  if (have + 1e-9 < cost) return no(label + ': not enough');
+  return { label, type: 'bribe', args: { rival: r.uid } };
+}
+
+/**
+ * C249 / C247: a rival's right-click items: Raid… / Assault… ("breaks the truce" while one runs; disabled under policy
+ * 'block') and the bribe item. Items: { label, chooser } | bribeMenuItem.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {number} uid
+ * @returns {Array<Object>}
+ */
+export function rivalMenuItems(s, d, uid) {
+  const r = rivalBy(s, uid);
+  if (!r || r.alive === false) return [];   // a fallen nest cannot be raided, assaulted or bribed
+  const tr = truceAttackReason(r, false);
+  const tag = tr === 'confirm:truce' ? ' (breaks the truce)' : '';
+  const atk = (kind, label) => (tr === 'blocked:truce' ? { label: label + ': truce active', type: null, args: null, disabled: true }
+    : { label: label + '…' + tag, chooser: { kind: 'war', data: { kind, target: { type: 'rival', uid } } } });
+  return [atk('raid', 'Raid'), atk('assault', 'Assault'), bribeMenuItem(s, d, r)];
+}
+
+/**
+ * C250: Mass Recruit for a trail whose source is a termite swarm or picnic spill (ABILITIES.mass_recruit.targets): sends
+ * half of the loose foragers (those not assigned to a trail) to it for 20 pheromone. null for other trails or before
+ * Mark is unlocked; disabled with the reason when it cannot be used now.
+ * @param {Object} s
+ * @param {Object} d
+ * @param {Object} trail
+ * @returns {{ label: string, type: string|null, args: Object|null, disabled?: boolean, tip: string, reason: string|null } | null}
+ */
+export function massRecruitItem(s, d, trail) {
+  const a = ABILITIES && ABILITIES.mass_recruit;
+  if (!a || !trail || !isShown(s, a.unlock)) return null;
+  const src = arr(s.run.surface && s.run.surface.sources).find((x) => x && x.uid === trail.src);
+  if (!src || !arr(a.targets).includes(src.type)) return null;
+  const cost = num(a.cost && a.cost.pheromone);
+  const label = 'Mass Recruit (' + fmtCount(cost) + ' pheromone)';
+  const tip = 'Sends ' + Math.round(num(a.frac) * 100) + '% of your loose foragers (not assigned to a trail) to this ' + nameOf('source', src.type).toLowerCase()
+    + ' at once. ' + fmtCount(cost) + ' pheromone.';
+  let reason = null;
+  try { reason = trailHandlers.massRecruit.validate(s, d, { type: 'massRecruit', src: src.uid }); } catch { reason = 'invalid'; }
+  if (reason) return { label: label + ': ' + reasonText(reason, 'massRecruit'), type: null, args: null, disabled: true, tip, reason };
+  return { label, type: 'massRecruit', args: { src: src.uid }, tip, reason: null };
+}
+
+/**
  * C187: the Map tab's raid alert for the most urgent raid in its warning: what can be done now (dispatch the garrison
  * to a trail raid), what happens on its own (the garrison defends the entrance), or what is needed (soldiers).
  * @param {Object} s
@@ -498,12 +610,26 @@ export function buildWarForm(ctx, { kind = null, target = null, onLaunched = nul
     const g = getGarrison(s, game.d);
     const soldier = Math.min(st.soldier, Math.floor(g.soldier));
     const supermajor = Math.min(st.supermajor, Math.floor(g.supermajor));
-    const res = act('launchParty', { kind: st.kind, target: { type: st.target.type, uid: st.target.uid }, soldier, supermajor }, ev, btn);
-    if (res.ok) {
-      toastOk((PARTY_NAMES[st.kind] || 'War party') + ' sent: ' + fmtCount(soldier + supermajor) + ' ants.');
-      st.touched = false;
-      if (onLaunched) onLaunched();
+    const args = { kind: st.kind, target: { type: st.target.type, uid: st.target.uid }, soldier, supermajor };
+    const send = (brk) => {
+      const res = act('launchParty', brk ? { ...args, breakTruce: true } : args, ev, btn);
+      if (res.ok) {
+        toastOk((PARTY_NAMES[st.kind] || 'War party') + ' sent: ' + fmtCount(soldier + supermajor) + ' ants.');
+        st.touched = false;
+        if (onLaunched) onLaunched();
+      }
+      return res;
+    };
+    // C247: an attack on a rival under truce asks first (policy 'break'); 'block' is refused by the command itself
+    const rv = st.target.type === 'rival' ? rivalBy(s, st.target.uid) : null;
+    if (rv && truceAttackReason(rv, false) === 'confirm:truce') {
+      const ask = typeof ctx.confirm === 'function' ? ctx.confirm
+        : ctx.modals && typeof ctx.modals.confirm === 'function' ? (o) => ctx.modals.confirm(o) : null;
+      if (!ask) return send(false);   // no dialog available: refused with the 'confirm:truce' reason
+      Promise.resolve(ask({ ...TRUCE_BREAK_CONFIRM })).then((yes) => { if (yes) send(true); });
+      return null;
     }
+    return send(false);
   }
 
   function refresh() {
@@ -666,7 +792,7 @@ function sumJobs(s) {
  * @param {{ game: Object, ui: Object, bridge: Object }} ctx
  * @returns {{ update(s: Object, d: Object): void, destroy(): void }}
  */
-export function createPanel(root, { game, ui, bridge }) {
+export function createPanel(root, { game, ui, bridge, dialogs = null }) {
   const act = makeAct(game, bridge);
   const el = h('div', { class: 'panel panel-map' });
   root.appendChild(el);
@@ -748,9 +874,20 @@ export function createPanel(root, { game, ui, bridge }) {
   mainView.append(raidAlert, trailsSec, selSec, terrSec, rivalSec);
 
   // --- war view ---
-  const form = buildWarForm({ game, bridge, ui }, {});
+  const form = buildWarForm({ game, bridge, ui, confirm: dialogs && typeof dialogs.confirm === 'function' ? dialogs.confirm : null }, {});
   const warFormSec = h('section', { class: 'sec' }, h('h3', { class: 'sec-title', text: 'War party' }), form.el);
   const raidList = h('div', { class: 'list' });
+  let focusRaid = null;   // C248: raid uid to bring into view after the next War update
+  /** C248: mark and scroll to the focused raid's row (once; the row is selected while that raid lasts). */
+  function focusRaidRow() {
+    const uid = focusRaid;
+    focusRaid = null;
+    for (const row of Array.from(raidList.children || [])) {
+      const on = row.dataset && row.dataset.uid === String(uid);
+      toggleClass(row, 'selected', on);
+      if (on && typeof row.scrollIntoView === 'function') { try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* old engines */ } }
+    }
+  }
   const autoGuard = h('input', { type: 'checkbox', class: 'check' });
   autoGuard.addEventListener('change', (ev) => act('setAutomation', { patch: { autoGuard: !!autoGuard.checked } }, ev, autoGuard));
   const autoGuardRow = h('label', { class: 'toggle-row', dataset: { tip: 'Send the garrison to every raid automatically.' } }, autoGuard, h('span', { text: 'Auto-guard' }));
@@ -795,18 +932,21 @@ export function createPanel(root, { game, ui, bridge }) {
       on: { click: (ev) => act('mark', { uid }, ev, markBtn) } });
     const rallyBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Rally', dataset: { tip: abilityTip('rally') },
       on: { click: (ev) => act('rally', { uid }, ev, rallyBtn) } });
+    // C250: Mass Recruit, only on a trail to a termite swarm / picnic spill
+    const mrBtn = h('button', { type: 'button', class: 'btn btn-small', text: 'Mass Recruit',
+      on: { click: (ev) => { const t0 = cur(); const it = t0 ? massRecruitItem(game.s, game.d, t0) : null; if (it && it.args) act('massRecruit', it.args, ev, mrBtn); } } });
     const rerouteBtn = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Reroute', dataset: { tip: 'Drag waypoints on the map. Free.' },
       on: { click: () => ui.setUI({ tool: { kind: 'reroute', uid }, selection: { view: 'surface', kind: 'trail', id: uid } }) } });
     const delBtn = armedButton('Delete', (ev, b) => act('deleteTrail', { uid }, ev, b));
     const row = h('div', { class: 'trail-row card', dataset: { uid: String(uid) } },
       h('div', { class: 'row-head' }, name, detourEl, meta, yieldEl), sBar.el,
       h('div', { class: 'row-controls' }, workers, escorts),
-      h('div', { class: 'btn-row' }, markBtn, rallyBtn, rerouteBtn, delBtn));
+      h('div', { class: 'btn-row' }, markBtn, rallyBtn, mrBtn, rerouteBtn, delBtn));
     row.addEventListener('click', (ev) => {
       if (ev.target && typeof ev.target.closest === 'function' && ev.target.closest('button')) return;
       bridge.select({ view: 'surface', kind: 'trail', id: uid });
     });
-    row.__r = { name, meta, yieldEl, detourEl, sBar, wCount, eCount, escorts, markBtn, rallyBtn, delBtn, wMinus, wPlus, ePlus };
+    row.__r = { name, meta, yieldEl, detourEl, sBar, wCount, eCount, escorts, markBtn, rallyBtn, mrBtn, delBtn, wMinus, wPlus, ePlus };
     return row;
   }
 
@@ -863,6 +1003,15 @@ export function createPanel(root, { game, ui, bridge }) {
     const cd = obj(s.run.surface && s.run.surface.cd);
     setText(r.markBtn, num(cd.mark) > 0 ? 'Mark ' + Math.ceil(cd.mark) + 's' : 'Mark');
     setText(r.rallyBtn, num(cd.rally) > 0 ? 'Rally ' + fmtTime(cd.rally) : 'Rally');
+    if (r.mrBtn) {   // C250
+      const mr = massRecruitItem(s, d, t);
+      show(r.mrBtn, !!mr);
+      if (mr) {
+        setProp(r.mrBtn, 'disabled', !!mr.disabled);
+        const tip = mr.tip + (mr.reason ? ' ' + reasonText(mr.reason, 'massRecruit') : '');
+        if (r.mrBtn.getAttribute('data-tip') !== tip) r.mrBtn.setAttribute('data-tip', tip);
+      }
+    }
     const sel = ui.getUI().selection;
     toggleClass(row, 'selected', !!(sel && sel.kind === 'trail' && sel.id === t.uid));
     if (r.delBtn.__disarm) r.delBtn.__disarm();
@@ -1072,7 +1221,7 @@ export function createPanel(root, { game, ui, bridge }) {
     const btn = h('button', { type: 'button', class: 'btn btn-small btn-danger', text: 'Dispatch garrison',
       on: { click: (ev) => act('dispatchGuard', { raid: uid }, ev, btn) } });
     const note = h('span', { class: 'row-meta raid-note' });
-    const row = h('div', { class: 'raid-row card danger' }, h('div', { class: 'row-head' }, title, meta), btn, note);
+    const row = h('div', { class: 'raid-row card danger', dataset: { uid: String(uid) } }, h('div', { class: 'row-head' }, title, meta), btn, note);
     row.__r = { title, meta, btn, note };
     return row;
   }
@@ -1241,6 +1390,7 @@ export function createPanel(root, { game, ui, bridge }) {
         setProp(autoGuard, 'checked', !!(s.meta.automation && s.meta.automation.autoGuard));
         syncList(raidList, raids, (r) => r.uid, createRaidRow, (row, r) => updateRaidRow(row, r, s, d));
         show(raidSec, raids.length > 0 || hasResearch(s, 'early_warning'));
+        if (focusRaid !== null) focusRaidRow();
         const battles = arr(s.run.war && s.run.war.battles).filter(Boolean);
         syncList(battleList, battles, (b) => b.uid, createBattleRow, (row, b) => updateBattleRow(row, b, s));
         show(battleSec, battles.length > 0);
@@ -1249,8 +1399,15 @@ export function createPanel(root, { game, ui, bridge }) {
         show(partySec, parties.length > 0);
       }
     },
-    /** Focus the war form on a target (bridge.openTab('map', 'war') from a rival click). */
+    /**
+     * Focus the war form on a target (bridge.openTab('map', 'war') from a rival click). C248: { type: 'raid', uid } (a
+     * click on the raid's warning arrow) scrolls to that raid's row in Incoming raids (its Dispatch / defence note).
+     */
     focusTarget(target, kind = null) {
+      if (target && target.type === 'raid') {
+        focusRaid = num(target.uid, -1);
+        return;
+      }
       form.setTarget(target, kind);
     },
     destroy() {

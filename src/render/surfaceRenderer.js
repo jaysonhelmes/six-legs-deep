@@ -23,7 +23,7 @@ import { drawIconAmbient, drawAmbientExtras, windStrength } from './ambient.js';
 import { hexToPx, pxToHexInRadius, worldToScreen, hexCorners, clamp, hash01, arcTable, pointAtArc, distToPolyline, trailCurve, pathObstacles, laneLayout, laneCurve, SQRT3 } from './geom.js';
 import {
   terrainColor, SURFACE, CARRY_CODES, mix, shade, rgba, hatchPattern, rivalColor,
-  rivalPatternKind, seasonBlend, blendWash, blendWeather,
+  rivalPatternKind, seasonBlend, blendWash, blendWeather, anchorPattern,
 } from './palette.js';
 import { getAtlas } from './atlas.js';
 import * as cosmetics from './cosmetics.js';
@@ -1950,7 +1950,8 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       ctx.beginPath();
       ctx.ellipse(p.x, p.y, r, r * 0.78, 0, 0, Math.PI * 2);
       ctx.fill();
-      const pat = hatchPattern(ctx, rivalPatternKind(rv.type, rv.tier), shade(col, 0.4), 0.8, 7);
+      const o0 = w2s(0, 0);   // C242: the hatch is anchored to the map (pans and zooms with the camera)
+      const pat = anchorPattern(hatchPattern(ctx, rivalPatternKind(rv.type, rv.tier), shade(col, 0.4), 0.8, 7), o0.x, o0.y, z);
       if (pat) {
         ctx.fillStyle = pat;
         ctx.fill();
@@ -2056,26 +2057,31 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     }
   }
 
+  /** C248: screen geometry of an incoming raid's warning arrow (rival nest a → target b), or null. Shared by draw and pick. */
+  function raidArrow(s, r) {
+    if (!r || r.phase !== 'warning') return null;
+    const rv = (s.run.rivals.list || []).find((x) => x && x.uid === r.rival);
+    if (!rv || !(rv.hex >= 0)) return null;
+    const a = hexToScreen(rv.hex);
+    let b = hexToScreen(0);
+    if (r.target && r.target.type === 'trail') {
+      const tr = (s.run.surface.trails || []).find((t) => t && t.uid === r.target.uid);
+      if (tr && Array.isArray(tr.path) && tr.path.length) b = hexToScreen(tr.path[Math.floor(tr.path.length / 2)]);
+    }
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const L = Math.hypot(dx, dy) || 1;
+    const ux = dx / L;
+    const uy = dy / L;
+    return { a, b, ux, uy, bx: b.x - ux * 12, by: b.y - uy * 12 };
+  }
+
   function drawRaidArrows(ctx, s) {
     const raids = (s.run.war && s.run.war.raids) || [];
-    const trails = s.run.surface.trails || [];
     for (const r of raids) {
-      if (!r || r.phase !== 'warning') continue;
-      const rv = (s.run.rivals.list || []).find((x) => x && x.uid === r.rival);
-      if (!rv || !(rv.hex >= 0)) continue;
-      const a = hexToScreen(rv.hex);
-      let b = hexToScreen(0);
-      if (r.target && r.target.type === 'trail') {
-        const tr = trails.find((t) => t && t.uid === r.target.uid);
-        if (tr && Array.isArray(tr.path) && tr.path.length) b = hexToScreen(tr.path[Math.floor(tr.path.length / 2)]);
-      }
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const L = Math.hypot(dx, dy) || 1;
-      const ux = dx / L;
-      const uy = dy / L;
-      const bx = b.x - ux * 12;
-      const by = b.y - uy * 12;
+      const g = raidArrow(s, r);
+      if (!g) continue;
+      const { a, b, ux, uy, bx, by } = g;
       ctx.strokeStyle = SURFACE.raid;
       ctx.lineWidth = 2.5;
       ctx.setLineDash([8, 6]);
@@ -2973,6 +2979,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
       drawSurfaceOverlays(ctx, ov, {
         s, d, hexToScreen, hexR: SIZE * curView.zoom, owned: T.owned, border: T.border, rivalOf: T.rival, rivalByUid: rivals,
         radiusCount: countInRadius(radiusOf(s)), revealed: s.run.surface.revealed || [], trailPolys: polys, visible: (p) => visiblePt(p),
+        origin: w2s(0, 0), zoom: curView.zoom,   // C242: patterns anchored to the map
       });
     }
     drawToolPreviews(ctx, s, d);
@@ -3027,6 +3034,11 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
     for (const e of s.run.surface.entrances || []) {
       if (e && e.hex >= 0 && near(hexToScreen(e.hex), SIZE * z * 0.5)) return { view: 'surface', kind: 'entrance', hex: e.hex };
     }
+    // C248: the red dotted warning arrow of an incoming raid (line, head or countdown label) opens its War entry
+    for (const r of (s.run.war && s.run.war.raids) || []) {
+      const g = raidArrow(s, r);
+      if (g && distToPolyline(cssX, cssY, [g.a, g.b]) <= 7) return { view: 'surface', kind: 'raid', id: r.uid };
+    }
     const trails = s.run.surface.trails || [];
     let best = null;
     let bestD = 6;
@@ -3038,7 +3050,7 @@ export function createSurfaceRenderer(canvas, { game, ui, bus } = {}) {
         best = tr;
       }
     }
-    if (best) return { view: 'surface', kind: 'trail', id: best.uid };
+    if (best) return { view: 'surface', kind: 'trail', id: best.uid, hex };   // C249: hex for the menu's hex options
     if (hex >= 0) return { view: 'surface', kind: 'hex', hex };
     return null;
   }

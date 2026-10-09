@@ -39,6 +39,7 @@ function makeBlueprint(game) {
     assert.ok(at, 'advisor spot for ' + type);
     assert.equal(cmd(s, d, { type: 'placeChamber', chamber: type, x: at.x, y: at.y }), null, type);
     d.stats.digW = 1e9;
+    s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
     nest.tick(s, d, 1, makeEnv(1));
   }
   assert.equal(cmd(s, d, { type: 'saveBlueprint', slot: 0, name: 'Plan' }), null);

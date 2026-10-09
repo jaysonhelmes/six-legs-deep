@@ -1326,6 +1326,22 @@ export function isHarmfulEffect(e) {
 }
 
 /**
+ * [q] C245: the fungal blight the player can click away: 'card' while its card is open (a garden click picks Clean),
+ * 'clean' during the cleaning window; clicks done, clicks needed, clicks left and seconds left. null when none.
+ * @param {import('../core/types.js').State} s
+ * @returns {{ phase: 'card'|'clean', clicks: number, need: number, left: number, t: number } | null}
+ */
+export function blightStatus(s) {
+  const ev = s && s.run && s.run.events;
+  if (!ev) return null;
+  const need = num(EVENTS.ev_fungal_blight.num.clicks);
+  const a = (ev.active || []).find((x) => x && x.id === 'ev_fungal_blight' && x.data && x.data.k === 'blight');
+  if (a) return { phase: 'clean', clicks: num(a.data.clicks), need, left: Math.max(0, need - num(a.data.clicks)), t: Math.max(0, num(a.t)) };
+  if (ev.card && ev.card.id === 'ev_fungal_blight') return { phase: 'card', clicks: 0, need, left: need, t: Math.max(0, num(ev.card.t)) };
+  return null;
+}
+
+/**
  * [x] core/step.js, offline steps only: take the harmful event effects out of s.run.effects for the step, so that
  * offline they neither apply nor count down (events are frozen offline and nothing harmful happens offline; their
  * processes, objects and card timers already wait in this module). resumeOffline puts them back after the step.

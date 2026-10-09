@@ -55,12 +55,12 @@ export const GEN = freeze({ attempts: 300, margin: 1, royalGap: 2 });
 /**
  * Drainage abilities (DESIGN §7.9; research `drainage`, ARCHITECTURE §18 C117). A revealed water pocket can be
  * drained (each water cell costs drainWork × its layer's cell work in dig work and drainSoil soil, paid when queued;
- * the cells become diggable soil) or relocated to a same-size spot of plain soil within moveRows rows of it (moveWork ×
+ * the cells become diggable soil) or relocated to a same-size spot of plain soil anywhere in the nest (C255: no row limit; moveWork ×
  * layer work per water cell, no soil). A Water Well left touching no pocket is removed with its placement food refunded
  * in full. C157: a move may cover open tunnel cells that can be backfilled without cutting anything off; each is filled
  * as part of the move for fillWork × its tunnel work.
  */
-export const DRAINAGE = freeze({ research: 'drainage', drainWork: 2, drainSoil: 120, moveWork: 1.5, moveRows: 12, fillWork: 1 });
+export const DRAINAGE = freeze({ research: 'drainage', drainWork: 2, drainSoil: 120, moveWork: 1.5, fillWork: 1 });
 
 /**
  * Cultivated roots (research `root_cultivation`, ARCHITECTURE §18 C118): a player-grown root line from row y0 down a

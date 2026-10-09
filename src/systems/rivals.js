@@ -33,7 +33,7 @@
 //   with highway_network ("satellites share the garrison").
 
 import { RIVALS, RIVAL_ORDER, ELDER, GROWTH, TRAITS, BOSSES, MAP_BOSS_ORDER, SPAWN, RIVAL_TRAIT_ORDER, FALLEN_RIVALS } from '../data/rivals.js';
-import { ACTIONS, REWARDS, TACTICAL, BATTLE, ACH_FX, RAIDS } from '../data/combat.js';
+import { ACTIONS, REWARDS, TACTICAL, BATTLE, ACH_FX, RAIDS, TRUCE } from '../data/combat.js';
 import { RESEARCH } from '../data/research.js';
 import { SOURCES } from '../data/sources.js';
 import { TERRAIN, TERRITORY, MOUND } from '../data/surface.js';
@@ -748,8 +748,33 @@ function cleanTarget(t) {
   return { type: t.type, uid: t.uid };
 }
 
+/**
+ * [pure] C247: why a raid / assault on rival r is held back by a truce: null (no truce, or the player confirmed breaking
+ * it under policy 'break'), 'confirm:truce' (policy 'break', not yet confirmed) or 'blocked:truce' (policy 'block').
+ * @param {Object} r rival
+ * @param {boolean} breakTruce the player confirmed breaking the truce
+ * @param {'break'|'block'} [policy]
+ * @returns {string|null}
+ */
+export function truceAttackReason(r, breakTruce, policy = TRUCE.attackPolicy) {
+  if (!r || !(num(r.truce) > 0)) return null;
+  if (policy === 'block') return 'blocked:truce';
+  return breakTruce === true ? null : 'confirm:truce';
+}
+
+/**
+ * [x] C247: end a truce because the player attacked: truce 0 (the bribe is lost; its cooldown keeps running) and the
+ * rival's raid clock × TRUCE.breakRaidMult, so its next raid comes sooner. Emits truceBroken { rival }.
+ */
+function breakTruce(s, r, env) {
+  if (!r || !(num(r.truce) > 0)) return;
+  r.truce = 0;
+  if (num(r.raidIn) > 0) r.raidIn = clampNum(num(r.raidIn) * TRUCE.breakRaidMult);
+  if (env && typeof env.emit === 'function') env.emit('truceBroken', { rival: r.uid });
+}
+
 /** Reason a target is invalid for a party kind (null = fine), plus the resolved object. */
-function checkTarget(s, d, kind, target) {
+function checkTarget(s, d, kind, target, brk = false) {
   const t = cleanTarget(target);
   if (!t) return { reason: 'invalid' };
   if (kind === 'raid' || kind === 'assault') {
@@ -759,6 +784,8 @@ function checkTarget(s, d, kind, target) {
     const found = { rival: r, hex: r.hex };
     if (!r.sighted) return { reason: 'blocked:unsighted', ...found };
     if (kind === 'assault' && immune(s, d, r)) return { reason: 'blocked:immune', ...found };
+    const tr = truceAttackReason(r, brk);   // C247
+    if (tr) return { reason: tr, ...found };
     return { reason: null, ...found };
   }
   if (t.type !== 'source') return { reason: 'invalid' };
@@ -772,14 +799,14 @@ function checkTarget(s, d, kind, target) {
 }
 
 /** Shared launchParty / previewAction validation (garrison against live state). */
-function partyReason(s, d, kind, target, soldier, supermajor) {
+function partyReason(s, d, kind, target, soldier, supermajor, brk = false) {
   if (!s.run.unlocked.panel_war) return 'locked';
   if (s.run.hardship === 'pacifist') return 'hardship';
   if (!PARTY_KINDS.includes(kind)) return 'invalid';
   const so = count(soldier);
   const su = count(supermajor);
   if (so === null || su === null || !(so + su > 0)) return 'invalid';
-  const chk = checkTarget(s, d, kind, target);
+  const chk = checkTarget(s, d, kind, target, brk);
   if (chk.reason) return chk.reason;
   const g = garrison(s, d);
   if (so > g.soldier + 1e-9 || su > g.supermajor + 1e-9) return 'requirements:garrison';
@@ -832,9 +859,11 @@ export function previewAction(s, d, kind, targetUid, army) {
   const mi = clampNum(num(a.minor));
   if (kind === TOURNEY) return previewTournament(s, d, targetUid, { minor: mi, soldier: so, supermajor: su }, res);
   const target = { type: kind === 'raid' || kind === 'assault' ? 'rival' : 'source', uid: targetUid };
-  res.reason = partyReason(s, d, kind, target, a.soldier, a.supermajor);
+  // C247: the odds of an attack that would break a truce are shown as if confirmed; truceBreak flags the confirmation
+  res.reason = partyReason(s, d, kind, target, a.soldier, a.supermajor, true);
   res.ok = res.reason === null;
-  const chk = PARTY_KINDS.includes(kind) ? checkTarget(s, d, kind, target) : { reason: 'invalid' };
+  const chk = PARTY_KINDS.includes(kind) ? checkTarget(s, d, kind, target, true) : { reason: 'invalid' };
+  res.truceBreak = !!(chk.rival && truceAttackReason(chk.rival, false) === 'confirm:truce');
   if (!chk.rival && !chk.src) return res;
   const you = { militia: 0, soldier: so, supermajor: su };
   let foe;
@@ -1521,13 +1550,15 @@ const MOBILIZE_KINDS = Object.freeze(['border', 'gate', 'army']);
 
 /** @type {Record<string, import('../core/types.js').Handler>} */
 export const handlers = {
-  /** launchParty { kind, target, soldier, supermajor } — kind raid/assault (rival) or hunt/termite (source). */
+  /** launchParty { kind, target, soldier, supermajor, breakTruce? } — kind raid/assault (rival) or hunt/termite (source); C247 breakTruce confirms attacking a rival under truce. */
   launchParty: {
     validate(s, d, cmd) {
-      return partyReason(s, d, cmd.kind, cmd.target, cmd.soldier, cmd.supermajor);
+      if (cmd.breakTruce !== undefined && typeof cmd.breakTruce !== 'boolean') return 'invalid';
+      return partyReason(s, d, cmd.kind, cmd.target, cmd.soldier, cmd.supermajor, cmd.breakTruce === true);
     },
     apply(s, d, cmd, env) {
-      const chk = checkTarget(s, d, cmd.kind, cmd.target);
+      const chk = checkTarget(s, d, cmd.kind, cmd.target, cmd.breakTruce === true);
+      if (chk.rival && cmd.breakTruce === true) breakTruce(s, chk.rival, env);   // C247
       const origin = nearestEntrance(s, chk.hex);
       makeParty(s, cmd.kind, cleanTarget(cmd.target), count(cmd.soldier), count(cmd.supermajor), marchPath(s, d, origin, chk.hex));
     },

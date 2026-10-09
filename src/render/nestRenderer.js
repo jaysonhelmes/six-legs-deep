@@ -15,7 +15,7 @@
 // scrollBy(dy), panBy(dx, dy), zoomAt(f, x, y), frameHome(), controlAt(x, y), pressControl(name), getView(),
 // ghostAt(cell, tool), ceremonyView(row).
 
-import { GRID, CELL } from '../data/balance.js';
+import { GRID, CELL, DIG_CAP } from '../data/balance.js';
 import { LAYER_ORDER, LAYERS, GEOM, DIG } from '../data/strata.js';
 import { CHAMBERS, ADJACENCY } from '../data/chambers.js';
 import { BROOD } from '../data/economy.js';
@@ -63,6 +63,14 @@ const REASON_SHORT = Object.freeze({ 'blocked:water': 'Water in the way', 'block
   cantAfford: 'Cannot afford', locked: 'Needs research', busy: 'Already moving',
   'blocked:disconnect': 'Filling these tunnels cuts a chamber off', 'blocked:reserved': 'Reserved for a chamber' });
 const STAGES = (BROOD && BROOD.stages) || [0.25, 0.75];
+
+/** C245: a fungal blight is on the garden (its card is open, or the cleaning window runs): clicks on a Fungus Garden clean it. */
+function blightOn(s) {
+  const ev = s && s.run && s.run.events;
+  if (!ev) return false;
+  if (ev.card && ev.card.id === 'ev_fungal_blight') return true;
+  return (ev.active || []).some((a) => a && a.id === 'ev_fungal_blight' && a.data && a.data.k === 'blight');
+}
 const MAX_BROOD_SPRITES = 30;
 const FROST_IMMUNE_FALLBACK = new Set(['royal_chamber', 'gate', 'thermal_chimney']);
 /** Strata cache resolutions (device px per cell); the cache is redrawn only when the bucket changes. */
@@ -1980,8 +1988,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     const res = s.run.res || {};
     const stats = (d && d.stats) || {};
     const colony = s.run.colony || {};
-    const blight = (s.run.events && (s.run.events.active || []).some((a) => a && a.id === 'ev_fungal_blight'))
-      || (s.run.events && (s.run.events.objects || []).some((o) => o && o.kind === 'blight'));
+    const blight = blightOn(s);   // C245: also while the event card is still open (the garden is blighted until resolved)
     const ventilated = !!(s.run.research && s.run.research.ventilation_shafts);
     const winter = !!(d && d.season && d.season.id === 'winter');
     const ui0 = uiOf(ui);
@@ -3382,7 +3389,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     for (const b of list) {
       if (!b || !(b.i >= 0 && b.i < NCELL)) continue;
       cells.push(b.i);
-      const p = clamp(1 - (Number(b.t) || 0) / total, 0, 1);
+      // C252: cells fill one after another; each entry carries its own duration (d)
+      const p = clamp(1 - (Number(b.t) || 0) / (Number(b.d) > 0 ? Number(b.d) : total), 0, 1);
       const x = v.ox + (b.i % COLS) * v.cell;
       const y = v.oy + ((b.i / COLS) | 0) * v.cell;
       ctx.fillStyle = 'rgba(40,22,10,0.35)';
@@ -3444,7 +3452,7 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
     ctx.stroke();
     // label: "Backfill 6 cells" / "2 stay open: would cut a chamber off"
     const lines = [];
-    if (pv.ok.length) lines.push({ t: `Backfill ${pv.ok.length} cell${pv.ok.length === 1 ? '' : 's'} (free, ${Math.round(Number(DIG && DIG.backfillSec) || 10)} s)`, c: '#ffe2aa' });
+    if (pv.ok.length) lines.push({ t: `Backfill ${pv.ok.length} cell${pv.ok.length === 1 ? '' : 's'} (free, ${Math.round(Math.max(Number(DIG && DIG.backfillSec) || 10, pv.ok.length / (Number(DIG_CAP && DIG_CAP.backfillCellsPerSec) || 20)))} s)`, c: '#ffe2aa' });
     if (bad.length) {
       const why = BACKFILL_WHY[pv.bad[0].reason] || 'cannot be filled';
       lines.push({ t: pv.ok.length || bad.length > 1 ? `${bad.length} stay open: ${why}` : `Can't backfill: ${why}`, c: '#ffb3b0' });
@@ -4100,6 +4108,8 @@ export function createNestRenderer(canvas, { game, ui, bus, strip = null } = {})
       if (Math.abs(cssX - c.x) <= unit * 0.8 && Math.abs(cssY - c.y) <= unit * 0.8) return { view: 'nest', kind: 'digFace', i: face };
     }
     const k = geo.at[i];
+    // C245: while a fungal blight can be cleaned, a click on a Fungus Garden scrapes it (cleanBlight)
+    if (k >= 0 && chs[k] && chs[k].type === 'fungus_garden' && blightOn(s)) return { view: 'nest', kind: 'blight', id: chs[k].uid };
     if (k >= 0 && chs[k]) return { view: 'nest', kind: chs[k].type === 'nursery' ? 'nursery' : 'chamber', id: chs[k].uid };
     // C154: a cell of a chamber's reserved full-size room (discoloured fresh-dug soil, an old tunnel or a cache hint in
     // it) selects / inspects that chamber (kind 'chamber' even for a Nursery: a click here never grooms). A revealed water

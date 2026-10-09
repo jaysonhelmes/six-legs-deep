@@ -39,6 +39,7 @@ function settle(s, d, sec = 1) {
   s.run.time += sec;
   d.stats.digW = 1e9;
   nest.derive(s, d);
+  s.run.nest.digAllow = 1e12; // C252: dig everything queued this step (the dig cap has its own tests)
   nest.tick(s, d, sec, env);
   nest.derive(s, d);
   return env.events || [];

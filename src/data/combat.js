@@ -18,6 +18,14 @@ export const BATTLE = f({ dmgCoef: 0.2, step: 0.25, fortune: [0.9, 1.1], preview
   endEps: 1e-6, maxSec: 900, lossPct: [0.1, 0.9], hintBelow: 0.9 });
 
 /**
+ * C247: attacking (raid / assault) a rival you hold a truce with. attackPolicy 'break' (default): allowed after the player
+ * confirms (launchParty { breakTruce: true }); it ends the truce (the bribe is lost) and the rival's raid clock is
+ * multiplied by breakRaidMult (its next raid comes sooner). 'block': refused 'blocked:truce' until the truce expires.
+ * Tournaments stay blocked during a truce either way.
+ */
+export const TRUCE = f({ attackPolicy: 'break', breakRaidMult: 0.5 });
+
+/**
  * War actions (DESIGN §9.4, §8.4, §9.7).
  * raid/assault/hunt: share of defenders engaged and the defender's default home bonus.
  * termite: neutral defender AP and cooldown (its reward is SOURCES.termite_mound.hunt, data/sources.js).

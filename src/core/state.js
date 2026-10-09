@@ -249,7 +249,7 @@ function createMeta() {
     strata: [],
     cosmetics: { owned: {}, equipped: {} },
     automation: {
-      autobuy: { on: false, adaptations: true, chambers: true, mound: true, priority: ['adaptations', 'chambers', 'mound'] },
+      autobuy: { adaptations: false, chambers: false },   // C246: one switch per autobuyer, each independent
       autoFlight: { on: false, mode: 'peak', alates: 0, minutes: 30 },
       autoSuper: { on: false, mode: 'kinship', kinship: 0, hours: 6 },
       autoGuard: false,

@@ -51,7 +51,7 @@ const SYSTEMS = {
     chamberAtCell: 3, cellInfo: 3, queueShaft: 5, applyBlueprint: 2, autoLevelStep: 3, moleTunnel: 3 },
   'systems/mapgen.js': { generateMap: 1 },
   'systems/surface.js': { derive: 2, tick: 4, handlers: 'object', isPassable: 3, moveCost: 3, claimCost: 1, canClaim: 3, moundCost: 1, sourceAt: 2,
-    nuptialHex: 3, spawnSource: 3, removeSource: 4, revealHexes: 3, conquerHexes: 3, grantHex: 3, touch: 1, addEntrance: 6, autoMoundStep: 3 },
+    nuptialHex: 3, spawnSource: 3, removeSource: 4, revealHexes: 3, conquerHexes: 3, grantHex: 3, touch: 1, addEntrance: 6 },   // C246: autoMoundStep removed (no Mound autobuyer)
   'systems/trails.js': { tick: 4, handlers: 'object', previewTrail: 4, trailYield: 4, bestTargets: 2, trailOrigins: 2, hitTrail: 3, cutTrailsAt: 3,
     resetStrength: 2, autoDraw: 4, createTrail: 4 },
   'systems/combat.js': { unitStats: 3, armyAP: 3, rivalAP: 3, preview: 4, startBattle: 4, stepBattles: 4, grantReward: 4 },
@@ -108,7 +108,7 @@ const HANDLERS = {
   'systems/adaptations.js': ['buyAdaptation'],
   'systems/nest.js': ['placeChamber', 'levelChamber', 'relocateChamber', 'demolishChamber', 'digTunnel', 'digTo', 'backfill', 'reorderQueue',
     'cancelJob', 'helpDig', 'saveBlueprint', 'loadBlueprint', 'deleteBlueprint', 'cancelPlanned', 'backfillUnneeded', 'drainPocket',
-    'relocatePocket', 'growRoot', 'editBlueprint'],
+    'relocatePocket', 'growRoot', 'editBlueprint', 'setAutoBackfill', 'clearBlueprint'],
   'systems/surface.js': ['claimHex', 'cancelChannel', 'flagHex', 'moveAphids'],   // C220: buyMound removed (the Mound grows on its own)
   'systems/trails.js': ['drawTrail', 'rerouteTrail', 'deleteTrail', 'assignWorkers', 'assignEscorts', 'mark', 'rally', 'frenzy', 'massRecruit'],
   'systems/rivals.js': ['launchParty', 'recallParty', 'reinforce', 'battleAction', 'bribe', 'tournament', 'tournamentChoice'],

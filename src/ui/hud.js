@@ -17,6 +17,8 @@ import { GRID, DIAPAUSE, OFFLINE } from '../data/balance.js';
 import { offlineCapEff } from '../core/offline.js';
 import { frontWindows } from './rules.js';
 import { rivalName } from '../systems/rivals.js';
+import { blightStatus } from '../systems/events.js';   // C245
+import { EVENTS } from '../data/events.js';
 
 /** C152: rows of the rail's Ants breakdown, in order, and their labels. */
 export const ANT_ROWS = Object.freeze(['minor', 'soldier', 'supermajor', 'replete', 'alate', 'queen']);
@@ -427,9 +429,13 @@ export function activeThreats(s) {
       t: -1, n: molds.length, locate: spots[0] || null, spots,
     });
   }
-  if (arr(s.run.events && s.run.events.active).some((a) => a && a.id === 'ev_fungal_blight' && a.data && a.data.k === 'blight')) {
+  // C245: the cleaning window: clicks left and time left; the chip brings the Fungus Garden into view
+  const bl = blightStatus(s);
+  if (bl && bl.phase === 'clean') {
     const g = arr(s.run.nest && s.run.nest.chambers).find((c) => c && c.type === 'fungus_garden');
-    out.push({ id: 'blight', label: 'Fungal blight', tip: 'Click the fungus garden quickly to clean the blight.', t: -1, n: 1,
+    out.push({ id: 'blight', label: 'Blight: ' + fmtCount(bl.left) + ' click' + (bl.left === 1 ? '' : 's') + ' left',
+      tip: 'Click the Fungus Garden (Below) ' + fmtCount(bl.left) + ' more time' + (bl.left === 1 ? '' : 's') + ' before the timer runs out, or the blight takes '
+        + Math.round(num(EVENTS.ev_fungal_blight.num.loss) * 100) + '% of your fungus. Click this chip to find the garden.', t: bl.t, n: bl.left,
       locate: g ? { view: 'nest', chamber: g.uid, cell: (num(g.y) + Math.floor(num(g.h, 1) / 2)) * num(GRID && GRID.cols, 40) + num(g.x) } : null });
   }
   const effects = arr(s.run.effects).filter((e) => e && typeof e.id === 'string');

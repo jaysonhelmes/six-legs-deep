@@ -44,6 +44,9 @@ export const DIG = freeze({
   richLoamMult: 0.8, shallowSoilRow: 23, shallowSoilRewardPerTier: 0.05, blueprintCellDiv: 3, blueprintPlaceMult: 0.5,
   goingUnderTunnelMult: 0.95,
   architectMult: 0.75,
+  // C253: auto-backfill re-checks for unneeded tunnels every autoBackfillSec. C254: a relocated chamber's old room is
+  // cleared over relocateClearBase + relocateClearPerCell × its cells seconds (the chamber stays inactive meanwhile).
+  autoBackfillSec: 30, relocateClearBase: 3, relocateClearPerCell: 0.5,
 });
 
 /**

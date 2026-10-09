@@ -1026,18 +1026,6 @@ export function addEntrance(s, d, kind, hex, col, ref) {
   S.rev += 1;
 }
 
-/**
- * Autobuyer step (WP7). C220: the Mound grows on its own (moundGrowth), so there is nothing to buy: always false.
- * Kept so the automation category and old saves' autobuy settings stay valid.
- * @param {import('../core/types.js').State} s
- * @param {import('../core/types.js').Derived} d
- * @param {import('../core/types.js').Env} env
- * @returns {boolean} false
- */
-export function autoMoundStep(s, d, env) { // eslint-disable-line no-unused-vars
-  return false;
-}
-
 // ------------------------------------------------------------------------------------------------------------------
 // Handlers
 // ------------------------------------------------------------------------------------------------------------------
